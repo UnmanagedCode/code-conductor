@@ -296,7 +296,7 @@ describe('project_bash', () => {
     assert.match(body.result.content[0].text, /argument 'description' must be string/);
   });
 
-  // The canonical-echo invariant (docs/protocol.md -> Input params): a response
+  // The canonical-echo invariant (docs/protocol/mcp.md -> Input params): a response
   // reports the full `<project>_worktree_<slug>` name, never the spelling the
   // caller addressed the worktree with. project_bash builds THREE separate
   // metadata objects — normal close, spawn-`error`, and the synchronous

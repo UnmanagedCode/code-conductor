@@ -1,6 +1,6 @@
 # `/mcp` for applications
 
-cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol.md → MCP tool protocol](protocol.md#mcp-tool-protocol).
+cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features/mcp.md → MCP interface](features/mcp.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol/mcp.md → MCP tool protocol](protocol/mcp.md#mcp-tool-protocol).
 
 Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts`.
 
@@ -61,8 +61,8 @@ How JSON format differs from text:
 | `list_workspaces` | `{workspaces}` (the text view stays a bare array) |
 
 `describe_session`, `project_status` and `describe_playbook` answer with their object as it is.
-- **Refusals** are `result.isError:true`, and their `structuredContent` matches `REFUSAL_SCHEMA` (`src/mcp/outputSchemas.ts`): `{ok:false, code, reason?, statusCode?, truncated?, details?, …}`, plus the refusal's own fields (`sessionId`, `matches`, `legalMoves`, …). `details` is a plugin refusal's own machine-readable object, passed through untouched ([docs/plugins.md](plugins.md#typed-plugin-tools-both-formats) → 6); no core refusal carries it. An `outputSchema` describes the **success** shape only.
-- **Plugin tools** appear in JSON format only when their manifest declares an `outputSchema`, and then answer `structuredContent` like a core tool, validated by cc against that schema ([docs/plugins.md](plugins.md#typed-plugin-tools-both-formats)). A plugin tool with no `outputSchema` is text-only: absent from the JSON `tools/list`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT`.
+- **Refusals** are `result.isError:true`, and their `structuredContent` matches `REFUSAL_SCHEMA` (`src/mcp/outputSchemas.ts`): `{ok:false, code, reason?, statusCode?, truncated?, details?, …}`, plus the refusal's own fields (`sessionId`, `matches`, `legalMoves`, …). `details` is a plugin refusal's own machine-readable object, passed through untouched ([docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats) → 6); no core refusal carries it. An `outputSchema` describes the **success** shape only.
+- **Plugin tools** appear in JSON format only when their manifest declares an `outputSchema`, and then answer `structuredContent` like a core tool, validated by cc against that schema ([docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats)). A plugin tool with no `outputSchema` is text-only: absent from the JSON `tools/list`, and a JSON call to it is refused `TOOL_UNAVAILABLE_IN_FORMAT`.
 
 ## Error channels
 
@@ -95,7 +95,7 @@ How JSON format differs from text:
 - Every `runTool` failure is an outcome, never an escaped rejection, and every async route forwards a stray rejection to the router's error middleware (`buildMcpRouter`), so no `/mcp` request can take the server down or reach Express's HTML error page.
 - URL-level faults (`CALLER_UNKNOWN`, `FORMAT_INVALID`, `QUERY_PARAM_UNKNOWN`) carry `data` in both formats.
 - In text format the `-32600`, `-32601` and `-32603` replies `dispatch` emits (and the router error middleware's `-32603`) carry no `data`. The body-parser faults (`PARSE_ERROR`, `PAYLOAD_TOO_LARGE`, body `REQUEST_INVALID`) carry `data` in both formats, as the URL-level faults do: the body is refused before any format applies.
-- In text format a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol.md.
+- In text format a tool fault is an `isError` result whose text is the reason, and a refusal or error is the text view described in protocol/mcp-results.md.
 - Every echoed string in a JSON refusal is cut at `JSON_ECHO_CAP`, and the refusal then carries `truncated:true` — except a plugin refusal's `details`, which is never cut.
 
 ## REST alias
@@ -107,7 +107,7 @@ How JSON format differs from text:
 | `GET /mcp/tools`, `GET /mcp/<sessionId>/tools` | the listing |
 
 - Same core as `tools/call` (`runTool`): one argument validation, one playbook gate, one handler. The alias body for a call is byte-for-byte the `structuredContent` of the same `tools/call`, with the same caller attribution.
-- **No tool-result nudges.** An application caller — the REST alias, or a `tools/call` without the CLI's `params._meta["claudecode/toolUseId"]` — never gets one; they ride a Claude CLI session's PostToolUse hook ([protocol.md](protocol.md) → Tool-result nudges).
+- **No tool-result nudges.** An application caller — the REST alias, or a `tools/call` without the CLI's `params._meta["claudecode/toolUseId"]` — never gets one; they ride a Claude CLI session's PostToolUse hook ([protocol/mcp.md](protocol/mcp.md) → Tool-result nudges).
 - **Success:** `200` + the `structuredContent` object itself, with no envelope.
 - **Refusal or thrown error:** `200` + the refusal object.
 - **Faults:** the statuses in the table above.
@@ -132,7 +132,7 @@ An agent chains or batches calls with the `run_code` tool: one JavaScript progra
 
 - A plugin's value is set whenever cc has a port.
 - A worker has no `CONDUCTOR_MCP_URL`: its programs call through `run_code`. An inherited value (cc itself running as some cc's worker) is removed, never passed on: by `Instance.launch` for workers and by the supervisor's `spawnChild` for plugins.
-- The session variables' contract (lifetime, the kind rule, remote sessions, where they never reach) is [protocol.md → Session identity env](protocol.md#subprocess-protocol). A plugin backend gets no `CC_SESSION_*`: it serves many sessions and reads its caller from the forwarded `caller.sessionId`.
+- The session variables' contract (lifetime, the kind rule, remote sessions, where they never reach) is [protocol/subprocess.md → Session identity env](protocol/subprocess.md#subprocess-protocol). A plugin backend gets no `CC_SESSION_*`: it serves many sessions and reads its caller from the forwarded `caller.sessionId`.
 
 ### Resolve your own session
 
@@ -162,7 +162,7 @@ JSON drops every context cap: the result budget and its `RESULT_OVER_BUDGET` bac
 | `JSON_ECHO_CAP` | each echoed string in a refusal, and a JSON-RPC error's `message` | `truncated` (refusals) |
 | `URL_ECHO_CAP` (`src/mcp/server.ts`, both formats) | each URL fragment a URL-level fault echoes (a query key, a format value, a caller id, a route) | — |
 
-**Plugin tools:** cc applies **no** ceiling to a typed plugin tool's `structured` reply — none of the safety ceilings above apply to it. The only bounds are the plugin's own `mcp.timeoutMs` and the V8 string-length ceiling, past which serializing fails loudly as `INTERNAL`, never as a cut. A plugin refusal's `reason` still takes `JSON_ECHO_CAP`; its `details` takes no ceiling. The plugin's side of this — never truncating in json — is in [docs/plugins.md](plugins.md#typed-plugin-tools-both-formats).
+**Plugin tools:** cc applies **no** ceiling to a typed plugin tool's `structured` reply — none of the safety ceilings above apply to it. The only bounds are the plugin's own `mcp.timeoutMs` and the V8 string-length ceiling, past which serializing fails loudly as `INTERNAL`, never as a cut. A plugin refusal's `reason` still takes `JSON_ECHO_CAP`; its `details` takes no ceiling. The plugin's side of this — never truncating in json — is in [docs/plugins/tools.md](plugins/tools.md#typed-plugin-tools-both-formats).
 
 Unchanged in both formats:
 - the request body limit `MCP_REQUEST_BODY_LIMIT` (`src/mcp/server.ts`; over it → `PAYLOAD_TOO_LARGE`)
@@ -175,7 +175,7 @@ Unchanged in both formats:
 ## Limitations
 
 - **Untyped plugin tools are text-only.** A plugin tool without a manifest `outputSchema` is absent from JSON format and the REST alias.
-- **No auth.** Any local process can call as any live session. A tool's `audience` is not auth either ([docs/plugins.md](plugins.md#tool-audience)).
+- **No auth.** Any local process can call as any live session. A tool's `audience` is not auth either ([docs/plugins/tools.md](plugins/tools.md#tool-audience)).
 - **No streaming, except progress.** Every result is buffered whole and a JSON result can reach the ceilings above; the one exception is a single `tools/call` whose client accepts `text/event-stream`, which may stream progress notifications before its response ([code-mode.md → Progress and cancellation](code-mode.md#progress-and-cancellation)).
 
 ## Samples

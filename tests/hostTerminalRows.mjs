@@ -1,5 +1,5 @@
 // THE HOST TERMINAL ROWS: what `GET /api/terminal` (src/hostTerminal.ts, the
-// WebSocket a plugin backend opens a terminal through — docs/plugins.md → Host
+// WebSocket a plugin backend opens a terminal through — docs/plugins/runtime.md → Host
 // terminal) owes its client, run against a `local` target by
 // tests/host-terminal-route.test.mjs and against a provider system by
 // tests/host-terminal-route-system.test.mjs.

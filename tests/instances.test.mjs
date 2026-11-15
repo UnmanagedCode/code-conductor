@@ -311,7 +311,7 @@ test('soft interrupt is a no-op when not in a turn', async () => {
   }
 });
 
-// The FORCED half of the same gate. `docs/protocol.md` commits BOTH tiers to
+// The FORCED half of the same gate. `docs/protocol/subprocess.md` commits BOTH tiers to
 // `if (status !== 'turn') return`, and callers rely on it: the resume-restart
 // drain's grace-loop escalation forces every straggler without checking status
 // first, precisely because the callee owns that. The soft half is pinned above;

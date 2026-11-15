@@ -148,7 +148,7 @@ function ConductorBlock({ m, c, open, nested = false, stage = null }: { m: Sideb
             <span className={cn('truncate', untitled && 'italic',
               // A section lead reads as a conducted row, as SessionRow colours one.
               nested ? 'text-info' : untitled && 'text-muted-foreground', active && 'text-foreground',
-              // Selection is the fill and ring above; weight marks unread only (docs/features.md → Selected session).
+              // Selection is the fill and ring above; weight marks unread only (docs/features/sessions.md → Selected session).
               unread > 0 && 'font-semibold')}>
               {text}
             </span>

@@ -57,7 +57,7 @@ const sorted = (a) => a.slice().sort();
 //     never sees it. That is the drift by which `playbookEnforcement` and
 //     `overageStoppedUnarmed` went undocumented.
 // Three surfaces carry this set: this array, the `Excluded on purpose` comment
-// on CONDUCTOR_VIEW_KEYS, and docs/protocol.md → Emitted handles. Of those three
+// on CONDUCTOR_VIEW_KEYS, and docs/protocol/mcp.md → Emitted handles. Of those three
 // surfaces, only this array is pinned — no test reads either prose copy, so
 // adding a name here alone turns the suite green with both stale. Update all
 // three by hand, together.

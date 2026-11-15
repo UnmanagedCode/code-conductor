@@ -2,7 +2,7 @@ import type http from 'node:http';
 import type { Duplex } from 'node:stream';
 
 // The cross-site WebSocket hijacking guard on every upgrade cc accepts.
-// Contract: docs/protocol.md → Handshake: Origin check.
+// Contract: docs/protocol/websocket.md → Handshake: Origin check.
 
 // Distinct refused (Origin, Host) pairs remembered so each warns once; both
 // values are request-chosen, so the memo is bounded (oldest pair evicted).

@@ -2,7 +2,7 @@
 // PUBLIC id (CC_SESSION_ID), its kind (CC_SESSION_KIND, the tool-audience word)
 // and cc's base URL (CONDUCTOR_URL), so a hook or MCP server running inside the
 // session can resolve which cc session it belongs to. Contract:
-// docs/protocol.md → Session identity env.
+// docs/protocol/subprocess.md → Session identity env.
 //
 // Every test plants OUTER values first: the suite usually runs inside a cc
 // worker that carries real ones, and an assertion that a spawn merely inherited

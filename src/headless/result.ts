@@ -1,6 +1,6 @@
 // The headless run's one stdout object and its exit codes — the single source
 // the entry (src/headless/entry.ts), the runner and the docs table read
-// (docs/protocol.md → Headless run result).
+// (docs/protocol/headless.md → Headless run result).
 
 import { constants } from 'node:os';
 import { ROOT_LOCK_HELD_EXIT } from '../rootLock.ts';

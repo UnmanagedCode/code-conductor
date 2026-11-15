@@ -351,7 +351,7 @@ export class ProviderSystem implements System, ShellHost {
   // BEST-EFFORT AND NOT AWAITED: a dead provider would otherwise add an op
   // timeout to the caller's answer for a file that is only litter. What still
   // leaks — a provider dying between the write and the wrapper's `rm` — is a
-  // documented known limitation (docs/plugins.md → Host exec).
+  // documented known limitation (docs/plugins/runtime.md → Host exec).
   #removeStaged(p: string): void {
     this.removeEntry(p).catch((e: unknown) => {
       console.warn(`exec: could not remove staged stdin ${p} on system ${this.id}: ${e instanceof Error ? e.message : String(e)}`);

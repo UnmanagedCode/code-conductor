@@ -278,7 +278,7 @@ test('an unreadable directory is counted and the scan continues', async (t) => {
   }
 });
 
-// PINS: "it runs no `git`" — a guarantee stated in docs/protocol.md and in the
+// PINS: "it runs no `git`" — a guarantee stated in docs/protocol/rest.md and in the
 // module header, and one every other test in this file is blind to, because
 // `stat` and git agree on every fixture shape: a scan that shelled out to
 // `git rev-parse` per candidate would produce byte-identical output and pass

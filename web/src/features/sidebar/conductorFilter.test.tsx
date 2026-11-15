@@ -373,7 +373,7 @@ describe('clearing and falling back', () => {
   });
 
   it('the filter falls back to All while the Conductors lens shows, without waiting for the Projects lens', async () => {
-    // Invariant: the fallback follows the data in either lens (docs/features.md states it unconditionally).
+    // Invariant: the fallback follows the data in either lens (docs/features/sessions.md states it unconditionally).
     const f = fleet();
     seedFleet(f);
     renderSidebar();

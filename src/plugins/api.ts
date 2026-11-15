@@ -40,7 +40,7 @@ export interface PluginLibraryApiLike {
 // server log for every case where a write is declined instead (nothing
 // resolves at all; every slug resolves but none carries a body; or — exactly
 // how e.g. a disable route can reach this — the catalog is degraded while a
-// slug is unresolvable) — see docs/plugins.md's known limitations.
+// slug is unresolvable) — see docs/plugins/rest.md's known limitations.
 async function refreshProjectConventions(): Promise<void> {
   try { await regenerateAllProjectConventions({ log: console }); }
   catch (e) { console.warn('plugins: project CONVENTIONS.md regenerate failed:', e); }

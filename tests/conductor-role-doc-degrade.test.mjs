@@ -383,7 +383,7 @@ describe('the conductor role doc composed over a degraded convention catalog', (
   // during that outage now logs exactly ONE `conductorConventions` line.
   //
   // Asserted through a real spawn rather than a bare compose because the claim
-  // documented in docs/plugins.md is per conductor SPAWN/RESUME, and this is the
+  // documented in docs/plugins/rest.md is per conductor SPAWN/RESUME, and this is the
   // arm where that claim was false.
   //
   // NOT CLAIMING: that an all-seeds-off selection is a common configuration —

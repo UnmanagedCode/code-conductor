@@ -1,4 +1,4 @@
-// Per-API-call context figures for the `call_usage` event (docs/protocol.md).
+// Per-API-call context figures for the `call_usage` event (docs/protocol/ws-events.md).
 //
 // Instance._emitUi drives this from its context latch: each top-level call's
 // message_start hands in the latch's reading from BEFORE that call updates it,

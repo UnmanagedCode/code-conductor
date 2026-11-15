@@ -1,6 +1,6 @@
 // What a plugin's row ⋮ buttons (`menuItems`) do: which groups a scope shows, and
 // the click that opens the plugin's frontend with the row's project (and worktree)
-// in the frame URL's query (docs/plugins.md → menuItems).
+// in the frame URL's query (docs/plugins/manifest.md → menuItems).
 import { openPlugin } from './api';
 import { showLinkInDock } from './dock';
 import { appLabel, type PluginMenuItem, type PluginRow } from './plugins';

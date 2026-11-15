@@ -337,7 +337,7 @@ export async function defaultPlaybookConvention(): Promise<string> {
 // because the flag cannot see whether the conductor scope had anything to lose,
 // and carries no remedy because the two degrade sources clear differently (a
 // compose-sourced one clears itself; a scan-sourced one needs Rescan or
-// disabling the plugin — docs/plugins.md), and the flag carries no cause.
+// disabling the plugin — docs/plugins/manifest.md), and the flag carries no cause.
 //
 // The skills come off the same compose as the text (the core's first), so the
 // role doc and the skills can never come from two different selections.

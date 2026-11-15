@@ -322,7 +322,7 @@ function validateRelativePath(key: string, value: unknown, errors: string[]): st
 // described like an mcp tool: description, inputSchema (required, the tool
 // subset) and an optional outputSchema (the tool rule). A member named like one
 // of this plugin's own mcp tools is refused, so `<id>__<name>` has one meaning.
-// docs/plugins.md → `runCode` is the contract.
+// docs/plugins/manifest.md → `runCode` is the contract.
 const RUN_CODE_MEMBER_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 function validateRunCode(value: unknown, mcp: PluginMcp | null, errors: string[]): PluginManifest['runCode'] | undefined {

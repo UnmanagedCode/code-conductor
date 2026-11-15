@@ -10,7 +10,7 @@
 // set changes (start, exit, TaskStop, stdin-EOF shutdown, a subagent's own
 // background Bash). The one gap is the CLI process dying without a frame, which
 // Instance closes by clearing on exit and on (re)spawn. Wire shapes and the
-// lifecycle table: docs/protocol.md → "Background Bash jobs".
+// lifecycle table: docs/protocol/ws-events.md → "Background Bash jobs".
 
 import { trunc } from './mcp/textRender.ts';
 import { humanizeDuration } from './duration.ts';

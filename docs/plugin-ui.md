@@ -27,7 +27,7 @@ Load both in the page's `<head>`:
 - These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
 - Standalone (not in a frame, or not under `/plugins/<id>/`) the bridge does nothing, and both URLs answer 404 from the plugin's own server.
 - **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL: they are root-relative, so they would resolve to its own server, which answers them 404. It relies on its own fallback theme.
-- Wire detail: [docs/plugins.md](plugins.md) → Bridge protocol, Theme stylesheet.
+- Wire detail: [docs/plugins/runtime.md](plugins/runtime.md) → Bridge protocol, Theme stylesheet.
 
 ## Follow the host theme
 
@@ -55,7 +55,7 @@ Load both in the page's `<head>`:
 - **A root-relative `/api/x` reaches cc's API, not the plugin's.** The page's origin is cc's.
 - **A third-party origin the page talks to directly is the one absolute URL.** Name it in `connect-src` (or the directive for its kind).
 - Examples: `fetch('api/board')`, not `fetch('/api/board')`. A socket: `const u = new URL('ws', location.href); u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'; new WebSocket(u);`
-- Redirects the plugin's backend sends may be root-relative (cc rewrites them): [docs/plugins.md](plugins.md) → Plugin-compliance checklist.
+- Redirects the plugin's backend sends may be root-relative (cc rewrites them): [docs/plugins/tools.md](plugins/tools.md) → Plugin-compliance checklist.
 
 ## Routing that survives the history contract
 
@@ -64,7 +64,7 @@ Load both in the page's `<head>`:
 - **Keep the document at the plugin root.** The page is served at `/plugins/<id>/` inside cc and at `/` standalone; on a deep path, relative URLs resolve against the wrong directory.
 - **Read the route on load and on `popstate`.** cc's `navigate` message arrives as a `popstate`.
 - Example scheme: route state in the query string. Write it with `history.pushState(null, '', '?view=card&id=42')`, read it from `location.search`.
-- **A page opened from a row ⋮ item** gets `ccProject` (and `ccWorktree`) in its query. A `pushState('?…')` of its own replaces them, so keep them if the page needs them, and treat them as untrusted text ([plugins.md](plugins.md) → `menuItems`).
+- **A page opened from a row ⋮ item** gets `ccProject` (and `ccWorktree`) in its query. A `pushState('?…')` of its own replaces them, so keep them if the page needs them, and treat them as untrusted text ([plugins/manifest.md](plugins/manifest.md) → `menuItems`).
 - Two examples for the cases that tempt a hash:
   - **An in-page anchor** (`<a href="#section">`): have its click handler call `preventDefault()` and then `scrollIntoView()` on the target, so the click changes no URL.
   - **A legacy hash URL** (an old bookmark such as `#/card/42`): parse it once on load and `history.replaceState` it into the query form, so the document never keeps a hash.
@@ -90,7 +90,7 @@ Load both in the page's `<head>`:
 An **optional host capability, not a contract requirement**: a plugin that ignores it is fully compliant, and it is not part of the contract checks.
 
 - **Detect it.** `window.ccBridge` is absent standalone and on a cc without these messages. Test for it; never assume it.
-- **API** (wire detail and result codes: [docs/plugins.md](plugins.md) → Bridge protocol):
+- **API** (wire detail and result codes: [docs/plugins/runtime.md](plugins/runtime.md) → Bridge protocol):
   - `ccBridge.session`: `undefined` until cc's first `session` message, then `{sessionId, project, worktree}` or `null`. `worktree` is `null` for the main checkout.
   - `ccBridge.onSession(fn)` → unsubscribe. `fn` runs on every change, and at once if a session message has already arrived.
   - `ccBridge.openSession(sessionId)` → `Promise<{ok, code?}>`: makes a live session the selection. A session that is not live is refused (`SESSION_NOT_LIVE`); cc never resumes one for a plugin.
@@ -111,7 +111,7 @@ An **optional host capability, not a contract requirement**: a plugin that ignor
 ## The embedding frame
 
 - **cc's frame sets no `allow` and no `sandbox` attribute.** A same-origin page keeps the browser's default permission allowlist, so `getUserMedia` and the like work (the browser's own prompt still applies).
-- **A `frontend.keepAlive` page is hidden, not unloaded,** when the user leaves it, and keeps running until Stop, Disable, Restart, Update or a reload ([docs/plugins.md](plugins.md) → Frontend keep-alive).
+- **A `frontend.keepAlive` page is hidden, not unloaded,** when the user leaves it, and keeps running until Stop, Disable, Restart, Update or a reload ([docs/plugins/manifest.md](plugins/manifest.md) → Frontend keep-alive).
   - Create long-lived resources (sockets, `EventSource`, a microphone, an `AudioContext`) once per page load.
   - Release them on your own signals, not because the page was hidden.
 
@@ -127,8 +127,8 @@ What cc runs on Library **Install** and **Update**:
 - **The hook is the catalog entry's command**, run through `bash -lc`, with cc's own environment, with cwd = the checkout. cc runs nothing else: no `npm install`, no `pip install`, no build.
 - **The hook inherits cc's environment**, so a variable set on the cc process (a build-mode or package-manager switch, say) changes what the hook does. A step that depends on one can be skipped or fail under a cc started differently from yours.
 - **Whatever builds the UI (and installs the backend's dependencies) happens in that hook**, so the checkout is servable by the time the plugin first starts. Built output is not tracked in git.
-- **A drop-in catalog JSON sets the hooks itself** (schema: [docs/plugins.md](plugins.md) → Plugin Library). A built-in entry is the authority for its own command: `DEFAULT_ENTRIES` in `src/plugins/library.ts`.
-- **The hook runs code with cc's privileges:** as cc's user with cc's environment. That is the trust the hook itself carries ([docs/plugins.md](plugins.md) → **`postClone`/`postPull` execution**), and it extends to whatever the command runs (lifecycle scripts, dependency install scripts). Add no dependency you would not run as cc.
+- **A drop-in catalog JSON sets the hooks itself** (schema: [docs/plugins/rest.md](plugins/rest.md) → Plugin Library). A built-in entry is the authority for its own command: `DEFAULT_ENTRIES` in `src/plugins/library.ts`.
+- **The hook runs code with cc's privileges:** as cc's user with cc's environment. That is the trust the hook itself carries ([docs/plugins/rest.md](plugins/rest.md) → **`postClone`/`postPull` execution**), and it extends to whatever the command runs (lifecycle scripts, dependency install scripts). Add no dependency you would not run as cc.
 - A failed hook is a warning, not an error: the clone or pull stays. Update is the retry. A failed `postPull` skips the restart.
 - **Start anyway when the UI is not built.** The plugin can still be started after a failed or skipped build, and nothing in cc tells the user the entry file is missing. Have the backend start regardless, log the missing entry file, and keep the API and `healthPath` up.
   - **HTML entry pages** (`/`, `/index.html`, any other `.html` the plugin serves) answer a readable plain-text 503 that says to build or reinstall.
@@ -757,7 +757,7 @@ app.listen(Number(process.env.PORT ?? 4000), '127.0.0.1');
   - answer every other path with a 404, never `index.html`;
   - set the CSP and `nosniff` on every response, whatever its status;
   - while `index.html` is missing, answer HTML entry pages (`/`, `/index.html`, any other `.html` the plugin serves) with a plain-text 503 and every other non-API path with a 404, and keep the API and `healthPath` up.
-- `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins.md](plugins.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins.md`).
+- `$PORT`, `healthPath` and the rest of the backend contract: [docs/plugins/tools.md](plugins/tools.md) → Plugin-compliance checklist (`<cc-checkout>/docs/plugins/tools.md`, or `https://github.com/UnmanagedCode/code-conductor/blob/main/docs/plugins/tools.md`).
 
 ## Reference checks
 

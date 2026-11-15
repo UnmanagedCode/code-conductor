@@ -19,7 +19,7 @@
 // Liveness is answered from InstanceManager.isSessionLive (src/instances.ts) —
 // THE single liveness authority — never from this projection: `session` rows
 // fold to nothing, so a host reboot (an unobserved death, no `exit` row) costs
-// nothing. See docs/protocol.md → Playbooks for the wire contract.
+// nothing. See docs/protocol/playbooks.md → Playbooks for the wire contract.
 
 import type { EventRow } from './eventLog.ts';
 import type { PlaybookBinding } from '../shared/wireRows.ts';

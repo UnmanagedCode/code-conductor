@@ -10,7 +10,7 @@
 // without an `outputSchema` is text-only: the server leaves it out of json
 // format (src/mcp/server.ts composeTools).
 //
-// Wire contract with the child (pinned; docs/plugins.md): POST <endpoint> with
+// Wire contract with the child (pinned; docs/plugins/tools.md): POST <endpoint> with
 // {tool, arguments, caller:{sessionId, project}, format:'text'|'json'} → HTTP
 // 200 for EVERY well-formed tool invocation — unknown tool, bad args and
 // tool-level failures are all 200+{error, code?, details?}. A non-200 from the child

@@ -194,7 +194,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 
 ## Headless runs
 
-One headless cc run ([docs/features.md](../docs/features.md) → Headless mode) in a throwaway container, beside a live `make up` service:
+One headless cc run ([docs/features/conduct.md](../docs/features/conduct.md) → Headless mode) in a throwaway container, beside a live `make up` service:
 
 ```bash
 mkdir -p /abs/headless-root   # a projects root of its own (see below)
@@ -214,7 +214,7 @@ It is `docker compose run --rm -T conductor --prompt …` (`docker/headless.sh`)
 | `CC_HEADLESS_PORT` | Optional. Publishes the run's web UI on `${CC_BIND}:<port>` (stderr names the URL). Unset publishes nothing. |
 
 - **`.env` values.** make keeps a value's surrounding quotes and the space before an inline comment (`CC_PROJECTS_DIR="/home/me/my projects"  # main`); the script strips surrounding whitespace and one matching quote pair from every path, port, bind, mode and `DOCKER_COMPOSE` value it reads — never from the prompt text. A `CC_PROJECTS_DIR` that is set but does not resolve to a directory is refused (exit 2), so the equal / inside / contains guard is never skipped.
-- **Exit codes.** `docker/headless.sh` exits with cc's exact code (the table in [docs/protocol.md](../docs/protocol.md) → Headless run result); `make headless` collapses every failure to make's own 2. Either way the JSON's `exitCode` carries cc's. Call the script directly when you need the code: it reads the same variables, with the prompt text as `CC_HEADLESS_PROMPT` instead of `PROMPT`, plus `CC_PROJECTS_DIR`, `CC_BIND`, `DOCKER_COMPOSE` and `COMPOSE_FILES` (default `-f compose.yaml`) from its environment.
+- **Exit codes.** `docker/headless.sh` exits with cc's exact code (the table in [docs/protocol/headless.md](../docs/protocol/headless.md) → Headless run result); `make headless` collapses every failure to make's own 2. Either way the JSON's `exitCode` carries cc's. Call the script directly when you need the code: it reads the same variables, with the prompt text as `CC_HEADLESS_PROMPT` instead of `PROMPT`, plus `CC_PROJECTS_DIR`, `CC_BIND`, `DOCKER_COMPOSE` and `COMPOSE_FILES` (default `-f compose.yaml`) from its environment.
 - **The web UI during the run.** stderr names `headless: UI at http://<container-ip>:8787` — reachable from a Linux docker host without publishing anything. `compose run` drops the service's `restart:` and publishes none of its ports unless `CC_HEADLESS_PORT` asks.
 - **Off in the run:** tailscale (`CC_WITH_TAILSCALE=0` — a second `tailscaled` on the shared `$HOME/.tailscale` would fight the main node) and the dependency install (`CC_SKIP_DEPS_SYNC=1`: the checkout is shared with the main service, so an incomplete `node_modules` is fatal — run `make up` once first). cc's own headless boot skips the web build too; it serves the existing `web/dist`.
 - **Caveats.** The container IP is reachable from anything on that docker network, and cc's API is unauthenticated. One run per projects root: a second on the same `CC_HEADLESS_PROJECTS_DIR` is refused (exit 7) while the first lives.

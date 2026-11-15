@@ -1541,7 +1541,7 @@ function checkNeedEntry(
 // Only the deny/allow axis is read. A `pin` names argument values of a CALL,
 // and a forward makes no get_recent_messages call to constrain.
 //
-// Run membership is deliberately NOT checked — see protocol.md's known
+// Run membership is deliberately NOT checked — see protocol/playbooks.md's known
 // limitations. freeform declares no `needs`, so its workers are each their own
 // run root and a same-run rule would refuse the fan-out that stage invites.
 //

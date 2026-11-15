@@ -77,7 +77,7 @@ The registry of every environment variable the code reads or sets (`ENV_VARS`: k
 
 ## `src/backgroundJobs.ts`
 
-background Bash jobs, pure (imports only `isDeadStatus` from `src/instanceStatus.ts`): `reconcileBackgroundJobs(prev, tasks, now)` folds a `background_tasks_changed` snapshot into the tracked map (`local_bash` only; null when membership is unchanged or the frame is malformed), `jobLine` / `backgroundJobsNote` render a job and the wake stub's jobs block, `jobWaiters(insts, ownersOf)` is the BFS behind `list()`'s `waitingOnJob` and overage routing's job-waiter test (both via `InstanceManager._jobWaiters()`). Wire shapes: [protocol.md](../protocol.md) → "Background Bash jobs".
+background Bash jobs, pure (imports only `isDeadStatus` from `src/instanceStatus.ts`): `reconcileBackgroundJobs(prev, tasks, now)` folds a `background_tasks_changed` snapshot into the tracked map (`local_bash` only; null when membership is unchanged or the frame is malformed), `jobLine` / `backgroundJobsNote` render a job and the wake stub's jobs block, `jobWaiters(insts, ownersOf)` is the BFS behind `list()`'s `waitingOnJob` and overage routing's job-waiter test (both via `InstanceManager._jobWaiters()`). Wire shapes: [protocol/ws-events.md](../protocol/ws-events.md) → "Background Bash jobs".
 
 ## `web/src/features/dialogs/PathInput.tsx`
 
@@ -90,7 +90,7 @@ the UI event stream's one type, no runtime code. `UiEvent` is a union discrimina
 - **The CLI boundary asserts, it does not check.** A field is typed as its producer emits it. Where the parser holds only an `unknown` CLI value, it asserts the type once, where it builds the event (e.g. `turn_end.stopReason`). A CLI `system` frame passes through whole via `cliSystemEvent` (`src/parser.ts`).
 - **`system` has one `SystemData` interface, not a per-subtype union.** Subtypes are an open set (the parser passes any CLI system frame through), so `SystemData` names every `data` field a consumer reads, each optional.
 - **`ConversationModel.renderEvent` is exhaustive over the union.** Its `default` arm is `ev satisfies never`, so a kind left without a `case` fails `tsc -p web`. At runtime an unknown kind (from a newer server) still reaches `default` and is dropped. Pinned by `web/src/conversation/unknownKind.test.ts`.
-- **Adding a UI event kind:** declare its member in `shared/uiEvent.ts`, add its `case` in `renderEvent` (a no-op `case` if the transcript draws nothing for it), and document it under "UI event kinds" in [protocol.md](../protocol.md).
+- **Adding a UI event kind:** declare its member in `shared/uiEvent.ts`, add its `case` in `renderEvent` (a no-op `case` if the transcript draws nothing for it), and document it under "UI event kinds" in [protocol/ws-events.md](../protocol/ws-events.md).
 
 ## `shared/userQuestionAnswers.ts`
 
@@ -156,11 +156,11 @@ leaf module holding the fixed leads of every server-authored text that reaches a
 
 ## `shared/promptOrigin.ts`
 
-who wrote a user turn, from in-band text shape plus the event flags (no author field exists on any event, frame or record). `isInjectedUserTurn(ev)` is the text/flag rule set `classifyUserTurn` (`src/awaitingUser.ts`) delegates to; `promptOrigin(ev)` → `typed` / `template` / `synthetic` (set by `ConversationModel.renderUserEcho` and rendered as `data-prompt-origin` on every outer user bubble by `web/src/conversation/items.tsx`); `isPinEligible(origin, {conducted})` is the pin rule. The signal table and the stated degradations are in [features.md](../features.md) → Sticky prompt header.
+who wrote a user turn, from in-band text shape plus the event flags (no author field exists on any event, frame or record). `isInjectedUserTurn(ev)` is the text/flag rule set `classifyUserTurn` (`src/awaitingUser.ts`) delegates to; `promptOrigin(ev)` → `typed` / `template` / `synthetic` (set by `ConversationModel.renderUserEcho` and rendered as `data-prompt-origin` on every outer user bubble by `web/src/conversation/items.tsx`); `isPinEligible(origin, {conducted})` is the pin rule. The signal table and the stated degradations are in [features/conversation.md](../features/conversation.md) → Sticky prompt header.
 
 ## `web/src/features/session/SessionWidthHandles.tsx`
 
-the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data-session-handles]`) mounted last inside `SessionView`'s `[data-session-body]`, with a frame carrying the column's `maxWidth` so the strips sit on the column's edges. The drag's room is read once at `pointerdown` from the transcript scroller's `clientWidth` (the basis every box's `100%` resolves against); the live width goes through `sessionWidthDragStore`, and `setSessionWidth` runs once on release. Behaviour: [features.md](../features.md) → Session width.
+the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data-session-handles]`) mounted last inside `SessionView`'s `[data-session-body]`, with a frame carrying the column's `maxWidth` so the strips sit on the column's edges. The drag's room is read once at `pointerdown` from the transcript scroller's `clientWidth` (the basis every box's `100%` resolves against); the live width goes through `sessionWidthDragStore`, and `setSessionWidth` runs once on release. Behaviour: [features/projects.md](../features/projects.md) → Session width.
 
 ## `web/src/app/viewport.ts`
 

@@ -83,7 +83,7 @@ export function createCc(opts: CcOptions): unknown {
 
   // Per namespace and run: the server's lookup, then the module load. Each is
   // memoized, a failure included, so a load failure fails every member of the
-  // namespace. docs/plugins.md → `runCode`.
+  // namespace. docs/plugins/manifest.md → `runCode`.
   interface Info { path: string; baseUrl: unknown; caller: unknown; members: Array<{ name: string; inputSchema: unknown }> }
   const lookups = new Map<string, Promise<Info>>();
   const loads = new Map<string, Promise<Record<string, unknown>>>();

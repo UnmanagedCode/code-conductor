@@ -3,10 +3,8 @@
 // migration-number prefix (migrations/0003 for migrations/0003-x.mjs), or a gitignored output;
 // backticked code-shaped names (CODE_LIKE) must be spelled in some non-doc file, or be listed in
 // NOT_IN_REPO. The name corpus excludes the lint script and its test (SELF). Doc links and their
-// anchors must resolve. Every docs/**/*.md stays within LINE_CAP per line, except that `|` table
-// rows are exempt in the BYTE_CAPS docs, and within DEFAULT_BYTE_CAP (or its BYTE_CAPS ratchet) per
-// file, so one Read call can load it. Every ## heading under docs/components/ is linked from
-// docs/components.md.
+// anchors must resolve. Every docs/**/*.md stays within LINE_CAP per line and DEFAULT_BYTE_CAP per
+// file, so one Read call can load it. Every ## heading of a topic file is linked from its index (INDEXES).
 import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,11 +39,13 @@ export const NOT_IN_REPO = {
 
 export const LINE_CAP = 2000;
 export const DEFAULT_BYTE_CAP = 100000;
-// Docs over the default cap: each is held at its size plus at least 10,000 bytes of headroom, rounded up to the next 10,000 bytes.
-export const BYTE_CAPS = {
-  'docs/features.md': 430000,
-  'docs/protocol.md': 410000,
-  'docs/plugins.md': 140000,
+
+// Each docs index and the dir of the topic files it routes to.
+export const INDEXES = {
+  'docs/components.md': 'docs/components',
+  'docs/protocol.md': 'docs/protocol',
+  'docs/features.md': 'docs/features',
+  'docs/plugins.md': 'docs/plugins',
 };
 
 const PATH_RE = /^(?:server\.ts|(?:src|shared|web|tests|scripts|migrations|conventions|claude-plugin|bin|harness|docker|playbooks|docs)\/[\w.\/@-]*)$/;
@@ -217,25 +217,25 @@ export function lintDocs(root, { allow = NOT_IN_REPO } = {}) {
   for (const f of docs) {
     const body = text.get(f);
     const bytes = Buffer.byteLength(body);
-    const cap = BYTE_CAPS[f] ?? DEFAULT_BYTE_CAP;
-    if (bytes > cap) res.overCap.push({ file: f, text: String(bytes), why: `${bytes} bytes exceeds the ${cap}-byte cap` });
+    if (bytes > DEFAULT_BYTE_CAP) res.overCap.push({ file: f, text: String(bytes), why: `${bytes} bytes exceeds the ${DEFAULT_BYTE_CAP}-byte cap` });
     body.split('\n').forEach((line, i) => {
       if (line.length <= LINE_CAP) return;
-      if (f in BYTE_CAPS && /^\s*\|/.test(line)) return;
       res.longLines.push({ file: f, line: i + 1, text: line.slice(0, 60), why: `${line.length} chars exceeds the ${LINE_CAP}-char line cap` });
     });
   }
 
-  // Components index sync.
-  if (fileSet.has('docs/components.md') || docs.some((d) => d.startsWith('docs/components/'))) {
-    const index = text.get('docs/components.md') ?? '';
+  // Index sync: every ## heading of a topic file is linked from its index.
+  for (const [indexFile, dir] of Object.entries(INDEXES)) {
+    const topics = docs.filter((d) => d.startsWith(`${dir}/`));
+    if (!fileSet.has(indexFile) && !topics.length) continue;
+    const index = text.get(indexFile) ?? '';
     const linked = new Set([...index.matchAll(/\]\(([^)\s]+)\)/g)].map((m) => m[1]));
-    for (const f of docs.filter((d) => d.startsWith('docs/components/'))) {
-      const rel = `components/${path.posix.basename(f)}`;
+    for (const f of topics) {
+      const rel = path.posix.relative(path.posix.dirname(indexFile), f);
       for (const h of anchorsOf(text.get(f)).slugs) {
         const raw = text.get(f).split('\n')[h.line - 1];
         if (!raw.startsWith('## ')) continue;
-        if (!linked.has(`${rel}#${h.slug}`)) res.unindexed.push({ file: f, line: h.line, text: h.heading, why: 'no link in docs/components.md' });
+        if (!linked.has(`${rel}#${h.slug}`)) res.unindexed.push({ file: f, line: h.line, text: h.heading, why: `no link in ${indexFile}` });
       }
     }
   }

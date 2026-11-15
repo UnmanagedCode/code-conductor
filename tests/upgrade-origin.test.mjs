@@ -2,7 +2,7 @@
 // exactly-serialized http(s) Origin has the same host:port as its Host header
 // (scheme ignored, default port dropped, case-folded); everything else is
 // refused. The guard turns a refusal into a raw 403 + destroyed socket and warns
-// once per distinct (Origin, Host) pair. Contract: docs/protocol.md → Handshake: Origin check.
+// once per distinct (Origin, Host) pair. Contract: docs/protocol/websocket.md → Handshake: Origin check.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { upgradeOriginAllowed, createUpgradeOriginGuard, WARNED_PAIRS_CAP, WARN_LIMIT, WARN_WINDOW_MS } from '../src/upgradeOrigin.ts';

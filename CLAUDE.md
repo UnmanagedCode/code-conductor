@@ -5,10 +5,10 @@
 Always read `README.md` at the project root before exploring the codebase. It has up-to-date functional and technical overviews (project list behavior, worktree layout, server architecture, etc.) and will usually answer orientation questions without needing to grep the source.
 
 When `README.md` doesn't go deep enough, load the relevant detail file — every doc named below is a layer under `CONVENTIONS.md`'s "update the most specific file" rule:
-- **Feature / UI behavior** → `docs/features.md`
+- **Feature / UI behavior** → `docs/features.md`, the index into `docs/features/*.md`
 - **The web UI** → `web/`, the React UI served at `/`; its shared client modules are `shared/` files reached through the `@shared/*` alias. Build, mounts and layout: `docs/components/web.md` → `src/webBuild.ts`, `web/`
 - **Backend registry (launch templates + env), custom models, tiers/roles, Claude context windows** → `docs/models.md`
-- **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`
+- **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`, the index into `docs/protocol/*.md`
 - **Code mode — `run_code`, the in-script `cc` API, `describe_tools`, progress/cancel** → `docs/code-mode.md`
 - **`/mcp` as an application API — URL contract (caller in the path, `?format=`), JSON results and `outputSchema`, error channels, REST alias, `CONDUCTOR_MCP_URL`** → `docs/mcp-applications.md`
 - **Instance lifecycle, on-disk state, migrations** → `docs/architecture.md`
@@ -16,7 +16,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Testing — the gate, suites, fakes, test slots** → `docs/testing.md`; systems, FUSE and gated real-dependency suites → `docs/testing-systems.md`; the suite hang guard → `docs/testing-hang-guard.md`
 - **Project name → directory resolution** → `resolveProjectDir` in `src/projectRegistry.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/components/store.md` → `src/projects.ts`
 - **Event log on-disk format (record kinds + fields; plugins read it)** → `docs/event-log.md`
-- **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
+- **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`, the index into `docs/plugins/*.md`
 - **Windows launcher / installer contract (installer itself is the separate code-conductor-windows project)** → `docs/windows.md`
 - **Host-OS differences (spawn options, shell, kill, command splitting, path keys, feature capabilities)** → `Platform` in `src/platform/`; no `process.platform` elsewhere
 - **Project-scoped I/O — git, files in a project tree, commands run in one** → take the project's `System` handle (`src/systems/`) rather than bare `node:fs`/`spawn`; `docs/architecture.md` → Conventions carries the rule and the list of sanctioned exceptions

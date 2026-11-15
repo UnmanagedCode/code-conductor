@@ -309,7 +309,7 @@ test('describe_playbook carries stage/transition descriptions, and omits them wh
 // is `workers: "one"`, so a handler that hardcoded that value would report a
 // fan-out stage as single-worker (a conductor then never fans out) with the whole
 // suite green; and nothing asserted the GRAPH-level description survives the
-// payload at all, though docs/protocol.md says the header carries it. Both are
+// payload at all, though docs/protocol/playbooks.md says the header carries it. Both are
 // pinned on an overlay definition rather than a built-in, so neither depends on
 // the built-ins' editorial content.
 test('describe_playbook renders the graph description and both `workers` values', async () => {

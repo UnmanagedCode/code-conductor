@@ -2,7 +2,7 @@
 
 How a spawn caller's `tier` / `role` becomes a concrete `{backend, model}` pair, and
 how the **backend registry** turns "which command runs `claude`" into user-managed
-data. Wire contracts live in [protocol.md](protocol.md#rest-endpoints); component
+data. Wire contracts live in [protocol/rest-settings.md](protocol/rest-settings.md#rest-endpoints-settings-voice-auth-and-costs); component
 internals in [components.md](components.md).
 
 ## Backends
@@ -27,7 +27,7 @@ fail. Local wrappers such as the built-in `ollama launch claude … --` are
 unaffected. On a **union-bound** spawn (a project on a system) the template's
 first token must additionally resolve on cc's own machine, or the spawn is
 refused by name — see `FUSE_BACKEND_UNRESOLVED` in
-[features.md](features.md).
+[features/projects.md](features/projects.md).
 
 Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 `models.backends`.
@@ -95,7 +95,7 @@ The consequences of being a substitution backend:
   exposed in the Backends UI. Applied *after* the row's `env`, so they win over a
   same-named pair. Scoped to sessions: the one-shot spawners (`sessionOneShot.ts`,
   `claudeShellEnv.ts`) set neither — they run a single short prompt with no
-  conversation to compact. See [protocol.md](protocol.md#subprocess-protocol) for why
+  conversation to compact. See [protocol/subprocess.md](protocol/subprocess.md#subprocess-protocol) for why
   both are needed.
 - **The CLI's model report is ignored entirely** — `_trackModel` never adopts it
   for a substitution backend that has a configured model, whatever it says. The
@@ -220,14 +220,14 @@ The consequences of being a substitution backend:
 - **`launch_failed`** is emitted when the subprocess terminates on its own — it
   died (daemon gone, cloud-auth 401) **or never started at all** (wrapper binary
   missing, where `stderr` is `null` and the reason is on the preceding
-  `spawn_error`) — see [protocol.md](protocol.md#websocket-protocol).
+  `spawn_error`) — see [protocol/ws-events.md](protocol/ws-events.md#websocket-event-payloads).
 - **Off-spec stream framing is coded for, not assumed away.** A gateway may frame a
   content block so its close never reaches the parser — `content_block_start` with no
   `content_block.type`, or a `type` of `"output_text"`: the block opens on its first
   `text_delta` and its `content_block_stop` emits nothing. Unhandled, that makes the soft
   interrupt a no-op against these backends, which is why
   `QuiescenceScan` retires a block on the next `${msgId}:${blockIdx}` key as well as on
-  its own close — see [protocol.md](protocol.md) → Two-tier interrupt. Third coded-for
+  its own close — see [protocol/subprocess.md](protocol/subprocess.md) → Two-tier interrupt. Third coded-for
   off-spec trait alongside the all-zero `message_start.usage` block (above) and the
   wrapper-crash `launch_failed`. There is still **no** per-backend adapter: every
   backend runs the same `claude` CLI, so each such trait is handled once, in the shared
@@ -249,7 +249,7 @@ The consequences of being a substitution backend:
 - **No `cost_usd`** is persisted for its turns (`src/costTracking.ts`): the CLI's
   `total_cost_usd` is Anthropic list pricing applied to someone else's model. Its
   tokens are persisted like a Claude turn's; a turn whose calls reported no cache read
-  persists the estimated split, flagged `cache_estimated` (see protocol.md →
+  persists the estimated split, flagged `cache_estimated` (see protocol/ws-events.md →
   `turn_end.cacheEstimate`).
 - **Own usage-window domain** — `usageDomainOfBackend()` maps `claude` to the
   monitored `anthropic` domain and every other backend to `backend:<its id>`. The
@@ -392,7 +392,7 @@ can only supply the *model*, and only when the row is on that same backend. Per 
 
 No fresh-spawn path on either surface now reaches the CLI's account default: every one either resolves an
 explicit `--model` or refuses. Refusal codes are documented with the endpoint in
-[protocol.md](protocol.md).
+[protocol/rest-instances.md](protocol/rest-instances.md).
 
 **Roles** are a parallel bindable layer under `models.roleBackend`. A role binding is
 **either** a tier reference `{kind:'tier', tier}` — follow whatever that tier points
@@ -411,7 +411,7 @@ at — **or** a concrete `{backend, model}`. The two are told apart by
   reference or `{backend:'claude', model}` — every other backend is **user-local**
   (its rows exist only in this user's settings). A **user override** of a plugin role
   *may* name any backend and is persisted under `models.roleBackend` keyed by the
-  namespaced id, beating the manifest at spawn. See [plugins.md](plugins.md).
+  namespaced id, beating the manifest at spawn. See [plugins/manifest.md](plugins/manifest.md).
 
 **Dead-binding revert.** A valid binding is returned **verbatim** — never silently
 rewritten. Only an invalid one (unknown Claude version, a since-removed model, an
@@ -491,7 +491,7 @@ no-manifest resume — sidebar one-click, anchor auto-resume — which still lan
 `DEFAULT_EFFORT`, because effort is never persisted per session. The debug
 `meta.json` `effort` field is deliberately left alone: it records what the process
 *launched* with. Mechanism + the idle-only refusal:
-[features.md](features.md) → Change effort.
+[features/session-actions.md](features/session-actions.md) → Change effort.
 
 The client **never** resolves this chain. The `/api/settings/models` payload ships
 `tierEffort` (effective, always concrete), `efforts` (the level catalog),
@@ -569,9 +569,9 @@ Never persisted in the session store or the resume manifest — a deleted row de
 `true`, which is what "nothing declared" means.
 
 `false` changes the injection route and the wake route, both documented in
-`docs/protocol.md`: every mid-turn injection site becomes a block-edge stop + fresh turn
+`docs/protocol/subprocess.md`: every mid-turn injection site becomes a block-edge stop + fresh turn
 (`Instance.needsPostStopSteer` → `promptOrQueueSteer` → `queueSteerAfterStop`;
-protocol.md's `user` row lists which sites are routed and which are not), and an
+protocol/subprocess.md's `user` row lists which sites are routed and which are not), and an
 idle wake into that session is held until its own next `turn_end`
 instead of stopping it.
 
@@ -649,7 +649,7 @@ role name, on plugin rows. A plugin role's effort is user-settable like its bind
 persisted under `models.roleEffort` by the namespaced id.
 
 Every mutation is a single request (POST, PATCH or DELETE) that returns the full refreshed state, re-rendered
-immediately — no restart. Endpoints: [protocol.md](protocol.md#rest-endpoints).
+immediately — no restart. Endpoints: [protocol/rest-settings.md](protocol/rest-settings.md#rest-endpoints-settings-voice-auth-and-costs).
 
 **Layout** (`TiersCard`, `RolesCard` and the `WIDE` table in
 `web/src/features/settings/models/ModelsSection.tsx`, which owns the breakpoints). Each list

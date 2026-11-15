@@ -107,7 +107,7 @@ interface McpPluginHostLike {
     handler: (args: unknown, ctx: { callerId: string | null; format: McpFormat; callerKind: CallerKind }) => Promise<unknown>;
   }>;
   // The members plugins provide to run_code programs, and where a plugin's
-  // module is (docs/plugins.md → `runCode`). A host without them stays valid.
+  // module is (docs/plugins/manifest.md → `runCode`). A host without them stays valid.
   runCodeMembers?(): Array<{ id: string; members: RunCodeMember[] }>;
   runCodeModule?(id: string): Promise<
     | { kind: 'ok'; path: string; hasBackend: boolean; members: Array<{ name: string; inputSchema: unknown }> }

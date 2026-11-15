@@ -1166,7 +1166,7 @@ test('no built-in stage denies get_recent_messages, so no built-in forward is re
 
 test('cross-run forwarding is LEGAL, deliberately', () => {
   // A DOCUMENTED LIMITATION, not a bug: "a forward source is checked for
-  // permission, never for run membership" (docs/protocol.md → Playbooks → Known
+  // permission, never for run membership" (docs/protocol/playbooks.md → Playbooks → Known
   // limitations). A same-run rule would refuse the fan-out-and-synthesise
   // pattern a needs-free stage invites, recoverable only by declaring
   // `provenance` at spawn time and never retroactively. Do not "fix" this test.

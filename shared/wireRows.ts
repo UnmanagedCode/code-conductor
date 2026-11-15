@@ -243,7 +243,7 @@ export interface SessionCounts {
 // A worktree of a GET /projects row: its registration, its divergence from its base, its session summary.
 export type WorktreeRow = WorktreeMeta & { mergeStatus: MergeStatus; sessions: SessionCounts };
 
-// A row of GET /projects: the project record plus what the listing measures. docs/protocol.md
+// A row of GET /projects: the project record plus what the listing measures. docs/protocol/rest.md
 // states each field's meaning.
 export type ProjectRow = ProjectInfo & {
   sessionIds: string[];
