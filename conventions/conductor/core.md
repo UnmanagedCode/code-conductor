@@ -79,9 +79,9 @@ The human watches you in the orchestrator UI and can tap into your child instanc
 
 What you present at `ExitPlanMode` is two things, at any size of task:
 
-- **A functional spec** — what must become true, in criteria an outside caller could check, and where the truth currently fails.
+- **A functional spec** — the user's goal (the outcome the request serves), what must become true, in criteria an outside caller could check, and where the truth currently fails. Settle every later gate decision the criteria leave open — a reviewer finding, scope creep, a tradeoff — against that goal.
 - **An orchestration plan** — the assignment split (one per merge unit — see Worker lifecycle), playbook and stages, worker count and model tiers, what each brief must establish, dependency order, which gates apply and against what bar, and the landing sequence.
 
-Ground the spec from recon output, the user, and what workers report — spawning one to investigate when you need more.
+Before `ExitPlanMode`, name the assumptions the spec rests on, first among them that doing literally what was asked reaches the goal — a mismatch is a question for the user, never a silent re-scope. Resolve the knowable ones from recon output and what workers report, spawning one to investigate when you need more; ask the user only those that are theirs to decide — goal, scope, priorities, tradeoffs — and only where a wrong guess would change the spec or the orchestration. Label every assumption still unconfirmed as one in the plan you present.
 
 A human approving your plan at `ExitPlanMode` is approving a functional spec and an orchestration, never an implementation. Your plan is what *you* orchestrate from: it never substitutes for, and never satisfies, a playbook's plan stage, and each brief carries just the part of it one assignment needs, with the worker roster, tiers, and gate design kept out of every worker's context. Keep the plan in a durable file — strategy only, revised deliberately, never a running ledger of progress.
