@@ -7,8 +7,8 @@
   "display": "standalone",
   "launch_handler": { "client_mode": "navigate-existing" },
   "orientation": "portrait-primary",
-  "theme_color": "#11161f",
-  "background_color": "#11161f",
+  "theme_color": "#fcfbfa",
+  "background_color": "#fcfbfa",
   "icons": [
     { "src": "icon.svg", "type": "image/svg+xml", "sizes": "any", "purpose": "any" },
     { "src": "icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },

@@ -47,8 +47,8 @@ export const APP_INKS: Partial<Record<Ink, string>> = {
   tile: 'var(--logo-tile)',
 };
 
-/** The PWA icons' plate, matching the manifest's theme and background colour. */
-export const PWA_BACKGROUND = '#11161f';
+/** The PWA icons' plate: the app's light background, and the manifest's theme and background colour (`tests/pwa-icons.test.mjs` holds them equal). */
+export const PWA_BACKGROUND = '#fcfbfa';
 
 const path = (d: string, ink?: Ink): LogoElement => (ink ? { tag: 'path', attrs: { d }, ink } : { tag: 'path', attrs: { d }, ko: true });
 const ko = (d: string) => path(d);
@@ -235,12 +235,12 @@ export function artToSvgString(art: Art, opts: {
 export const PWA_ICONS = {
   any: { art: 0.8, radius: 0.225 },
   apple: { art: 0.72 },
-  maskable: { art: 0.61 },
+  maskable: { art: 0.72 },
 };
 
-/** A PWA icon's text: the full mark in the dark palette on the manifest's colour. */
+/** A PWA icon's text: the full mark in the light palette on `PWA_BACKGROUND`. */
 export function pwaIconSvg(kind: keyof typeof PWA_ICONS, size: number): string {
-  return artToSvgString(FAV32, { palette: 'dark', size, plate: { fill: PWA_BACKGROUND, ...PWA_ICONS[kind] } });
+  return artToSvgString(FAV32, { palette: 'light', size, plate: { fill: PWA_BACKGROUND, ...PWA_ICONS[kind] } });
 }
 
 /** The exact text of web/public/icon.svg. */

@@ -66,7 +66,8 @@ export const WALKS_REVIEWED = {
   'tests/e2e-harness-credentials.test.mjs': { sites: 'd9f3ee8f ef07bcd0 c47911ee 5141e561 fc4789d4 5141e561 b2474d28', node: [], why: TEMP_ONLY('walks a temp credentials dir') },
   'tests/env-registry.test.mjs': { sites: 'e3fe583e 935aff0a f7ce59a4 6ffffa1d 86e269a3', node: [], why: 'reads docs/environment.md, the docker port pins and web/vite.config.ts by name, which the basename row reaches; its production scan walks through scripts/env-reads.mjs' },
   'tests/web-routes.test.mjs': { sites: '7762d58e aafe3cc9', node: [], why: 'reads pluginBridge.js by its full path, which the closure already follows' },
-  'tests/readme-logo.test.mjs': { sites: '7db18cb7 3524de89 0d3a62ac ae69bdb1', node: [], why: 'reads README.md and docs/assets/*.svg by name; the one web/ path it names is the logoArt.ts import, which the closure already follows' },
+  'tests/readme-logo.test.mjs': { sites: '7db18cb7 3524de89 0d3a62ac ae69bdb1', node: [], why: 'reads README.md and docs/assets/*.svg by name; the logoArt.ts import is the one web/ path whose reach the basename row does not already cover, which the closure already follows' },
+  'tests/pwa-icons.test.mjs': { sites: 'e235db7f 426c0e49 db628c05', node: [], why: 'reads the manifest and icon.svg by name, which the basename row reaches; the logoArt.ts import is the one web/ path whose reach the basename row does not already cover, which the closure already follows' },
   'tests/web-console-guard.test.mjs': { sites: 'c3cac5bc 57bf6791 57bf6791 d8479345', node: [], why: 'reads Vitest\'s report from a temp file; web files it names are named in full' },
   'tests/project-location-records.test.mjs': { sites: '664db8b3 90ccc955', node: [], why: 'copies the real tests/fixtures/session-sample.jsonl, which the basename row and node\'s own tests/ walks already reach; \'web\' is a project name' },
   'tests/harness-mutation-parse.test.mjs': { sites: '3163bb1f 99687694 60a807b0 ad5f09e4', node: [], why: TEMP_ONLY('reads fixtures under tests/ and package.json; web/ names are route globs and temp dirs') },
@@ -78,7 +79,7 @@ export const WALKS_REVIEWED = {
   },
   'web/e2e/harness/boot.ts': { sites: 'aa0206d3 61a09ac6', node: ['web/e2e/fixtures'], why: 'FIXTURES names web/e2e/fixtures; its own read is a temp log' },
   'web/src/conversation/testkit.ts': { sites: '33814713 4e89ed51', web: ['tests/fixtures'], why: 'FIXTURES is tests/fixtures, read through computed names' },
-  'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 6be9e464 29b8a01a f8348029 5568f0f9', node: [], why: FULL_GATE },
+  'tests/changedScope.mjs': { sites: 'b04d40e7 e1618153 1384b122 35c10387 6be9e464 29b8a01a f8348029 29672a0c', node: [], why: FULL_GATE },
   'tests/changed-scope.test.mjs': { sites: 'f95d83a4 0e146f58 9d784053 e7c5322d 12467dd7 55034659 821cbd72 87b80e20 1f8fea67 d6788adc 081e659c 081e659c 0017fecc b23cfe1b 7c2dcb60 71fdd1b7 12f6b5d8 291d57a9 af882457 d6495aa7 9a7a8887 0dc907a7 45e55e8c ff7912b4 48609e11 98c6d0d8 1a35a52c 2cd0aece c162c661 c9a22610 74710671 a4ab583c 002a278d b8eeebc4 99033093 be8ec867 da492361 d4ec334f a2b29e83', node: [], why: FULL_GATE },
 };
 
