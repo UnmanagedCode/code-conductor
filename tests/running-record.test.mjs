@@ -204,6 +204,56 @@ test('a failed start-time read is retried with backoff, a bounded number of time
   never.recorder.stop();
 });
 
+// Invariant (I3): pause() cancels a debounce that is already armed, so nothing
+// is left pending that could write while paused; after resume() a change
+// schedules a fresh debounce and writes once, with the new content.
+test('pause cancels an armed debounce, and a change after resume() schedules a fresh one', async () => {
+  fs.mkdirSync(orchStoreRoot(), { recursive: true });
+  const mgr = fakeManager();
+  const writes = [];
+  const write = (payload) => { writes.push(payload.instances.map((e) => e.sessionId)); writeRunningRecord(payload); };
+  const timers = fakeTimers();
+  const recorder = createRunningRecorder({ instances: mgr, platform: hostPlatform, log: QUIET, debounceMs: 30, write, timers });
+  recorder.start();
+  mgr.byId.set('i1', fakeInst(1));
+  mgr.emit('status');
+  assert.equal(timers.pending(), 1, 'premise: a debounce is armed');
+
+  recorder.pause();
+  assert.equal(timers.pending(), 0, 'pause cancelled the armed debounce');
+  recorder.resume();
+  assert.deepEqual(writes, [[], ['s1']], 'resume wrote the state at once');
+
+  mgr.byId.set('i2', fakeInst(2));
+  mgr.emit('status');
+  assert.equal(timers.pending(), 1, 'a change after resume armed a fresh debounce');
+  await timers.runAll();
+  assert.deepEqual(writes, [[], ['s1'], ['s1', 's2']], 'exactly one write, with the new content');
+  assert.equal(timers.pending(), 0);
+  recorder.stop();
+});
+
+// Invariant (I3): stop() clears start-time retries that are armed, so no read
+// happens after it.
+test('stop clears an armed start-time retry', async () => {
+  fs.mkdirSync(orchStoreRoot(), { recursive: true });
+  const mgr = fakeManager();
+  mgr.byId.set('i1', { ...fakeInst(1), pid: 4242, _fuse: null });
+  let reads = 0;
+  const platform = { ...hostPlatform, processStartTime: async () => { reads++; return null; } };
+  const timers = fakeTimers();
+  const recorder = createRunningRecorder({ instances: mgr, platform, log: QUIET, debounceMs: DEBOUNCE_MS, startRetryMs: 5, timers });
+  recorder.start();
+  await new Promise((r) => setImmediate(r)); // the failed read settles and arms its retry
+  assert.equal(reads, 1, 'premise: one read, failed');
+  assert.ok(timers.pending() >= 1, 'premise: a retry is armed');
+
+  recorder.stop();
+  assert.equal(timers.pending(), 0, 'stop cleared the armed retry');
+  await timers.runAll();
+  assert.equal(reads, 1, 'no read happened after stop');
+});
+
 // Invariant: every live CLI the launcher spawned gets one row — top-level,
 // conducted and pristine alike — and a FUSE-wrapped one or one with no pid none.
 test('clis rows: one per live pid, FUSE-wrapped and pid-less instances excluded', () => {

@@ -750,3 +750,40 @@ test('quiesce waits for a settle-driven delivery', async () => {
   assert.equal(P.calls.length, 1, 'the settle fired and its wake landed before quiesce returned');
   await r.teardown();
 });
+
+// Invariant (I1): quiesce() holds while a park backstop is pending — the wake was
+// sent into a running turn the CLI may queue — and resolves once the backstop has
+// released the hold. The backstop timer is captured through the hub's `_setTimer`
+// seam and fired by hand; the wait is counted by the polls of `_inFlight`, which
+// the predicate reads on every attempt.
+test('quiesce waits for a pending park backstop, then resolves once it releases', async () => {
+  const r = rig();
+  const timers = [];
+  r.hub._setTimer = (fn) => { const h = { fn }; timers.push(h); return h; };
+  r.hub._clearTimer = () => {};
+  const P = r.mk('P', { status: 'turn', queuedPromptPending: false }), W = r.mk('W');
+  P.prompt = async (text, _atts, opts) => { P.calls.push({ text, opts }); P.queuedPromptPending = true; };
+  r.own(P, W); r.start(W);
+  r.end(W); // the wake goes into P's running turn and parks
+  await waitFor(() => P.calls.length === 1, { interval: 2 });
+  await waitFor(() => r.hub._parked.has('P'), { interval: 2, label: 'the wake to park' });
+  P.status = 'idle';
+  r.emit(P, { kind: 'turn_end', isError: false, stopReason: 'end_turn' }); // arms the backstop
+  assert.equal(timers.length, 1, 'premise: the backstop is armed');
+  assert.equal(r.hub._parkTimers.size, 1, 'premise: it is tracked');
+
+  let polls = 0;
+  const inFlight = r.hub._inFlight;
+  Object.defineProperty(inFlight, 'size', { get() { polls++; return Map.prototype.__lookupGetter__('size').call(inFlight); } });
+  let resolved = false;
+  const q = r.quiesce().then(() => { resolved = true; });
+  await waitFor(() => polls >= 3, { interval: 2, label: 'quiesce to poll the pending backstop' });
+  assert.equal(resolved, false, 'quiesce does not resolve while the backstop is pending');
+
+  timers[0].fn(); // the backstop releases the parked hold
+  await q;
+  assert.equal(r.hub._parkTimers.size, 0, 'the backstop is gone');
+  assert.equal(r.hub._parked.has('P'), false, 'the hold was released');
+  assert.equal(P.calls.length, 1, 'the parked wake had been delivered');
+  await r.teardown();
+});
