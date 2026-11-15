@@ -358,7 +358,7 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
     }
     return true;
   } catch (e) {
-    console.warn('auto-resume from anchor failed', e);
+    console.warn('opening session from anchor failed', e);
     if (overtaken()) return true;
     clear();
     return false;

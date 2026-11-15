@@ -216,7 +216,7 @@ describe('restoring the URL-named session on first connect', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     lookup.release(new Error('offline'));
     await b.settle();
-    expect(warn).toHaveBeenCalledExactlyOnceWith('auto-resume from anchor failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
+    expect(warn).toHaveBeenCalledExactlyOnceWith('opening session from anchor failed', expect.objectContaining({ message: SERVER_UNREACHABLE_MESSAGE }));
     expect(location.hash).toBe('#session=s-b');
     expect(b.active()).toBe('iB');
     expect(b.subscribes()).toEqual(['iB']);
