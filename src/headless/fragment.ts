@@ -1,7 +1,7 @@
 // The headless run's two prompt texts. Prepended to the root conductor's first
 // prompt and nowhere else: the role doc is shared by every conductor, section
 // leads included, so the root's first turn is the only channel that reaches the
-// root alone (docs/features.md → Headless mode).
+// root alone (docs/features/conduct.md → Headless mode).
 
 export const HEADLESS_FRAGMENT = `[Headless run] No person is attached to this session, and none will read or answer anything before the run ends.
 - Never ask: no AskUserQuestion, no closing question or offer. Where you would ask, choose what best serves the request, state the assumption in one line, and continue.

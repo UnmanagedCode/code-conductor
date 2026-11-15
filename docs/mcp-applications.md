@@ -1,6 +1,6 @@
 # `/mcp` for applications
 
-cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features.md → MCP interface](features.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol/mcp.md → MCP tool protocol](protocol/mcp.md#mcp-tool-protocol).
+cc's MCP server is an application API as well as an agent toolbelt. A script, a plugin backend or a worker's own tooling calls the same tools a conductor does (those its audience admits) and gets **structured JSON** back. The tool catalog is in [features/mcp.md → MCP interface](features/mcp.md#mcp-interface); the agent-facing wire details (prefix resolution, the result budget, the rendered read results, playbooks) are in [protocol/mcp.md → MCP tool protocol](protocol/mcp.md#mcp-tool-protocol).
 
 Router: `buildMcpRouter` in `src/mcp/server.ts`, mounted at `/mcp` by `server.ts`.
 

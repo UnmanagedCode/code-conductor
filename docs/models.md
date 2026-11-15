@@ -27,7 +27,7 @@ fail. Local wrappers such as the built-in `ollama launch claude … --` are
 unaffected. On a **union-bound** spawn (a project on a system) the template's
 first token must additionally resolve on cc's own machine, or the spawn is
 refused by name — see `FUSE_BACKEND_UNRESOLVED` in
-[features.md](features.md).
+[features/projects.md](features/projects.md).
 
 Record: `{ id, label, template, env: [{key,value}], managed }`, persisted as
 `models.backends`.
@@ -491,7 +491,7 @@ no-manifest resume — sidebar one-click, anchor auto-resume — which still lan
 `DEFAULT_EFFORT`, because effort is never persisted per session. The debug
 `meta.json` `effort` field is deliberately left alone: it records what the process
 *launched* with. Mechanism + the idle-only refusal:
-[features.md](features.md) → Change effort.
+[features/session-actions.md](features/session-actions.md) → Change effort.
 
 The client **never** resolves this chain. The `/api/settings/models` payload ships
 `tierEffort` (effective, always concrete), `efforts` (the level catalog),

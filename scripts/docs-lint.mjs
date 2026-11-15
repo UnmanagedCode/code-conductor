@@ -51,6 +51,7 @@ export const BYTE_CAPS = {
 export const INDEXES = {
   'docs/components.md': 'docs/components',
   'docs/protocol.md': 'docs/protocol',
+  'docs/features.md': 'docs/features',
 };
 
 const PATH_RE = /^(?:server\.ts|(?:src|shared|web|tests|scripts|migrations|conventions|claude-plugin|bin|harness|docker|playbooks|docs)\/[\w.\/@-]*)$/;

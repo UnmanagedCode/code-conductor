@@ -26,7 +26,7 @@ Builds the inline `--settings` JSON. Pure values → JSON string; no Instance st
 
 ## `src/coreClaudePlugin.ts`
 
-cc's built-in Claude Code plugin root (core skills, [features.md → Core skills](../features.md#core-skills)): `CORE_CLAUDE_PLUGIN_ROOT` (`<selfProjectDir>/claude-plugin`) and `withCoreClaudePlugin(coreRoot, pluginDirs)`, which prepends the root when its `.claude-plugin/plugin.json` exists and otherwise warns and returns `pluginDirs`. Composed in `InstanceManager._doCreateResolved` outside the plugin resolver's try, from `InstanceManager._coreClaudePluginRoot` (a test seam defaulting to the constant). Bare `node:fs`: the root is under cc's own checkout, not a project tree.
+cc's built-in Claude Code plugin root (core skills, [features/mcp.md → Core skills](../features/mcp.md#core-skills)): `CORE_CLAUDE_PLUGIN_ROOT` (`<selfProjectDir>/claude-plugin`) and `withCoreClaudePlugin(coreRoot, pluginDirs)`, which prepends the root when its `.claude-plugin/plugin.json` exists and otherwise warns and returns `pluginDirs`. Composed in `InstanceManager._doCreateResolved` outside the plugin resolver's try, from `InstanceManager._coreClaudePluginRoot` (a test seam defaulting to the constant). Bare `node:fs`: the root is under cc's own checkout, not a project tree.
 
 ## `src/transcript.ts`
 
@@ -220,7 +220,7 @@ image header sniffing and Anthropic's vision token cost, for Prune's estimator. 
 
 ## `src/idleRenewNudge.ts`
 
-`IdleRenewNudgeController`, the opt-in idle-renewal nudge composed by `InstanceManager` (behaviour: [features.md](../features.md) → Conduct mode → Idle renewal nudge).
+`IdleRenewNudgeController`, the opt-in idle-renewal nudge composed by `InstanceManager` (behaviour: [features/conduct.md](../features/conduct.md) → Conduct mode → Idle renewal nudge).
 State is an in-memory `instanceId → {since, spent}` stretch map; turn origin lives on `Instance` (see "Nudge-chain turns" under Instance lifecycle).
 `onEvent` (non-replayed events) opens a stretch at a top-level conductor's `turn_end` unless `lastTurnEndWasNudgeChain`.
 One shared `.unref()`'d wall-clock `setInterval` (`IDLE_NUDGE_SWEEP_MS`) runs only while the setting is on, the controller is not suspended and a stretch is unspent.

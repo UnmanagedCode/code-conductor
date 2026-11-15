@@ -5655,7 +5655,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
           why: "this session's own tmp dir (CLAUDE_CODE_TMPDIR), per-session by construction" },
         // Plan mode's `Write` lands under here (src/planFile.ts), so a deny
         // breaks plan mode outright for every remote-backed worker. RESIDUAL,
-        // ACCEPTED AND RECORDED (docs/features.md): the directory accumulates
+        // ACCEPTED AND RECORDED (docs/features/projects.md): the directory accumulates
         // other sessions' plan files and cannot be narrowed to "its own" ahead
         // of the write, because the CLI chooses the filename. Longer than the
         // `~/.claude` deny below, so longest-prefix lets it through.
@@ -5676,7 +5676,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
         // The HOST's config dir, still reachable by name through the farm's
         // symlinks. Plan mode does not write here any more, but the
         // orchestrator forwards plan paths under it between sessions, so the
-        // allow stays — with the residual recorded in docs/features.md.
+        // allow stays — with the residual recorded in docs/features/projects.md.
         { prefix: path.join(claudeConfigDir(), 'plans'), access: 'allow',
           why: "a plan file forwarded from another session lives here" },
         { prefix: claudeConfigDir(), access: 'deny',

@@ -1,7 +1,7 @@
 # Protocol: the headless run result
 
 ## Headless run result
-A headless run (`node server.ts --prompt …`, [features.md](../features.md) → Headless mode) writes **exactly one JSON object, on one line, to stdout** — on every outcome, usage errors and unexpected failures included — and exits with its `exitCode`. Everything else the process prints goes to stderr. Built by `formatResult` (`src/headless/result.ts`).
+A headless run (`node server.ts --prompt …`, [features/conduct.md](../features/conduct.md) → Headless mode) writes **exactly one JSON object, on one line, to stdout** — on every outcome, usage errors and unexpected failures included — and exits with its `exitCode`. Everything else the process prints goes to stderr. Built by `formatResult` (`src/headless/result.ts`).
 
 ```json
 {"reason":"completed","exitCode":0,"sessionId":"…","text":"…","costUsd":0.0123,"durationMs":84211,"error":null}

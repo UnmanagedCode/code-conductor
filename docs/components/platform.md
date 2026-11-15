@@ -156,11 +156,11 @@ leaf module holding the fixed leads of every server-authored text that reaches a
 
 ## `shared/promptOrigin.ts`
 
-who wrote a user turn, from in-band text shape plus the event flags (no author field exists on any event, frame or record). `isInjectedUserTurn(ev)` is the text/flag rule set `classifyUserTurn` (`src/awaitingUser.ts`) delegates to; `promptOrigin(ev)` → `typed` / `template` / `synthetic` (set by `ConversationModel.renderUserEcho` and rendered as `data-prompt-origin` on every outer user bubble by `web/src/conversation/items.tsx`); `isPinEligible(origin, {conducted})` is the pin rule. The signal table and the stated degradations are in [features.md](../features.md) → Sticky prompt header.
+who wrote a user turn, from in-band text shape plus the event flags (no author field exists on any event, frame or record). `isInjectedUserTurn(ev)` is the text/flag rule set `classifyUserTurn` (`src/awaitingUser.ts`) delegates to; `promptOrigin(ev)` → `typed` / `template` / `synthetic` (set by `ConversationModel.renderUserEcho` and rendered as `data-prompt-origin` on every outer user bubble by `web/src/conversation/items.tsx`); `isPinEligible(origin, {conducted})` is the pin rule. The signal table and the stated degradations are in [features/conversation.md](../features/conversation.md) → Sticky prompt header.
 
 ## `web/src/features/session/SessionWidthHandles.tsx`
 
-the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data-session-handles]`) mounted last inside `SessionView`'s `[data-session-body]`, with a frame carrying the column's `maxWidth` so the strips sit on the column's edges. The drag's room is read once at `pointerdown` from the transcript scroller's `clientWidth` (the basis every box's `100%` resolves against); the live width goes through `sessionWidthDragStore`, and `setSessionWidth` runs once on release. Behaviour: [features.md](../features.md) → Session width.
+the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data-session-handles]`) mounted last inside `SessionView`'s `[data-session-body]`, with a frame carrying the column's `maxWidth` so the strips sit on the column's edges. The drag's room is read once at `pointerdown` from the transcript scroller's `clientWidth` (the basis every box's `100%` resolves against); the live width goes through `sessionWidthDragStore`, and `setSessionWidth` runs once on release. Behaviour: [features/projects.md](../features/projects.md) → Session width.
 
 ## `web/src/app/viewport.ts`
 

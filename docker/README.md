@@ -194,7 +194,7 @@ Also needed but not probed: `awk`, `sed`, `tr`, `head`, `printf`, `readlink` —
 
 ## Headless runs
 
-One headless cc run ([docs/features.md](../docs/features.md) → Headless mode) in a throwaway container, beside a live `make up` service:
+One headless cc run ([docs/features/conduct.md](../docs/features/conduct.md) → Headless mode) in a throwaway container, beside a live `make up` service:
 
 ```bash
 mkdir -p /abs/headless-root   # a projects root of its own (see below)

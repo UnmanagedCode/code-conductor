@@ -5,7 +5,7 @@
 Always read `README.md` at the project root before exploring the codebase. It has up-to-date functional and technical overviews (project list behavior, worktree layout, server architecture, etc.) and will usually answer orientation questions without needing to grep the source.
 
 When `README.md` doesn't go deep enough, load the relevant detail file — every doc named below is a layer under `CONVENTIONS.md`'s "update the most specific file" rule:
-- **Feature / UI behavior** → `docs/features.md`
+- **Feature / UI behavior** → `docs/features.md`, the index into `docs/features/*.md`
 - **The web UI** → `web/`, the React UI served at `/`; its shared client modules are `shared/` files reached through the `@shared/*` alias. Build, mounts and layout: `docs/components/web.md` → `src/webBuild.ts`, `web/`
 - **Backend registry (launch templates + env), custom models, tiers/roles, Claude context windows** → `docs/models.md`
 - **Subprocess protocol, WebSocket messages, REST endpoints** → `docs/protocol.md`, the index into `docs/protocol/*.md`

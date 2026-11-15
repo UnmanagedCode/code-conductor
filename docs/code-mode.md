@@ -2,7 +2,7 @@
 
 One core MCP tool, `run_code`, runs an agent-written JavaScript function body in a Node child process. The child's `cc` object calls back into cc **as the calling session**, so every call it makes into cc's tools goes through the same `runTool` gate (argument validation, prefix resolution, playbook policy, event log) as a direct call. The agent chains or batches calls, filters or aggregates the results, and returns only the digest.
 
-Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the child, `describeTools.ts`, `tsSignature.ts` + `typeModel.ts`, `precheck.ts`, `runs.ts`, `progressPump.ts`, `limits.ts`), `src/mcp/callStream.ts` (the SSE writer) and the run channel in `src/mcp/server.ts`. The skill that teaches when to use it is `code-conductor:scripting` ([features.md → Core skills](features.md#core-skills)). Tests: `tests/run-code*.test.mjs` (plugin-provided names: `tests/run-code-modules.test.mjs`, `tests/plugins-run-code-module.test.mjs`), `tests/code-mode-*.test.mjs`.
+Code: `src/codeMode/` (`runCode.ts` the tool, `runtime.ts` + `runtimeApi.ts` the child, `describeTools.ts`, `tsSignature.ts` + `typeModel.ts`, `precheck.ts`, `runs.ts`, `progressPump.ts`, `limits.ts`), `src/mcp/callStream.ts` (the SSE writer) and the run channel in `src/mcp/server.ts`. The skill that teaches when to use it is `code-conductor:scripting` ([features/mcp.md → Core skills](features/mcp.md#core-skills)). Tests: `tests/run-code*.test.mjs` (plugin-provided names: `tests/run-code-modules.test.mjs`, `tests/plugins-run-code-module.test.mjs`), `tests/code-mode-*.test.mjs`.
 
 ## Tool
 
@@ -125,7 +125,7 @@ All in `src/codeMode/limits.ts`.
 | `PROGRESS_HEARTBEAT_MS`, `PROGRESS_MIN_INTERVAL_MS`, `PROGRESS_LINE_CAP` | progress cadence, below |
 
 - **Why the server timeout exists.** Claude Code aborts an HTTP MCP request whose response headers have not arrived within the per-server `timeout` (60 s when none is set) and treats it as a hard wall-clock limit per call. cc's entry sets it above the longest call cc holds open, so cc's own timeout always fires first and answers `timedOut`. It also covers `project_bash` past 60 s.
-- **Backgrounding is opt-in.** By default a `run_code` call holds its caller's turn until it returns, is cancelled or times out. With the **MCP auto-background** toggle on (Settings → Models, off by default), cc launches workers with `CLAUDE_AUTO_BACKGROUND_TASKS` and a threshold: a `run_code` call still running at the threshold is moved to the background, the worker's turn ends, and the worker is re-invoked when the call finishes. The conductor's own calls are never backgrounded. Details and known limitations: the **MCP auto-background** card under Settings page → Models in [features.md](features.md).
+- **Backgrounding is opt-in.** By default a `run_code` call holds its caller's turn until it returns, is cancelled or times out. With the **MCP auto-background** toggle on (Settings → Models, off by default), cc launches workers with `CLAUDE_AUTO_BACKGROUND_TASKS` and a threshold: a `run_code` call still running at the threshold is moved to the background, the worker's turn ends, and the worker is re-invoked when the call finishes. The conductor's own calls are never backgrounded. Details and known limitations: the **MCP auto-background** card under Settings page → Models in [features/settings.md](features/settings.md).
 
 ## Plan mode
 

@@ -152,7 +152,7 @@ At **every** claude launch — interactive sessions and MCP-spawned workers alik
 **Existence is validated at launch/resolve time, not load:** if `{resolved}/.claude-plugin/plugin.json` is missing/unreadable the flag is **dropped with a loud `console.warn`** (never silently, and the session still launches) — it does **not** invalidate the plugin.
 Absent field → no flag.
 **A plugin whose PROJECT is on a non-`local` system contributes no flag at all** (`PLUGIN_DIR_LOCAL_ONLY`): `--plugin-dir` takes an absolute LOCAL directory, and passing the remote path through would load whatever sits at that path on cc's own machine into every session.
-**Plugin roots follow cc's built-in root** (`--plugin-dir <cc>/claude-plugin` comes first — [features.md → Core skills](features.md#core-skills)).
+**Plugin roots follow cc's built-in root** (`--plugin-dir <cc>/claude-plugin` comes first — [features/mcp.md → Core skills](features/mcp.md#core-skills)).
 **A same-name collision is unhandled:** a plugin root whose `.claude-plugin/plugin.json` `name` equals the built-in root's (`code-conductor`) is passed through alongside it, and how the CLI resolves two same-named roots is unmeasured.
 Additive, no migration.
 Resolved+frozen per session at create (mirrors the MCP-config wiring), so a plugin enabled mid-session is picked up on the next spawn, not a bare respawn.
