@@ -107,15 +107,24 @@ test('the line cap applies to every line of every doc, table rows included', () 
   const row = `| ${'x'.repeat(2001)} |`;
   assert.equal(lintFixture({ 'docs/a.md': 'y'.repeat(2001) }).longLines.length, 1);
   assert.equal(lintFixture({ 'docs/a.md': 'y'.repeat(2000) }).longLines.length, 0);
-  assert.equal(lintFixture({ 'docs/protocol.md': row }).longLines.length, 1);
   assert.equal(lintFixture({ 'docs/other.md': row }).longLines.length, 1);
+  // No formerly ratcheted doc keeps a table-row exemption.
+  for (const f of ['docs/protocol.md', 'docs/features.md', 'docs/plugins.md']) {
+    assert.equal(lintFixture({ [f]: row }).longLines.length, 1, f);
+  }
 });
 
 test('the byte cap is 100,000 for every doc', () => {
   const lines = (n) => `${'z'.repeat(99)}\n`.repeat(Math.ceil(n / 100));
   assert.equal(lintFixture({ 'docs/a.md': lines(100100) }).overCap.length, 1);
   assert.equal(lintFixture({ 'docs/a.md': lines(99900) }).overCap.length, 0);
-  assert.equal(lintFixture({ 'docs/features.md': lines(100100) }).overCap.length, 1);
+  // Exactly 100,000 bytes is within the cap.
+  assert.equal(Buffer.byteLength(lines(100000)), 100000);
+  assert.equal(lintFixture({ 'docs/a.md': lines(100000) }).overCap.length, 0);
+  // No formerly ratcheted doc keeps a larger cap.
+  for (const f of ['docs/protocol.md', 'docs/features.md', 'docs/plugins.md']) {
+    assert.equal(lintFixture({ [f]: lines(100100) }).overCap.length, 1, f);
+  }
 });
 
 test('every components heading must be linked from the components index', () => {
