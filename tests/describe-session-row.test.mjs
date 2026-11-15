@@ -136,9 +136,23 @@ test('legacy full-UUID public id, superseded newer → superseded row', async ()
 });
 
 // Step B: helper-level (namespace import: a missing export must not red the file at load).
-test('sessionRowForCwd returns null for a located id whose file is gone', async () => {
+// INVARIANT: a handle whose current segment's transcript is gone has no row, and
+// describe_session answers with its degraded outcome (the fall-through past the
+// retired branch), not a row built from a superseded segment or a thrown error.
+// Old path: no row either way — the superseded segment's row id is its filename,
+// not the handle, so the listing's `find` missed it too.
+test('describe_session of a handle whose current segment transcript is gone falls through', async () => {
   const { place } = await fixture('gone');
-  assert.equal(await projects.sessionRowForCwd(place, sid()), null);
+  const first = sid(); const second = sid();
+  await seedSessionJsonl(place, first, [user('go'), done('m1', 1)]);
+  const publicId = await mintPublicId(first);
+  await recordRotation(publicId, second, 'renew'); // `second` is never seeded
+  assert.ok(await projects.findSessionLocation(publicId), 'premise: the handle is located (via its older segment)');
+  assert.equal(await projects.sessionRowForCwd(place, publicId), null, 'no row for the handle');
+  const res = await describeSession({ sessionId: publicId }, {});
+  assert.equal(res.json?.retired, undefined, 'no retired row');
+  assert.equal(res.ok, false);
+  assert.equal(res.code, 'SESSION_UNKNOWN');
 });
 test('sessionRowForCwd(place, <current backing sid>) is null: a backing id names no row', async () => {
   const { place } = await fixture('backing');

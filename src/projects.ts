@@ -424,7 +424,7 @@ export async function sessionRowForCwd(place: TranscriptPlacement, sessionId: st
   const rows: SessionRow[] = [];
   for (const sid of candidates) {
     if (!sid || isMintedPublicId(sid) || projectRowId(sid, scan.index) !== sessionId) continue;
-    const full = path.join(scan.dir, sid + '.jsonl');
+    const full = path.join(scan.dir, sessionFileName(sid));
     const stat = await transcriptStat(full);
     if (!stat) continue;
     rows.push(await buildSessionRow(scan, sid, full, stat, fileFacts(scan.index, sid), { deriveArchived: true }));
