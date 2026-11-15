@@ -16,6 +16,7 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { InstanceManager } from '../src/instances.ts';
 import { parseWakeCallback } from '../shared/wakeCallback.ts';
+import { waitFor } from './poll.mjs';
 
 const instances = new InstanceManager();
 after(() => instances.shutdown().catch(() => {}));
@@ -66,6 +67,15 @@ const emit = (id, ev) => instances.emit('event', { id, ev });
 const emitTurnEnd = (id) => emit(id, { kind: 'turn_end', isError: false, stopReason: 'end_turn' });
 const emitSteerSettled = (id) => emit(id, { kind: 'system', subtype: 'steer_settled', data: {} });
 const tick = () => new Promise(r => setTimeout(r, 20));
+// A delivered wake has LANDED: first its positive signal, then no wake to
+// `recipient` still in flight (deliver() sets _inFlight synchronously and
+// clears it after prompt() resolves or the wake is requeued). Never the drain
+// alone — before the wake is decided the drain is vacuously true. An exact
+// count after this reads "no duplicate by drain time", not "never" (card 2026-0872).
+async function landed(hub, positive, recipient) {
+  await waitFor(positive, { interval: 2 });
+  await waitFor(() => !hub._inFlight.has(recipient), { interval: 2 });
+}
 
 function inject(...insts) { for (const i of insts) instances.byId.set(i.id, i); }
 function cleanup(...insts) {
@@ -91,7 +101,7 @@ test('a flagged, mid-turn conductor gets NOTHING now and exactly one folded wake
   // The conductor finishes its own turn — now it can receive.
   cond.status = 'idle';
   emitTurnEnd('c1');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c1');
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once');
   const stub = stubOf(cond._promptCalls[0]);
   assert.ok(stub, 'still a wake-callback stub');
@@ -112,7 +122,7 @@ test('an UNFLAGGED mid-turn conductor is unchanged: a live plain-stub injection'
   armWake('cs2', 'ws2');
 
   emitTurnEnd('w2');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c2');
   assert.equal(cond._promptCalls.length, 1, 'delivered live into the running turn');
   assert.equal(stubOf(cond._promptCalls[0]).body, '', 'the plain pointer stub, not a fold');
   assert.equal(cond._promptCalls[0].opts.annotateIfMidTurn, false);
@@ -127,11 +137,11 @@ test('a held wake whose worker went busy again is MARKED stale, not folded and n
   armWake('cs3', 'ws3');
 
   emitTurnEnd('w3');
-  await tick();
+  assert.equal(instances._idleHub._deferredWakes.get('c3')?.length, 1, 'premise: the wake is held for c3');
   work.status = 'turn';          // the worker picked up new work while we waited
   cond.status = 'idle';
   emitTurnEnd('c3');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c3');
 
   assert.equal(cond._promptCalls.length, 1, 'marked, never dropped — the conductor may be blocked on it');
   const stub = stubOf(cond._promptCalls[0]);
@@ -146,7 +156,7 @@ test('a held wake for a conductor that dies is dropped silently', async () => {
   inject(cond, work);
   armWake('cs4', 'ws4');
   emitTurnEnd('w4');
-  await tick();
+  assert.equal(instances._idleHub._deferredWakes.get('c4')?.length, 1, 'premise: the wake is held for c4');
 
   cond.proc = null;
   emitTurnEnd('c4');
@@ -164,7 +174,7 @@ test('a wake held behind a queued steer waits for the steered turn, then lands o
   inject(cond, work);
   armWake('cs5', 'ws5');
   emitTurnEnd('w5');
-  await tick();
+  assert.equal(instances._idleHub._deferredWakes.get('c5')?.length, 1, 'premise: the wake is held for c5');
 
   // The conductor's turn ends, but a steer is parked on it — its own fresh turn
   // is a microtask away, so delivering here would race a second prompt().
@@ -176,7 +186,7 @@ test('a wake held behind a queued steer waits for the steered turn, then lands o
 
   cond.steerPending = false;
   emitTurnEnd('c5');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c5');
   assert.equal(cond._promptCalls.length, 1, 'delivered at the steered turn\'s end');
   cleanup(cond, work);
 });
@@ -190,7 +200,7 @@ test('a steer that settles with no turn at all still flushes the held wake', asy
   inject(cond, work);
   armWake('cs6', 'ws6');
   emitTurnEnd('w6');
-  await tick();
+  assert.equal(instances._idleHub._deferredWakes.get('c6')?.length, 1, 'premise: the wake is held for c6');
 
   cond.steerPending = true;
   cond.status = 'idle';
@@ -200,7 +210,7 @@ test('a steer that settles with no turn at all still flushes the held wake', asy
 
   cond.steerPending = false;     // the queue drained without starting a turn
   emitSteerSettled('c6');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c6');
   assert.equal(cond._promptCalls.length, 1, 'the wake is not stranded');
   cleanup(cond, work);
 });
@@ -220,7 +230,7 @@ test('a worker with a steer parked does NOT consume its subscription at that tur
 
   work.steerPending = false;
   emitTurnEnd('w7');             // the steered turn's real end
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c7');
   assert.equal(cond._promptCalls.length, 1, 'delivered exactly once, one turn later');
   assert.equal(instances._idleHub.hasArmedWake('w7'), false);
   cleanup(cond, work);
@@ -298,7 +308,7 @@ test('an unrelated subscription is untouched by a stop elsewhere', async () => {
   assert.equal(instances._idleHub.hasArmedWake('k10'), true, 'the unrelated wait survives');
   assert.equal(cond._overageDroppedCallbacks, false, 'and its caller is not falsely marked');
   emitTurnEnd('k10');
-  await tick();
+  await landed(instances._idleHub, () => cond._promptCalls.length >= 1, 'c10');
   assert.equal(cond._promptCalls.length, 1, 'it still delivers normally');
   cleanup(cond, keep, stop);
 });

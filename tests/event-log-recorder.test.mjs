@@ -181,6 +181,7 @@ async function blockedRig(live) {
   const dir = await mkdtemp('cc-evrec-blocked-');
   const listeners = new Map();
   const bubbles = [];
+  let checks = 0;
   const inst = (sid, project) => ({ sessionId: sid, project, _emitUi: (ev) => bubbles.push({ on: sid, ev }) });
   const instances = {
     on(event, cb) { listeners.set(event, [...(listeners.get(event) ?? []), cb]); },
@@ -188,10 +189,10 @@ async function blockedRig(live) {
     liveForSession(sid) { return live[sid] ? inst(sid, live[sid]) : null; },
     isSessionLive() { return false; },
   };
-  const gate = createPlaybookGate({ instances, lease: { check: () => 'a newer server holds the projects root (generation 2)' }, file: () => path.join(dir, 'events.jsonl') });
+  const gate = createPlaybookGate({ instances, lease: { check: () => { checks++; return 'a newer server holds the projects root (generation 2)'; } }, file: () => path.join(dir, 'events.jsonl') });
   const fire = (event, arg) => { for (const cb of listeners.get(event) ?? []) cb(arg); };
   const settle = async () => { await gate.readProjection(); await new Promise(r => setTimeout(r, 20)); };
-  return { fire, settle, bubbles };
+  return { fire, settle, bubbles, checks: () => checks };
 }
 
 function quiet(t) {
@@ -205,7 +206,8 @@ test('blocked: the bubble lands on the live conductor named by the row\'s actor,
   const r = await blockedRig({ c1: CONDUCT_PROJECT_NAME, c2: CONDUCT_PROJECT_NAME });
   r.fire('session_launched', launched('c2', conductor, { actor: { type: 'conductor', sessionId: 'c1' } }));
   r.fire('session_launched', launched('c2', conductor, { event: 'resume', actor: { type: 'conductor', sessionId: 'c1' } }));
-  await r.settle();
+  await waitFor(() => r.bubbles.length >= 1, { interval: 2 });
+  await waitFor(() => r.checks() >= 2, { interval: 2 });
   assert.deepEqual(r.bubbles.map(b => [b.on, b.ev.subtype, b.ev.data.reason]),
     [['c1', 'event_log_blocked', 'a newer server holds the projects root (generation 2)']],
     'the actor wins over a conductor subject, and a second drop in the episode adds no bubble');
@@ -215,7 +217,8 @@ test('blocked: with no live conductor actor, the bubble lands on a live conducto
   quiet(t);
   const r = await blockedRig({ c2: CONDUCT_PROJECT_NAME });
   r.fire('session_launched', launched('c2', conductor, { actor: { type: 'conductor', sessionId: 'c-gone' } }));
-  await r.settle();
+  await waitFor(() => r.bubbles.length >= 1, { interval: 2 });
+  await waitFor(() => r.checks() >= 1, { interval: 2 });
   assert.deepEqual(r.bubbles.map(b => b.on), ['c2']);
 });
 

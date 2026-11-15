@@ -14,7 +14,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { InstanceManager } from '../src/instances.ts';
 import { posixPlatform } from '../src/platform/posix.ts';
-import { sleep } from './poll.mjs';
+import { sleep, waitFor } from './poll.mjs';
 
 const tick = () => sleep(15);
 
@@ -55,7 +55,16 @@ function rig() {
     await tick();
     await instances.shutdown().catch(() => {});
   };
-  return { instances, hub, mk, own, start, end, teardown };
+  // A delivered wake has LANDED: first its positive signal, then no wake to
+  // `recipient` still in flight (deliver() sets _inFlight synchronously and
+  // clears it after prompt() resolves or the wake is requeued). Never the drain
+  // alone — before the wake is decided the drain is vacuously true. An exact
+  // count after this reads "no duplicate by drain time", not "never" (card 2026-0872).
+  const landed = async (positive, recipient) => {
+    await waitFor(positive, { interval: 2 });
+    await waitFor(() => !hub._inFlight.has(recipient), { interval: 2 });
+  };
+  return { instances, hub, mk, own, start, end, teardown, landed };
 }
 
 test('a root alone, idle after its first turn with nothing pending, is quiescent', async () => {
@@ -100,11 +109,10 @@ test('a spawned worker mid-turn blocks, and its delivered wake ends the block on
   r.start(W);
   assert.equal(r.instances.isTreeQuiescent('R'), false, 'worker mid-turn, root armed');
   r.end(W);
-  await tick();
+  await r.landed(() => R.status === 'turn', 'R');
   assert.equal(R.status, 'turn', 'the wake opened a root turn');
   assert.equal(r.instances.isTreeQuiescent('R'), false);
   r.end(R);
-  await tick();
   assert.equal(r.instances.isTreeQuiescent('R'), true, 'every owned session idle, no armed wake');
   await r.teardown();
 });
@@ -127,12 +135,11 @@ test('an idle section lead waiting on its own mid-turn worker blocks the root', 
   assert.equal(r.instances.isIdleCaller('R'), false, 'fixture check: nothing armed on the root');
   assert.equal(r.instances.isTreeQuiescent('R'), false, 'the grandchild is in the tree');
   r.end(G);
-  await tick();
+  await r.landed(() => C.status === 'turn', 'C');
   r.end(C);
-  await tick();
+  await r.landed(() => R.status === 'turn', 'R');
   assert.equal(R.status, 'turn', 'the lead\'s turn end woke the root');
   r.end(R);
-  await tick();
   assert.equal(r.instances.isTreeQuiescent('R'), true);
   await r.teardown();
 });
