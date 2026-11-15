@@ -288,7 +288,7 @@ export async function writeProjectMeta(
   return writeProjectRecord(name, patch);
 }
 
-// The record write. Module-private and never unlinks the file: with presence of
+// The record write. Not re-exported by projects.ts, and never unlinks the file: with presence of
 // the record as the registration, removing it IS unregistering the project, and
 // that is `removeProjectStoreDir`'s job alone.
 export async function writeProjectRecord(
@@ -499,7 +499,7 @@ export function setProjectWorkspace(name: string, workspace: unknown): Promise<{
 // where worktree `w` of project `p` does. createWorktree asks the same
 // predicate directly for the other half of the pair.
 //
-// Lazy import for the projects.ts ↔ systems/transcriptKey.ts circular edge:
+// Lazy import for the projectRegistry.ts ↔ systems/transcriptKey.ts circular edge:
 // that module enumerates places through listProjects, which lives here.
 export async function projectKeyCollisionReason(
   systemId: string, remoteId: string | null, name: string, cwd: string,
