@@ -7,6 +7,7 @@ import { getShellEnvBundlePath, bundleShellKind } from '../claudeShellEnv.ts';
 import {
   listProjects as fsListProjects,
   listSessionsForCwdWithCounts,
+  sessionRowForCwd,
   summarizeSessions,
   createProject as fsCreateProject,
   adoptProject as fsAdoptProject,
@@ -898,13 +899,11 @@ export async function describeSession({ sessionId }: { sessionId?: string }, { i
     return dualResult(view, () => textResult(renderSession(view)));
   }
 
-  // Step 3 — RETIRED. includeArchived so an archived session is still
-  // describable; the row is picked by sessionId because the listing projects
-  // each transcript filename to its public id.
+  // Step 3 — RETIRED. The row is built from that session's own transcript(s)
+  // (an archived session is still describable), never from a directory walk.
   const hit = await findSessionLocation(sessionId).catch(() => null);
   if (hit) {
-    const { rows } = await listSessionsForCwdWithCounts(hit.place, null, { includeArchived: true, deriveAwaitingFor: sessionId });
-    const row = rows.find(r => r.sessionId === sessionId);
+    const row = await sessionRowForCwd(hit.place, sessionId);
     if (row) {
       const view = {
         sessionId,

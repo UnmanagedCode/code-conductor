@@ -1,4 +1,4 @@
-import { promises as fs, type Dirent } from 'node:fs';
+import { promises as fs, type Dirent, type Stats } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { loadSessions, fileFacts, setSegmentArchived, type SessionIndex } from './sessionStore.ts';
@@ -286,6 +286,78 @@ export async function readFirstPrompt(jsonlPath: string): Promise<string | null>
 
 export type { SessionRow } from '../shared/wireRows.ts';
 
+interface RowScan {
+  place: TranscriptPlacement;
+  dir: string;
+  index: SessionIndex;
+  liveSegmentIdsOf: typeof import('./sessionLineage.ts').liveSegmentIdsOf;
+  deriveAwaitingUser: typeof import('./awaitingUserTranscript.ts').deriveAwaitingUser;
+  chainEndingAt: typeof import('./awaitingUserTranscript.ts').chainEndingAt;
+}
+
+// What a row build needs besides the file: ONE store read per scanned cwd — never
+// a file open per session — and the two lazily imported collaborators.
+async function rowScanFor(place: TranscriptPlacement): Promise<RowScan> {
+  const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
+  const index = await loadSessions();
+  const { liveSegmentIdsOf } = await import('./sessionLineage.ts');
+  // Same cycle as above: the scanner reads transcripts through this module.
+  const { deriveAwaitingUser, chainEndingAt } = await import('./awaitingUserTranscript.ts');
+  return { place, dir, index, liveSegmentIdsOf, deriveAwaitingUser, chainEndingAt };
+}
+
+// The stat of a transcript that is a real file, else null.
+async function transcriptStat(full: string): Promise<Stats | null> {
+  try {
+    const stat = await fs.stat(full);
+    return stat.isFile() ? stat : null;
+  } catch { return null; }
+}
+
+// The one per-file row builder behind the listing and `sessionRowForCwd`, so the
+// two cannot drift. `sid` is the transcript's filename stem.
+async function buildSessionRow(
+  scan: RowScan, sid: string, full: string, stat: Stats,
+  { record, segment }: ReturnType<typeof fileFacts>,
+  { deriveArchived }: { deriveArchived: boolean },
+): Promise<SessionRow> {
+  const { index, place } = scan;
+  const isArchived = segment?.archived === true;
+  const isConducted = record?.conducted === true;
+  let firstPrompt: string | null = null;
+  try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
+  const rowId = projectRowId(sid, index);
+  // Cost bound: archived rows (every exited conductor, being normal) are derived
+  // only when `deriveArchived`. A conducted row never is — it never carries the
+  // flag, on any surface.
+  let ask: Awaited<ReturnType<RowScan['deriveAwaitingUser']>> = null;
+  if (!isConducted && (!isArchived || deriveArchived)) {
+    const lineageRow = rowId === sid ? null : index.byPublic.get(rowId);
+    const chain = lineageRow ? scan.chainEndingAt(scan.liveSegmentIdsOf(lineageRow), sid) : [sid];
+    try { ask = await scan.deriveAwaitingUser(place, chain); }
+    catch (e) { console.warn(`awaiting-user: scan of ${sid} failed: ${(e as Error).message}`); }
+  }
+  return {
+    // The one projected field. A superseded segment's row shows its
+    // session's title, conducted flag and mode, and its own persistent/archived.
+    sessionId: rowId,
+    firstPrompt,
+    title: record?.title ?? null,
+    conducted: isConducted,
+    turnEndSeq: record?.turnEndSeq ?? 0,
+    viewedSeq: record?.viewedSeq ?? 0,
+    persistent: segment?.persistent === true,
+    archived: isArchived,
+    lastActivity: await lastActivityOf(full, stat),
+    size: stat.size,
+    resumeMode: effectiveResumeMode(record?.mode ?? null),
+    awaitingUser: ask?.kind ?? null,
+    awaitingUserSource: ask?.source ?? null,
+  };
+}
+
+const byLastActivityDesc = (a: SessionRow, b: SessionRow): number => b.lastActivity - a.lastActivity;
+
 // One directory walk answering both "which sessions are here" and "how many of
 // them are archived". A caller that needs the count as well as the rows must
 // use this rather than pairing listSessionsForCwd with summarizeSessions: that
@@ -297,7 +369,7 @@ export type { SessionRow } from '../shared/wireRows.ts';
 export async function listSessionsForCwdWithCounts(
   place: TranscriptPlacement,
   excludeSessionIds: Set<string> | null = null,
-  { includeArchived = true, deriveAwaitingFor = null }: { includeArchived?: boolean; deriveAwaitingFor?: string | null } = {},
+  { includeArchived = true }: { includeArchived?: boolean } = {},
 ): Promise<{ rows: SessionRow[]; archivedCount: number }> {
   const dir = path.join(transcriptRoot(place), encodeCwd(place.cwd));
   let entries: string[];
@@ -307,11 +379,7 @@ export async function listSessionsForCwdWithCounts(
     if (errCode(e) === 'ENOENT') return { rows: [], archivedCount: 0 };
     throw e;
   }
-  // ONE store read per scanned cwd — never a file open per session.
-  const index = await loadSessions();
-  const { liveSegmentIdsOf } = await import('./sessionLineage.ts');
-  // Same cycle as above: the scanner reads transcripts through this module.
-  const { deriveAwaitingUser, chainEndingAt } = await import('./awaitingUserTranscript.ts');
+  const scan = await rowScanFor(place);
   const out: SessionRow[] = [];
   let archivedCount = 0;
   for (const name of entries) {
@@ -321,53 +389,48 @@ export async function listSessionsForCwdWithCounts(
     // normalSessionIdsForPlace and liveBackingIdsForPlace yield backing ids, because
     // what they exclude is a FILE. Projecting first would make every set miss.
     if (excludeSessionIds && excludeSessionIds.has(sid)) continue;
-    // Session facts come off the record; persistent/archived off this file's segment.
-    const { record, segment } = fileFacts(index, sid);
-    const isArchived = segment?.archived === true;
-    const isConducted = record?.conducted === true;
+    const facts = fileFacts(scan.index, sid);
     const full = path.join(dir, name);
     // Stat before the archived branch: the count must include only real files,
     // and it is the same stat a listed row needs anyway.
-    let stat: Awaited<ReturnType<typeof fs.stat>>;
-    try { stat = await fs.stat(full); } catch { continue; }
-    if (!stat.isFile()) continue;
-    if (isArchived) {
+    const stat = await transcriptStat(full);
+    if (!stat) continue;
+    if (facts.segment?.archived === true) {
       archivedCount++;
       if (!includeArchived) continue;
     }
-    let firstPrompt: string | null = null;
-    try { firstPrompt = await readFirstPrompt(full); } catch { /* ignore */ }
-    const rowId = projectRowId(sid, index);
-    // Cost bound: archived rows (every exited conductor, being normal) are not
-    // derived in a list read unless `deriveAwaitingFor` names the row. A
-    // conducted row never is — it never carries the flag, on any surface.
-    let ask: Awaited<ReturnType<typeof deriveAwaitingUser>> = null;
-    if (!isConducted && (!isArchived || rowId === deriveAwaitingFor)) {
-      const lineageRow = rowId === sid ? null : index.byPublic.get(rowId);
-      const chain = lineageRow ? chainEndingAt(liveSegmentIdsOf(lineageRow), sid) : [sid];
-      try { ask = await deriveAwaitingUser(place, chain); }
-      catch (e) { console.warn(`awaiting-user: scan of ${sid} failed: ${(e as Error).message}`); }
-    }
-    out.push({
-      // The one projected field. A superseded segment's row shows its
-      // session's title, conducted flag and mode, and its own persistent/archived.
-      sessionId: rowId,
-      firstPrompt,
-      title: record?.title ?? null,
-      conducted: isConducted,
-      turnEndSeq: record?.turnEndSeq ?? 0,
-      viewedSeq: record?.viewedSeq ?? 0,
-      persistent: segment?.persistent === true,
-      archived: isArchived,
-      lastActivity: await lastActivityOf(full, stat),
-      size: stat.size,
-      resumeMode: effectiveResumeMode(record?.mode ?? null),
-      awaitingUser: ask?.kind ?? null,
-      awaitingUserSource: ask?.source ?? null,
-    });
+    out.push(await buildSessionRow(scan, sid, full, stat, facts, { deriveArchived: false }));
   }
-  out.sort((a, b) => b.lastActivity - a.lastActivity);
+  out.sort(byLastActivityDesc);
   return { rows: out, archivedCount };
+}
+
+// The row `listSessionsForCwdWithCounts(...).rows.find(r => r.sessionId === sessionId)`
+// would be, built from that session's own transcript(s) with no directory read.
+// `describe_session`'s retired branch uses it, and derives an archived row's
+// awaiting-user too (never a conducted one).
+//
+// Candidate files: the listing's filter `projectRowId(f) === sessionId` holds
+// only for (a) the session's current segment, and (b) a file named `sessionId`
+// itself — which names a row only for a legacy record keyed by a full UUID that
+// is its own first segment and is now superseded, or for a record-less
+// session. A minted id never names a file. Of the candidates the one with the
+// greatest `lastActivity` wins, as in the listing; a tie goes to the current segment.
+export async function sessionRowForCwd(place: TranscriptPlacement, sessionId: string): Promise<SessionRow | null> {
+  if (!isSessionId(sessionId)) return null; // path-traversal guard: it becomes a filename
+  const scan = await rowScanFor(place);
+  const current = scan.index.byPublic.get(sessionId)?.current;
+  const candidates = [...new Set([current, sessionId])];
+  const rows: SessionRow[] = [];
+  for (const sid of candidates) {
+    if (!sid || isMintedPublicId(sid) || projectRowId(sid, scan.index) !== sessionId) continue;
+    const full = path.join(scan.dir, sessionFileName(sid));
+    const stat = await transcriptStat(full);
+    if (!stat) continue;
+    rows.push(await buildSessionRow(scan, sid, full, stat, fileFacts(scan.index, sid), { deriveArchived: true }));
+  }
+  rows.sort(byLastActivityDesc);
+  return rows[0] ?? null;
 }
 
 export async function listSessionsForCwd(
