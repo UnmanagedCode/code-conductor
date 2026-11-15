@@ -14,7 +14,7 @@ When `README.md` doesn't go deep enough, load the relevant detail file — every
 - **Instance lifecycle, on-disk state, migrations** → `docs/architecture.md`
 - **What a module owns** → `docs/components.md`, the index into `docs/components/*.md`
 - **Testing — the gate, suites, fakes, test slots** → `docs/testing.md`; systems, FUSE and gated real-dependency suites → `docs/testing-systems.md`; the suite hang guard → `docs/testing-hang-guard.md`
-- **Project name → directory resolution** → `resolveProjectDir` in `src/projects.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/components/store.md` → `src/projects.ts`
+- **Project name → directory resolution** → `resolveProjectDir` in `src/projectRegistry.ts` is the single chokepoint every project path comes from, and it is ONE record read; `registerProject` is the one guarded writer. The realpath rule, the delete-means-deregister rule and the reserved-name refusal are in `docs/components/store.md` → `src/projects.ts`
 - **Event log on-disk format (record kinds + fields; plugins read it)** → `docs/event-log.md`
 - **Plugin manifest schema, reverse proxy + bridge protocol, `/api/plugins`, Plugin Library** → `docs/plugins.md`
 - **Windows launcher / installer contract (installer itself is the separate code-conductor-windows project)** → `docs/windows.md`
