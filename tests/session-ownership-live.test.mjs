@@ -257,7 +257,15 @@ test("a conductor's spawn_instance({resume}) adopts its own worker that a UI res
   assert.match(JSON.stringify(refused.body), /already attached/, 'a conductor that is not the recorded spawner is refused');
   assert.equal(inst.summary().callerInstanceId, null, 'and the worker stays unowned');
 
-  const view = unwrap(await callTool('spawn_instance', { resume: w.sessionId, mode: 'bypassPermissions' }, { caller: aSid }));
+  const statuses = [];
+  const onStatus = (sum) => { if (sum?.id === inst.id) statuses.push(sum); };
+  instances.on('status', onStatus);
+  let view;
+  try {
+    view = unwrap(await callTool('spawn_instance', { resume: w.sessionId, title: 'adopted worker', mode: 'bypassPermissions' }, { caller: aSid }));
+  } finally { instances.off('status', onStatus); }
+  assert.ok(statuses.some(x => x.callerInstanceId === a2.id), 'adoption broadcasts a status summary carrying the new owner, so lists refresh');
+  assert.equal(inst.summary().title, 'adopted worker', "the adopting call's title is applied to the adopted session");
   assert.equal(view.sessionId, w.sessionId, JSON.stringify(view));
   assert.equal(instForSession(instances, w.sessionId), inst, 'the running instance was adopted, not a second process');
   assert.equal(inst.summary().callerInstanceId, a2.id);

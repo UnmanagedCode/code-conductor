@@ -379,6 +379,41 @@ describe('a page load after a restart', () => {
   });
 });
 
+describe('the read-only pane and a full-page view', () => {
+  it('a session coming live does not take over an open full-page view', async () => {
+    history.replaceState(null, '', '/#session=s-disk');
+    const b = await boot(() => ON_DISK);
+    await b.open();
+    await b.land(1, [A]);
+    const route = await import('@/state/route');
+    route.openView('#settings');
+    const state = history.state;
+    await b.hint();
+    await b.land(2, [A, D]);
+    expect(b.active(), 'the pane stays as it was').toBe('ended:s-disk');
+    expect(location.hash).toBe('#settings');
+    expect(history.state).toEqual(state);
+  });
+
+  it('the pane follows its session once the user is back on the session view', async () => {
+    history.replaceState(null, '', '/#session=s-disk');
+    const b = await boot(() => ON_DISK);
+    await b.open();
+    await b.land(1, [A]);
+    const route = await import('@/state/route');
+    route.openView('#settings');
+    await b.hint();
+    await b.land(2, [A, D]);
+    expect(b.active(), 'fixture check: held back behind the view').toBe('ended:s-disk');
+    history.replaceState(null, '', '/#session=s-disk');
+    route.syncRoute();
+    await b.settle();
+    expect(b.active()).toBe(D.id);
+    expect(b.ended()).toBeNull();
+    expect(b.posts()).toBe(0);
+  });
+});
+
 describe('restoring a URL-named session that cannot resume', () => {
   // Invariant: an archived session, or one whose worktree the project no longer
   // has, opens read-only with its anchor kept and nothing resumed.

@@ -33,7 +33,7 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
   }
 
   // Locate which project / worktree owns a given sessionId. Used by the
-  // frontend's auto-resume-from-URL-anchor flow: a refresh that lands on a
+  // frontend's `#session=` anchor restore and a notification click's resume: a refresh that lands on a
   // page anchored to a session whose live instance is gone (server restart,
   // killed instance, etc.) hits this endpoint to find the right cwd to
   // resume into.
@@ -222,9 +222,9 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
       const { sid, backing } = await sidParam(req.params.sessionId);
       const hit = await findSessionLocation(sid);
       if (!hit) throw httpError(404, 'session not found');
-      // Report archived-ness so the client's anchor auto-resume can skip an
-      // archived session (its jsonl is retained, so locate still 200s) instead
-      // of silently resurrecting it. Deliberate
+      // Report archived-ness so the client's `#session=` restore opens an
+      // archived session read-only (its jsonl is retained, so locate still 200s)
+      // instead of resurrecting it. Deliberate
       // resume-from-archived stays allowed — this only feeds the automatic path.
       //
       // PROJECTED EXPLICITLY, not spread: findSessionLocation also returns the

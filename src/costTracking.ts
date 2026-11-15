@@ -113,8 +113,8 @@ function appendCostRow(inst: InstanceLike, ev: UiEventOf<'turn_end'>, parentSess
     model: inst.model ?? null,
     sessionId: inst.sessionId ?? null,
     // Durable link to the spawning conductor's CURRENT sessionId (resolved in
-    // the emit tick from the ephemeral callerInstanceId). null for UI/HTTP-created
-    // sessions. Drives the tree rollup in getSessionStats. Additive.
+    // the emit tick from the ephemeral callerInstanceId). null for a session with no live spawner
+    // (UI/HTTP-created, or its conductor not running). Drives the tree rollup in getSessionStats. Additive.
     parentSessionId: parentSessionId ?? null,
     // Turn timing from the SDK result. duration_ms is the turn walltime (incl.
     // tool exec) and is genuinely per-turn. duration_api_ms (LLM/inference time)

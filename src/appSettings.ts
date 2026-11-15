@@ -1211,8 +1211,8 @@ export function resolveRoleEffort(role: string): EffortLevel {
 //
 // Paths with no tier/role at hand land on step 4 and keep today's behaviour: a
 // resume recovers its model from the jsonl/session store, not from a binding, so there is
-// no row to inherit an effort from. That is the sidebar one-click resume, the anchor
-// auto-resume, and spawn_instance({resume}). Two other relaunch paths never reach
+// no row to inherit an effort from. That is the sidebar one-click resume
+// and spawn_instance({resume}). Two other relaunch paths never reach
 // step 4 at all: the restart manifest passes the recorded `effort` explicitly (step
 // 1, so a session returns at the level it was running at), and Instance.launch({resume})
 // — POST /instances/:id/respawn, crash-respawn, rewind, prune — reuses the live `this.effort`

@@ -187,13 +187,22 @@ const instanceReads = coalescedReads(
       ...(ended ? { ended } : {}),
     });
     emit('instances');
-    // The read-only pane's session came live (the restore, Continue or its conductor resumed it): follow it, with no gesture.
-    const pane = appStore.get().ended;
-    const live = pane && s.activeId === pane.id && !ended
-      ? instances.find((i) => i.sessionId === pane.sessionId && isLiveStatus(i.status)) : undefined;
-    if (live) selectInstance(live.id);
+    followLive();
   },
 );
+/**
+ * The read-only pane's session came live (the boot restore or its conductor resumed it): select it, with no
+ * gesture. Only while the session view shows that session: a full-page view stays, and the pane follows on
+ * the route change that brings the session view back.
+ */
+function followLive() {
+  const { ended, activeId, instances } = appStore.get();
+  if (!ended || activeId !== ended.id) return;
+  const { view, sessionId } = routeStore.get().route;
+  if (view !== 'session' || sessionId !== ended.sessionId) return;
+  const live = instances.find((i) => i.sessionId === ended.sessionId && isLiveStatus(i.status));
+  if (live) selectInstance(live.id);
+}
 /** `inst` as the ended pane shows it: a live status reads as exited. */
 function endedFrom(inst: Instance): Instance {
   const status = isLiveStatus(inst.status) ? 'exited' : inst.status;
@@ -502,6 +511,7 @@ export function startController() {
 
   // Back / forward between session anchors (e.g. back from a worker to its conductor): select the
   // session the entry names if it is listed, else clear the anchor, so a reload never resumes it.
+  signal.addEventListener('abort', routeStore.subscribe(followLive));
   addEventListener('popstate', () => {
     if (routeStore.get().route.view !== 'session') return;
     const anchor = readSessionAnchor();

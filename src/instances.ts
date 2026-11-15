@@ -4504,8 +4504,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     // that is currently resuming that session but has not yet reached spawn()
     // (create() awaits findSessionLocation/getProject/… before it sets .proc).
     // A second concurrent resume of the same sid returns this promise instead
-    // of spawning a colliding `--resume` subprocess — covers the restart anchor
-    // auto-resume racing the manifest restore, and manual stop+resume. Entries
+    // of spawning a colliding `--resume` subprocess — covers a user's resume (a
+    // sidebar click, a notification) racing the manifest restore, and manual stop+resume. Entries
     // are deleted when the create settles (success OR failure), by which point
     // .proc is set and the live-guard in create() takes over.
     this._resuming = new Map<string, Promise<Instance>>();

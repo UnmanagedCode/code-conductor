@@ -58,7 +58,7 @@ A stage's `workerTools` governs the **bound session's own tool calls** — the w
 
 Allow-list example — a read-only reviewer: `{"*": "deny", "Read": "allow", "Grep": "allow", "Glob": "allow"}` (`Edit` → denied by `'*'`; `Read` → allowed by `'Read'`). Specificity example: `{"mcp__code-conductor__code-kanban__*": "allow", "mcp__code-conductor__code-kanban__move*": "deny"}` denies `mcp__code-conductor__code-kanban__move_card` and allows `mcp__code-conductor__code-kanban__read_card`.
 
-**Per call** (`checkWorkerTool({sessionId, parentSessionId, toolName})`; the route passes the URL's instance's `sessionId` and its `parentSessionId` — the conductor that spawned or resumed it):
+**Per call** (`checkWorkerTool({sessionId, parentSessionId, toolName})`; the route passes the URL's instance's `sessionId` and its `parentSessionId` — the recorded spawner, or the MCP caller that last resumed it):
 
 | Case | Hook answer | Event log | UI |
 |---|---|---|---|
