@@ -122,8 +122,8 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       // children: every name a tier prefix under `top` leads through, less the
       // ones `hide` or `fail` suppress.
       //
-      // LISTED AT 0555, the remote's own mode: cc grants itself owner write
-      // only for the op that shapes a child into the mirror directory.
+      // LISTED WHILE THE REMOTE DIRECTORY IS 0555: the mirror directory cc
+      // shaped carries owner rwx (`widenDirMode`), so shaping its children works.
       const pinChildren = new Set();
       for (const e of inst._redirect.tiers) {
         const rel = path.relative(top, e.prefix);
@@ -185,9 +185,10 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
 
   // P3 — the remote's `/` and every ancestor of the wide project are 0555.
   // INVARIANT: read-only remote ancestors do not make the marked CLI's reads
-  // fail — the readdir, the stat and a file read all succeed, the worker sees
-  // the remote's true 0555, and teardown still reclaims the run dir.
-  test('P3 — read-only ancestors of a wide project: a marked readdir, stat and read succeed at the true mode', async () => {
+  // fail — the readdir, the stat and a file read all succeed, the mirror
+  // directory the worker sees is widened (0555 | 0700), and teardown still
+  // reclaims the run dir.
+  test('P3 — read-only ancestors of a wide project: a marked readdir, stat and read succeed and the dirs are widened', async () => {
     const before = snapshot(runRoot);
     const projDir = path.join(box, 'wide', 'appw');
     const readOnly = [fakeRemote, ...ancestorsOf(projDir).map(a => path.join(fakeRemote, a))]
@@ -209,7 +210,7 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       const st = await markedNode(inst, record,
         'console.log((require("fs").statSync(process.argv[1]).mode&0o777).toString(8))', inside(record, '/'));
       assert.equal(st.ok, true, `the marked stat of / failed: ${st.stderr}`);
-      assert.equal(st.stdout.trim(), '555', 'the worker does not see the remote\u2019s true mode for /');
+      assert.equal(st.stdout.trim(), '755', 'the mirror `/` is not the source mode with owner rwx added');
       const rd = await markedNode(inst, record,
         'console.log(require("fs").readFileSync(process.argv[1],"utf8").trim())',
         inside(record, path.join(projDir, 'remote-marker.txt')));
