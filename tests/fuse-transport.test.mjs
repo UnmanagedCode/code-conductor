@@ -45,7 +45,7 @@ import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE,
-  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
+  CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
@@ -209,7 +209,7 @@ describe('systemSource — the remote source over a real System handle', () => {
       const back = path.join(box, 'pushed');
       const other = Buffer.from([0xde, 0x00, 0xad, 0xff, 0xbe, 0x00, 0xef]);
       await fs.writeFile(back, other);
-      assert.equal(await src.push(back, path.join(box, 'landed')), 'ok');
+      assert.equal(await src.push(back, path.join(box, 'landed'), { dirMode: null }), 'ok');
       // ON THE SOURCE'S OWN BYTES, read outside the transport.
       assert.deepEqual(await fs.readFile(path.join(box, 'landed')), other, 'push mangled the bytes');
     });
@@ -301,17 +301,17 @@ describe('systemSource — the remote source over a real System handle', () => {
 
       await fs.writeFile(path.join(mirror, 'script'), '#!/bin/sh\n');
       await fs.chmod(path.join(mirror, 'script'), 0o755);
-      assert.equal(await src.push(path.join(mirror, 'script'), path.join(dest, 'script')), 'ok');
+      assert.equal(await src.push(path.join(mirror, 'script'), path.join(dest, 'script'), { dirMode: null }), 'ok');
       assert.equal((await fs.stat(path.join(dest, 'script'))).mode & 0o7777, 0o755,
         'the mode is what makes an atomic write preserving — a rename installs the temp file');
       assert.equal(await fs.readFile(path.join(dest, 'script'), 'utf8'), '#!/bin/sh\n');
 
       await fs.mkdir(path.join(mirror, 'sub'), { mode: 0o700 });
-      assert.equal(await src.push(path.join(mirror, 'sub'), path.join(dest, 'sub')), 'ok');
+      assert.equal(await src.push(path.join(mirror, 'sub'), path.join(dest, 'sub'), { dirMode: 0o700 }), 'ok');
       assert.equal((await fs.stat(path.join(dest, 'sub'))).mode & 0o7777, 0o700);
 
       await fs.symlink('yonder', path.join(mirror, 'lnk'));
-      assert.equal(await src.push(path.join(mirror, 'lnk'), path.join(dest, 'lnk')), 'ok');
+      assert.equal(await src.push(path.join(mirror, 'lnk'), path.join(dest, 'lnk'), { dirMode: null }), 'ok');
       assert.equal(await fs.readlink(path.join(dest, 'lnk')), 'yonder');
 
       // A KIND CHANGE, EVERY DIRECTION, and asserted against `localDirSource`'s
@@ -362,8 +362,8 @@ describe('systemSource — the remote source over a real System handle', () => {
       for (const [name, make] of KIND_CHANGES) {
         await make(mirror, dest, name);
         await make(localMirror, localDest, name);
-        const viaSystem = await src.push(path.join(mirror, name), path.join(dest, name));
-        const viaLocal = await local.push(path.join(localMirror, name), path.join(localDest, name));
+        const viaSystem = await src.push(path.join(mirror, name), path.join(dest, name), { dirMode: null });
+        const viaLocal = await local.push(path.join(localMirror, name), path.join(localDest, name), { dirMode: null });
         assert.deepEqual(viaSystem, viaLocal, `${name}: the two sources disagree`);
         assert.equal(viaSystem, 'ok', name);
         // THE LANDED KIND, on both, compared to each other AND to the mirror's.
@@ -384,16 +384,48 @@ describe('systemSource — the remote source over a real System handle', () => {
       await fs.writeFile(path.join(mirror, 'busy'), 'a file now');
       await fs.mkdir(path.join(dest, 'busy'), { recursive: true });
       await fs.writeFile(path.join(dest, 'busy', 'kid'), 'x');
-      const busy = await src.push(path.join(mirror, 'busy'), path.join(dest, 'busy'));
+      const busy = await src.push(path.join(mirror, 'busy'), path.join(dest, 'busy'), { dirMode: null });
       assert.ok(typeof busy === 'object' && busy.error, `a non-empty directory was replaced: ${busy}`);
       assert.match(busy.error, /ENOTEMPTY/);
       assert.deepEqual((await fs.readdir(path.join(dest, 'busy'))), ['kid']);
 
       await fs.writeFile(path.join(dest, 'live'), 'THE SOURCE STILL HAS THIS');
-      const got = await src.push(path.join(mirror, 'never-materialised'), path.join(dest, 'live'));
+      const got = await src.push(path.join(mirror, 'never-materialised'), path.join(dest, 'live'), { dirMode: null });
       assert.deepEqual(got, { error: `the mirror holds nothing at '${path.join(dest, 'live')}'` });
       assert.equal(await fs.readFile(path.join(dest, 'live'), 'utf8'), 'THE SOURCE STILL HAS THIS',
         'an absent mirror entry must never be read as a deletion');
+    });
+  });
+
+  // PINS: a DIRECTORY push carries a mode only when the caller declares one
+  // (`dirMode`), identically on both sources — `null` makes sure the directory
+  // exists and sends NO chmod, so a read-only source directory stays read-only
+  // however the mirror directory (always widened) reads. Skipped as root, which
+  // bypasses DAC.
+  test('T8c — a directory push chmods only on a declared dirMode, and creates an absent directory either way', {
+    skip: process.getuid?.() === 0 && 'root bypasses DAC, so a 0555 directory constrains nothing',
+  }, async () => {
+    await withSource(async (src, box) => {
+      const sources = [['system', src], ['local', localDirSource('/')]];
+      for (const [name, s] of sources) {
+        const mirror = path.join(box, `m-${name}`);
+        const dest = path.join(box, `d-${name}`);
+        await fs.mkdir(path.join(mirror, 'd'), { recursive: true });
+        await fs.chmod(path.join(mirror, 'd'), 0o755);
+        await fs.mkdir(path.join(dest, 'd'), { recursive: true });
+        await fs.chmod(path.join(dest, 'd'), 0o555);
+        try {
+          assert.equal(await s.push(path.join(mirror, 'd'), path.join(dest, 'd'), { dirMode: null }), 'ok', name);
+          assert.equal((await fs.stat(path.join(dest, 'd'))).mode & 0o7777, 0o555,
+            `${name}: a null dirMode changed the source directory's mode`);
+          assert.equal(await s.push(path.join(mirror, 'd'), path.join(dest, 'd'), { dirMode: 0o700 }), 'ok', name);
+          assert.equal((await fs.stat(path.join(dest, 'd'))).mode & 0o7777, 0o700,
+            `${name}: a declared dirMode did not land`);
+          await fs.mkdir(path.join(mirror, 'fresh'));
+          assert.equal(await s.push(path.join(mirror, 'fresh'), path.join(dest, 'fresh'), { dirMode: null }), 'ok', name);
+          assert.ok((await fs.stat(path.join(dest, 'fresh'))).isDirectory(), `${name}: an absent directory was not created`);
+        } finally { await fs.chmod(path.join(dest, 'd'), 0o755).catch(() => {}); }
+      }
     });
   });
 });
@@ -909,15 +941,24 @@ describe("the write path — mode, faults and the double reconcile", () => {
       assert.equal((await call(CCU_OP.STAT, 0, d)).status, CCU_STATUS.READY);
       await fs.chmod(path.join(mirror, d), 0o700);
       const beforeDir = await wire();
-      assert.equal((await call(CCU_OP.DIRTY, 0, d)).status, CCU_STATUS.READY);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_MODE_SET, d)).status, CCU_STATUS.READY);
       const dirFrames = (await wire()) - beforeDir;
       // THREE, AND THEY ARE ALL THE PUSH'S OWN: `systemSource.push`'s dir arm
-      // is `lstat` (the wrong-kind probe) + `mkdir -p` + `chmod`. A FOURTH
+      // with a declared mode (the worker's chmod) is `lstat` (the wrong-kind
+      // probe) + `mkdir -p` + `chmod`; an undeclared DIRTY sends no chmod and
+      // costs two (asserted next). A FOURTH
       // would be a source stat taken for a fingerprint only a FILE has — which
       // is what the local kind test in `#adoptWriteMtime` exists to avoid, and
       // what a mutant removing it puts back.
       assert.equal(dirFrames, 3,
         `a directory reconcile cost ${dirFrames} source round trips, not the push's own 3`);
+      const d2 = path.join(src, 'b-dir');
+      await fs.mkdir(d2);
+      assert.equal((await call(CCU_OP.STAT, 0, d2)).status, CCU_STATUS.READY);
+      const beforeUndeclared = await wire();
+      assert.equal((await call(CCU_OP.DIRTY, 0, d2)).status, CCU_STATUS.READY);
+      assert.equal((await wire()) - beforeUndeclared, 2,
+        'an undeclared directory DIRTY must send no chmod: lstat + mkdir -p only');
 
       // ── THE FILE ARM, and the saving it buys. Write through the union, then
       //    open the path again: the source's mtime is FRESH after the atomic
@@ -966,8 +1007,9 @@ describe("the write path — mode, faults and the double reconcile", () => {
     // narrow. Everything else passes straight through.
     const wrapSource = (inner) => ({
       ...inner,
-      push: async (from, to) => {
-        const r = await inner.push(from, to);
+      push: async (...a) => {
+        const [, to] = a;
+        const r = await inner.push(...a);
         if (to === target) await fs.writeFile(to, OTHER);
         return r;
       },

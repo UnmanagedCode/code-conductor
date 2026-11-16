@@ -1267,6 +1267,15 @@ enum ccu_status { CCU_READY = 0, CCU_ABSENT = 1, CCU_REFUSED = 2 };
                                    * the discipline this table already states.
                                    * Encoding it as the absence of the other
                                    * bits would make the wire unreadable. */
+#define CCU_FLAG_MODE_SET   0x10  /* DIRTY: the worker CHMODDED `path`, so the
+                                   * mirror entry's mode is its exact request
+                                   * and the source must take it. cc's mirror
+                                   * directories always carry owner rwx that
+                                   * the source does not, so a directory's
+                                   * mode is pushed ONLY on this bit (or when
+                                   * the worker just created it): a
+                                   * utimens-style DIRTY of a directory sends
+                                   * no mode at all. */
 
 static inline void ccu_put32(unsigned char *p, uint32_t v)
 {

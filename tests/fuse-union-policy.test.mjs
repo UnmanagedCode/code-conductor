@@ -47,7 +47,7 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { detectToolchain } from '../src/systems/fuse/build.ts';
 import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
   CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED,
-  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
+  CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER_SRC = path.join(HERE, 'fixtures', 'union-policy-driver.c');
@@ -466,18 +466,23 @@ describe('the compiled policy driver', { skip }, () => {
     // vectors.
     const vectors = [
       ['REQ', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE,
-        { forCreate: true, forWrite: false, removed: false, releaseOnly: false }],
+        { forCreate: true, forWrite: false, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_WRITE,
-        { forCreate: false, forWrite: true, removed: false, releaseOnly: false }],
+        { forCreate: false, forWrite: true, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_CREATE_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE,
-        { forCreate: true, forWrite: true, removed: false, releaseOnly: false }],
+        { forCreate: true, forWrite: true, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_REMOVED', CCU_OP.DIRTY, CCU_FLAG_REMOVED,
-        { forCreate: false, forWrite: false, removed: true, releaseOnly: false }],
+        { forCreate: false, forWrite: false, removed: true, releaseOnly: false, modeSet: false }],
       // T20 — THE FOURTH BIT. `0x08`, on DIRTY, and it must be DISTINCT from
       // every vector above: reusing `0x04` would make a release-only frame
       // decode as a removal and delete the file on the system.
       ['REQ_RELEASE_ONLY', CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY,
-        { forCreate: false, forWrite: false, removed: false, releaseOnly: true }],
+        { forCreate: false, forWrite: false, removed: false, releaseOnly: true, modeSet: false }],
+      // THE FIFTH BIT, `0x10` on DIRTY: the worker's chmod, so the mirror
+      // directory's mode is the worker's exact request and is pushed. It must
+      // differ from every vector above or a plain DIRTY would push a mode.
+      ['REQ_MODE_SET', CCU_OP.DIRTY, CCU_FLAG_MODE_SET,
+        { forCreate: false, forWrite: false, removed: false, releaseOnly: false, modeSet: true }],
     ];
     for (const [name, op, flags, want] of vectors) {
       assert.ok(hex[name], `the C side printed no ${name} vector`);
@@ -1263,6 +1268,20 @@ describe('the compiled policy driver', { skip }, () => {
       'INVARIANT: the release frame is sent only for a CLAIMED project-tier handle');
   });
 
+  // PINS: `pt_chmod`'s path arm declares the worker's chmod to cc with
+  // CCU_FLAG_MODE_SET — the only thing that lets cc tell a worker's chmod of a
+  // directory from its own widening — and its fh arm sends no frame at all.
+  // A SOURCE-SHAPE ASSERTION, for the reason T19's is: the fixture cannot reach
+  // an op body.
+  test('pt_chmod sends its reconcile with CCU_FLAG_MODE_SET', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    const body = bodyOfIn(src, 'chmod');
+    assert.match(body, /push_mirror_flags\("chmod", path, CCU_FLAG_MODE_SET\)/,
+      'INVARIANT: pt_chmod pushes through push_mirror_flags with CCU_FLAG_MODE_SET — a flagless push '
+      + 'leaves cc unable to tell a worker chmod of a directory from its own widening');
+    assert.doesNotMatch(body, /push_mirror\("chmod"/, 'a flagless chmod push is still present');
+  });
+
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and
   // b6 proves the answer, but the driver cannot reach a libfuse op body — so
   // this asserts, from the source, that every mutating op consults it. Weaker
@@ -1418,17 +1437,17 @@ describe('the compiled policy driver', { skip }, () => {
 
     for (const op of PUSHES) {
       const body = bodyOf(op);
-      assert.match(body, /push_mirror\(/, `pt_${op} mutates the mirror and pushes nothing`);
+      assert.match(body, /push_mirror(_flags)?\(/, `pt_${op} mutates the mirror and pushes nothing`);
       assert.doesNotMatch(body, /refuse_unreconcilable\(/, `pt_${op} is in both lists`);
     }
     for (const op of REFUSES) {
       const body = bodyOf(op);
       assert.match(body, /refuse_unreconcilable\(/, `pt_${op} succeeds against the mirror alone`);
-      assert.doesNotMatch(body, /push_mirror\(/, `pt_${op} is in both lists`);
+      assert.doesNotMatch(body, /push_mirror(_flags)?\(/, `pt_${op} is in both lists`);
     }
     for (const op of VIA_RELEASE) {
       const body = bodyOf(op);
-      assert.doesNotMatch(body, /push_mirror\(|refuse_unreconcilable\(/,
+      assert.doesNotMatch(body, /push_mirror(_flags)?\(|refuse_unreconcilable\(/,
         `pt_${op} should land through pt_release's push, not its own`);
       assert.match(body, /fd_tier_set\(/, `pt_${op} does not mark its fd, so release cannot push`);
     }

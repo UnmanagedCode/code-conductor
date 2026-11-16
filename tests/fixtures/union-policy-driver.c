@@ -660,6 +660,13 @@ static void frame_vectors(void)
 	for (i = 0; i < len; i++) printf("%02x", buf[i]);
 	printf("\n");
 
+	/* THE FIFTH BIT: the worker's chmod, which is what lets cc push a
+	 * directory's mode on declared intent rather than infer it. */
+	ccu_encode_request(buf, sizeof(buf), CCU_DIRTY, CCU_FLAG_MODE_SET, "/srv/app/f.txt", &len);
+	printf("REQ_MODE_SET ");
+	for (i = 0; i < len; i++) printf("%02x", buf[i]);
+	printf("\n");
+
 	canned_reply(CCU_REFUSED, 13);
 	printf("REPLY ");
 	for (i = 0; i < CCU_REPLY_LEN; i++) printf("%02x", canned[i]);

@@ -19,7 +19,7 @@ import { promises as fs, openSync, closeSync, constants as fsConstants } from 'n
 import { mkdtemp } from './tmpRegistry.mjs';
 import { padPathTo, waitFor } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
-         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
+         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_FLAG_MODE_SET, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
@@ -619,6 +619,8 @@ describe('the control channel, cc side', () => {
   // mkdir. Dies if the reconcile only handles files.
   test('DIRTY lands a directory the mirror gained', async () => {
     const p = '/srv/app/newdir';
+    // A mkdir is a create claim, which is what declares the directory's mode.
+    await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, p);
     await fs.mkdir(inMirror(p), { recursive: true });
     await fs.chmod(inMirror(p), 0o750);
     const r = await call(sock, CCU_OP.DIRTY, 0, p);
@@ -1096,5 +1098,449 @@ describe('the control socket binds and connects at any store-root depth', () => 
 
     await assert.rejects(() => fs.stat(movedSock),
       'the socket survived close() — libuv could not unlink through the bound address, so the dirfd was already released when it tried');
+  });
+});
+
+// READ-ONLY REMOTE ENTRIES UNDER A WIDE MIRROR ROOT. With `mirrorRoot: '/'` the
+// remote's `/`, `/root` and `/usr` are 0555/0550, and cc runs as a non-root
+// uid. THE MIRROR'S DIRECTORIES ALWAYS CARRY OWNER rwx (`source | 0o700`) so cc
+// can write into them; FILE modes stay the source's, and a read-only mirror
+// file is refreshed by rename from a scratch dir, never opened for write.
+// Root bypasses DAC, so every arm skips there rather than passing vacuously.
+describe('read-only remote ancestors under a wide mirror root', {
+  skip: process.getuid?.() === 0 && 'root bypasses DAC, so 0555 constrains nothing and the arms would pass vacuously',
+}, () => {
+  const modeOf = async (p) => (await fs.stat(p)).mode & 0o777;
+
+  // Owner rwx back on a whole tree so tmpRegistry's cleanup is not blocked.
+  async function openUp(dir) {
+    const st = await fs.lstat(dir).catch(() => null);
+    if (!st || st.isSymbolicLink()) return;
+    if (!st.isDirectory()) { await fs.chmod(dir, 0o644).catch(() => {}); return; }
+    await fs.chmod(dir, 0o755).catch(() => {});
+    for (const n of await fs.readdir(dir).catch(() => [])) await openUp(path.join(dir, n));
+  }
+
+  // Source: `/` 0555, `/root` 0550 (CentOS's real mode), `/root/cc` 0755 holding
+  // a.txt, a 0444 ro.txt and an empty `sub`. `wrap` lets an arm override what
+  // the source reports; `logs` captures the server's log lines.
+  async function fixture({ wrap } = {}) {
+    const box = await mkdtemp('cc-ctl-ro-');
+    const srcRoot = path.join(box, 'remote');
+    const mirror = path.join(box, 'mirror');
+    const cc = path.join(srcRoot, 'root', 'cc');
+    await fs.mkdir(path.join(cc, 'sub'), { recursive: true });
+    await fs.mkdir(mirror, { recursive: true });
+    await fs.writeFile(path.join(cc, 'a.txt'), 'alpha');
+    await fs.writeFile(path.join(cc, 'ro.txt'), 'readonly-1');
+    await fs.chmod(path.join(cc, 'ro.txt'), 0o444);
+    await fs.chmod(path.join(srcRoot, 'root'), 0o550);
+    await fs.chmod(srcRoot, 0o555);
+    const tiers = buildTierTable(tierFixtureInput({ systemPath: '/root/cc', mirrorRoot: '/' }));
+    const logs = [];
+    const base = localDirSource(srcRoot);
+    const server = await ControlServer.listen({
+      socketPath: path.join(box, 'control.sock'), mirror, source: wrap ? wrap(base) : base, tiers,
+      log: (l) => logs.push(l),
+    });
+    const socks = [];
+    const open = async () => { const s = await connect(path.join(box, 'control.sock')); socks.push(s); return s; };
+    const sock = await open();
+    // Edit the SOURCE by lifting its read-only bits for the edit and restoring them.
+    const editSource = async (dir, fn) => {
+      const was = await modeOf(dir);
+      await fs.chmod(dir, 0o755);
+      try { await fn(); } finally { await fs.chmod(dir, was); }
+    };
+    const close = async () => {
+      for (const s of socks) s.destroy();
+      await server.close();
+      await openUp(box);
+    };
+    return { box, srcRoot, mirror, cc, sock, open, editSource, close, logs, refresh: `${mirror}.refresh` };
+  }
+
+  // PINS: the walk to a project under a read-only root is READY at every level
+  // and every mirror dir is `source | 0o700` — 0555 → 0755, 0550 → 0750 (so the
+  // rule is OR-ing owner rwx, not "set 0755") — so cc can write into them.
+  test('M1: STAT down the walk to /root/cc is READY and every mirror dir carries owner rwx', async () => {
+    const f = await fixture();
+    try {
+      for (const p of ['/', '/root', '/root/cc']) {
+        const r = await call(f.sock, CCU_OP.STAT, 0, p);
+        assert.equal(r.status, CCU_STATUS.READY, `STAT '${p}': status ${r.status} errno ${r.err}`);
+      }
+      assert.equal(await modeOf(f.mirror), 0o755, '0555 | 0700');
+      assert.equal(await modeOf(path.join(f.mirror, 'root')), 0o750, '0550 | 0700');
+      assert.equal(await modeOf(path.join(f.mirror, 'root', 'cc')), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: LIST with no prior STAT shapes children into the mirror dirs, removes a
+  // mirror-only ghost, and leaves the dirs widened.
+  test('M2: LIST of read-only dirs shapes children, removes ghosts, and widens the dirs', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.mirror, 'root'));
+      await fs.writeFile(path.join(f.mirror, 'root', 'ghost.txt'), 'x');
+      assert.equal((await call(f.sock, CCU_OP.LIST, 0, '/')).status, CCU_STATUS.READY);
+      assert.equal((await call(f.sock, CCU_OP.LIST, 0, '/root')).status, CCU_STATUS.READY);
+      assert.deepEqual(await fs.readdir(path.join(f.mirror, 'root')), ['cc'], 'cc shaped, ghost removed');
+      assert.equal(await modeOf(f.mirror), 0o755);
+      assert.equal(await modeOf(path.join(f.mirror, 'root')), 0o750);
+    } finally { await f.close(); }
+  });
+
+  // PINS (regression): the whole scenario — read a file and create+push a new
+  // one through ancestors that are read-only on the source.
+  test('M3: FETCH reads, and FETCH-for-create then DIRTY lands a new file, beneath read-only ancestors', async () => {
+    const f = await fixture();
+    try {
+      for (const p of ['/', '/root', '/root/cc']) await call(f.sock, CCU_OP.STAT, 0, p);
+      const r = await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/a.txt');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await fs.readFile(path.join(f.mirror, 'root/cc/a.txt'), 'utf8'), 'alpha');
+
+      const c = await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, '/root/cc/new.txt');
+      assert.equal(c.status, CCU_STATUS.READY, `errno ${c.err}`);
+      await fs.writeFile(path.join(f.mirror, 'root/cc/new.txt'), 'fresh');
+      const d = await call(f.sock, CCU_OP.DIRTY, 0, '/root/cc/new.txt');
+      assert.equal(d.status, CCU_STATUS.READY, `errno ${d.err}`);
+      assert.equal(await fs.readFile(path.join(f.cc, 'new.txt'), 'utf8'), 'fresh');
+    } finally { await f.close(); }
+  });
+
+  // PINS: a 0444 file keeps 0444, and a changed one is REPLACED BY RENAME (a new
+  // inode) from the scratch dir `<mirror>.refresh`, which is left empty — cc
+  // never opens a read-only mirror file for write, so a reader holding the old
+  // inode is undisturbed and no temp file is ever visible in the mirror.
+  test('M4: a read-only FILE is fetched, then replaced by rename after a change, and stays 0444', async () => {
+    const f = await fixture();
+    try {
+      const mp = path.join(f.mirror, 'root/cc/ro.txt');
+      const first = await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/ro.txt');
+      assert.equal(first.status, CCU_STATUS.READY, `errno ${first.err}`);
+      assert.equal(await fs.readFile(mp, 'utf8'), 'readonly-1');
+      assert.equal(await modeOf(mp), 0o444);
+
+      const sp = path.join(f.cc, 'ro.txt');
+      await fs.chmod(sp, 0o644);
+      await fs.writeFile(sp, 'readonly-two-longer');
+      // A WHOLE-SECOND mtime: a fractional one reads back with sub-ms noise that
+      // can floor to a different ms than cc stamps, making the FETCH's own shape
+      // re-stub and reuse the stub's freed inode.
+      const t = new Date(Math.ceil(Date.now() / 1000) * 1000 + 5000);
+      await fs.utimes(sp, t, t);
+      await fs.chmod(sp, 0o444);
+      assert.equal((await call(f.sock, CCU_OP.STAT, 0, '/root/cc/ro.txt')).status, CCU_STATUS.READY);
+      // Compared against the STUB's inode, not an earlier one: a freed inode is
+      // reused by the next create, so only the live predecessor is a safe guard.
+      const stubIno = (await fs.stat(mp)).ino;
+      const second = await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/ro.txt');
+      assert.equal(second.status, CCU_STATUS.READY, `errno ${second.err}`);
+      assert.equal(await fs.readFile(mp, 'utf8'), 'readonly-two-longer');
+      assert.equal(await modeOf(mp), 0o444);
+      assert.notEqual((await fs.stat(mp)).ino, stubIno, 'the file was rewritten in place instead of replaced by rename');
+      assert.deepEqual(await fs.readdir(f.refresh).catch(() => null), [], 'the scratch dir holds a leftover temp file');
+    } finally { await f.close(); }
+  });
+
+  // PINS: a source-removed entry under a read-only source dir is ABSENT *and*
+  // gone from the mirror, and the dir stays widened.
+  test('M5: STAT of a removed path under a read-only dir is ABSENT and unmirrors it', async () => {
+    const f = await fixture();
+    try {
+      await f.editSource(path.join(f.srcRoot, 'root'), () => fs.writeFile(path.join(f.srcRoot, 'root', 'gone.txt'), 'x'));
+      for (const p of ['/', '/root', '/root/gone.txt']) {
+        assert.equal((await call(f.sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY, p);
+      }
+      await fs.access(path.join(f.mirror, 'root/gone.txt'));
+      await f.editSource(path.join(f.srcRoot, 'root'), () => fs.rm(path.join(f.srcRoot, 'root', 'gone.txt')));
+      const r = await call(f.sock, CCU_OP.STAT, 0, '/root/gone.txt');
+      assert.equal(r.status, CCU_STATUS.ABSENT);
+      await assert.rejects(() => fs.lstat(path.join(f.mirror, 'root/gone.txt')), { code: 'ENOENT' });
+      assert.equal(await modeOf(path.join(f.mirror, 'root')), 0o750);
+    } finally { await f.close(); }
+  });
+
+  // PINS: a kind change of a child of the read-only `/` is replaced, and the
+  // parent stays widened.
+  test('M6: a file that becomes a dir under a read-only `/` is replaced and the parent stays widened', async () => {
+    const f = await fixture();
+    try {
+      await f.editSource(f.srcRoot, () => fs.writeFile(path.join(f.srcRoot, 'thing'), 'x'));
+      for (const p of ['/', '/thing']) assert.equal((await call(f.sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY, p);
+      assert.ok((await fs.lstat(path.join(f.mirror, 'thing'))).isFile());
+      await f.editSource(f.srcRoot, async () => {
+        await fs.rm(path.join(f.srcRoot, 'thing'));
+        await fs.mkdir(path.join(f.srcRoot, 'thing'));
+      });
+      assert.equal((await call(f.sock, CCU_OP.STAT, 0, '/thing')).status, CCU_STATUS.READY);
+      assert.ok((await fs.lstat(path.join(f.mirror, 'thing'))).isDirectory());
+      assert.equal(await modeOf(f.mirror), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: an unmirror that cannot happen is LOGGED, naming the path — not
+  // swallowed. A mirror dir the worker chmod'd read-only (before its DIRTY
+  // re-widens it) refuses the removal of a child; the reply is still ABSENT.
+  test('(b) #unmirror logs a removal it cannot perform', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await fs.writeFile(path.join(f.cc, 'd', 'x'), 'x');
+      for (const p of ['/', '/root', '/root/cc', '/root/cc/d', '/root/cc/d/x']) {
+        assert.equal((await call(f.sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY, p);
+      }
+      await fs.chmod(path.join(f.mirror, 'root/cc/d'), 0o555);
+      await fs.rm(path.join(f.cc, 'd', 'x'));
+      const r = await call(f.sock, CCU_OP.STAT, 0, '/root/cc/d/x');
+      assert.equal(r.status, CCU_STATUS.ABSENT);
+      assert.ok(f.logs.some(l => l.includes('could not unmirror') && l.includes('root/cc/d/x')),
+        `no unmirror failure was logged: ${JSON.stringify(f.logs)}`);
+    } finally { await f.close(); }
+  });
+
+  // PINS (c1–c3): a request whose ancestors cc has not shaped yet still
+  // materialises — the missing mirror chain is created, not refused.
+  test('(c1) FETCH-for-create two levels below an unshaped ancestor creates the chain', async () => {
+    const f = await fixture();
+    try {
+      await call(f.sock, CCU_OP.STAT, 0, '/');
+      const r = await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, '/root/cc/sub/new.txt');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.ok((await fs.stat(path.join(f.mirror, 'root/cc/sub'))).isDirectory());
+    } finally { await f.close(); }
+  });
+
+  test('(c2) LIST of a project dir with only `/` shaped is READY and shapes its children', async () => {
+    const f = await fixture();
+    try {
+      await call(f.sock, CCU_OP.STAT, 0, '/');
+      const r = await call(f.sock, CCU_OP.LIST, 0, '/root/cc');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.deepEqual((await fs.readdir(path.join(f.mirror, 'root/cc'))).sort(), ['a.txt', 'ro.txt', 'sub']);
+    } finally { await f.close(); }
+  });
+
+  test('(c3) STAT of a file with only `/` shaped is READY and shapes the stub', async () => {
+    const f = await fixture();
+    try {
+      await call(f.sock, CCU_OP.STAT, 0, '/');
+      const r = await call(f.sock, CCU_OP.STAT, 0, '/root/cc/a.txt');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal((await fs.stat(path.join(f.mirror, 'root/cc/a.txt'))).size, 5);
+    } finally { await f.close(); }
+  });
+
+  // PINS (d): a source dir reporting a mode with no owner bits (0333, which a
+  // real source dir could not be listed at, so the source reports it) is
+  // mirrored as 0733 and LIST can still read it and remove a ghost from it.
+  test('(d) a source dir reported 0333 is mirrored 0733 and LIST still cleans it', async () => {
+    const lie = (p) => p === '/root/cc/w';
+    const f = await fixture({
+      wrap: (base) => ({
+        ...base,
+        stat: async (p) => { const s = await base.stat(p); return s && !('error' in s) && lie(p) ? { ...s, mode: 0o333 } : s; },
+        list: async (p) => {
+          const kids = await base.list(p);
+          return Array.isArray(kids) ? kids.map(k => lie(path.posix.join(p, k.name)) ? { ...k, mode: 0o333 } : k) : kids;
+        },
+      }),
+    });
+    try {
+      await fs.mkdir(path.join(f.cc, 'w'));
+      for (const p of ['/', '/root', '/root/cc', '/root/cc/w']) {
+        assert.equal((await call(f.sock, CCU_OP.STAT, 0, p)).status, CCU_STATUS.READY, p);
+      }
+      assert.equal(await modeOf(path.join(f.mirror, 'root/cc/w')), 0o733);
+      await fs.writeFile(path.join(f.mirror, 'root/cc/w/ghost'), 'x');
+      assert.equal((await call(f.sock, CCU_OP.LIST, 0, '/root/cc/w')).status, CCU_STATUS.READY);
+      assert.deepEqual(await fs.readdir(path.join(f.mirror, 'root/cc/w')), []);
+      assert.equal(await modeOf(path.join(f.mirror, 'root/cc/w')), 0o733);
+    } finally { await f.close(); }
+  });
+
+  // THE DIRECTORY-MODE ARMS. A worker's chmod/mkdir/utimens on a directory
+  // reaches the source as a DIRTY, but the mirror directory always carries
+  // owner rwx — so the mirror's mode is NOT what to push. A mode is sent only
+  // on DECLARED intent: CCU_FLAG_MODE_SET (the worker's chmod) or a create
+  // claim (the worker's mkdir); anything else (utimens) ensures the directory
+  // exists and sends no chmod. After the push the mirror directory is widened
+  // again.
+  const walkTo = async (f, p) => {
+    for (const q of ['/', '/root', '/root/cc', p]) assert.equal((await call(f.sock, CCU_OP.STAT, 0, q)).status, CCU_STATUS.READY, q);
+  };
+
+  // PINS: a worker `chmod 555 d` lands 0555 on the source, the mirror directory
+  // is re-widened, and a child that later appears there still shapes into it.
+  test('M7: a worker chmod 555 pushes 0555 and the mirror dir is re-widened', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await walkTo(f, '/root/cc/d');
+      const md = path.join(f.mirror, 'root/cc/d');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');   // the op's ROUTE claim
+      await fs.chmod(md, 0o555);                                              // the daemon's fchmodat
+      const r = await call(f.sock, CCU_OP.DIRTY, CCU_FLAG_MODE_SET, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o555, 'the remote gets the worker\'s exact mode');
+      assert.equal(await modeOf(md), 0o755, 'the mirror dir is widened again');
+      await f.editSource(path.join(f.cc, 'd'), () => fs.writeFile(path.join(f.cc, 'd', 'child'), 'kid'));
+      const l = await call(f.sock, CCU_OP.LIST, 0, '/root/cc/d');
+      assert.equal(l.status, CCU_STATUS.READY, `errno ${l.err}`);
+      assert.deepEqual(await fs.readdir(md), ['child']);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `touch d` (utimens, no flags, no create claim) on a remote-0555
+  // directory leaves it 0555 — cc's widened bits never reach the remote.
+  test('M9: a utimens-style DIRTY of a read-only remote dir sends no chmod', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await fs.chmod(path.join(f.cc, 'd'), 0o555);
+      await walkTo(f, '/root/cc/d');
+      const md = path.join(f.mirror, 'root/cc/d');
+      assert.equal(await modeOf(md), 0o755, 'precondition: the mirror dir is widened');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');
+      const t = new Date(Date.now() + 5000);
+      await fs.utimes(md, t, t);
+      const r = await call(f.sock, CCU_OP.DIRTY, 0, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o555, 'cc pushed its widened mode to the remote');
+      assert.equal(await modeOf(md), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `mkdir -m 555 nd` — a create claim — lands 0555 on the source and
+  // re-widens the mirror directory.
+  test('M10: a worker mkdir of a 0555 dir pushes 0555 and the mirror dir is widened', async () => {
+    const f = await fixture();
+    try {
+      for (const q of ['/', '/root', '/root/cc']) await call(f.sock, CCU_OP.STAT, 0, q);
+      const c = await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, '/root/cc/nd');
+      assert.equal(c.status, CCU_STATUS.READY, `errno ${c.err}`);
+      const md = path.join(f.mirror, 'root/cc/nd');
+      await fs.mkdir(md, { mode: 0o555 });                                    // the daemon's mkdirat
+      const r = await call(f.sock, CCU_OP.DIRTY, 0, '/root/cc/nd');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'nd')), 0o555);
+      assert.equal(await modeOf(md), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `chmod 755 d` on a remote-0555 dir whose mirror is already 0755 — a
+  // local no-op — still lands 0755 on the remote. A scheme that compared the
+  // mirror mode against `true | 0o700` would read it as "no chmod" and lose it.
+  test('M11: a worker chmod 755 of a remote-0555 dir lands 0755', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await fs.chmod(path.join(f.cc, 'd'), 0o555);
+      await walkTo(f, '/root/cc/d');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');
+      await fs.chmod(path.join(f.mirror, 'root/cc/d'), 0o755);
+      const r = await call(f.sock, CCU_OP.DIRTY, CCU_FLAG_MODE_SET, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: a shape never chmods a directory whose claim is held. A worker's
+  // chmod takes the claim (its FETCH FOR_WRITE) BEFORE the daemon's fchmodat,
+  // so a shape that widened the mirror dir after that would put `source|0700`
+  // where the worker's mode is, and the MODE_SET DIRTY would push cc's bits to
+  // the remote. FETCH FOR_WRITE of a dir is the deterministic way to reach a
+  // shape with the claim already held; the DIRTY then lands the worker's mode.
+  test('M12: a shape under a held claim leaves the dir mode alone, and the MODE_SET push carries it', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await walkTo(f, '/root/cc/d');
+      const md = path.join(f.mirror, 'root/cc/d');
+      await fs.chmod(md, 0o555);                                              // the daemon's fchmodat has landed
+      const c = await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');
+      assert.equal(c.status, CCU_STATUS.READY, `errno ${c.err}`);
+      assert.equal(await modeOf(md), 0o555, 'a shape widened a directory the worker holds a claim on');
+      const r = await call(f.sock, CCU_OP.DIRTY, CCU_FLAG_MODE_SET, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o555, 'the worker\'s chmod was lost');
+      assert.equal(await modeOf(md), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: a parent LIST's re-stub of a READ-ONLY mirror file waits for an
+  // in-flight replacement of that same file and never overwrites it: the LIST
+  // is queued behind the fetch (it does not finish while the fetch is held),
+  // and once both are done the file holds the fetched bytes, not a sparse stub.
+  // The wait is one short real tick-window (50 ms): the LIST normally finishes
+  // in a few ms when nothing serialises it, and the blocked case can never
+  // fail this on timing.
+  test('M13: a parent LIST does not re-stub a read-only file over an in-flight fetch of it', async () => {
+    let gate = null, reached = null, open = null;
+    const f = await fixture({
+      wrap: (base) => ({
+        ...base,
+        fetch: async (p, dest) => {
+          if (gate && p === '/root/cc/ro.txt') { reached(); await gate.promise; }
+          return base.fetch(p, dest);
+        },
+      }),
+    });
+    try {
+      await walkTo(f, '/root/cc/ro.txt');                                     // a v1 stub, read-only
+      const sp = path.join(f.cc, 'ro.txt');
+      // ONE mtime for every version, so only the SIZE tells a LIST the stub is
+      // stale. A fetch stamps the file with the mtime it saw before copying; if
+      // the versions differed in mtime too, a LIST arriving after the fetch
+      // would (legitimately, and silently) re-stub, and the outcome would
+      // depend on ordering rather than on the lock.
+      const stamp = new Date(Math.ceil(Date.now() / 1000) * 1000 + 5000);
+      const bump = async (text) => {
+        await fs.chmod(sp, 0o644); await fs.writeFile(sp, text);
+        await fs.utimes(sp, stamp, stamp); await fs.chmod(sp, 0o444);
+      };
+      await bump('version-two');
+      gate = { promise: new Promise(r => { open = r; }) };
+      const seen = new Promise(r => { reached = r; });
+      const fetching = call(f.sock, CCU_OP.FETCH, 0, '/root/cc/ro.txt');
+      fetching.catch(() => {});                                               // a failed assert below must not orphan it
+      await seen;                                                             // the fetch holds the file
+      await bump('version-three-is-longer');                           // the LIST will see a newer source
+      const other = await f.open();
+      const listing = call(other, CCU_OP.LIST, 0, '/root/cc');
+      listing.catch(() => {});
+      const done = await Promise.race([listing.then(() => 'listed'), new Promise(r => setTimeout(() => r('waiting'), 50))]);
+      assert.equal(done, 'waiting', 'the LIST re-stubbed the file while a fetch of it was in flight');
+      open();
+      assert.equal((await fetching).status, CCU_STATUS.READY);
+      assert.equal((await listing).status, CCU_STATUS.READY);
+      // The fetch copies the source as it is when the gate opens (v3), so the
+      // bytes are the fetched ones; a sparse stub would read as zeros.
+      assert.equal(await fs.readFile(path.join(f.mirror, 'root/cc/ro.txt'), 'utf8'), 'version-three-is-longer',
+        'the fetched bytes were overwritten by a sparse stub');
+    } finally { open?.(); await f.close(); }
+  });
+
+  // PINS (regression): a WRITABLE existing mirror file is re-shaped and
+  // re-fetched IN PLACE — same inode, new content — and only a read-only one
+  // goes through the scratch rename. The inode is what the revalidate
+  // fingerprint is recorded against, so the hot path must keep it.
+  test('M14: a writable mirror file is re-shaped and re-fetched in place (same inode)', async () => {
+    const f = await fixture();
+    try {
+      const mp = path.join(f.mirror, 'root/cc/a.txt');
+      assert.equal((await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/a.txt')).status, CCU_STATUS.READY);
+      const ino = (await fs.stat(mp)).ino;
+      const sp = path.join(f.cc, 'a.txt');
+      await fs.writeFile(sp, 'alpha-changed-and-longer');
+      const t = new Date(Date.now() + 5000); await fs.utimes(sp, t, t);
+      assert.equal((await call(f.sock, CCU_OP.STAT, 0, '/root/cc/a.txt')).status, CCU_STATUS.READY);
+      assert.equal((await fs.stat(mp)).ino, ino, 're-shape replaced a writable file instead of truncating it in place');
+      assert.equal((await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/a.txt')).status, CCU_STATUS.READY);
+      assert.equal((await fs.stat(mp)).ino, ino, 're-fetch replaced a writable file instead of overwriting it in place');
+      assert.equal(await fs.readFile(mp, 'utf8'), 'alpha-changed-and-longer');
+    } finally { await f.close(); }
   });
 });

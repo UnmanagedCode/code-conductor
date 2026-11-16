@@ -93,7 +93,9 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
       }
       // The handler has already `#shape`d `dest` to the source's size and mode,
       // so this overwrites IN PLACE and keeps that inode — which is what the
-      // revalidate fingerprint is recorded against.
+      // revalidate fingerprint is recorded against. For a READ-ONLY stub the
+      // handler hands this a scratch path instead and renames it over the stub,
+      // since cc never opens a read-only mirror file for write.
       try { await fsp.writeFile(dest, bytes); return 'ok'; }
       catch (e) { note(`fetch '${p}' could not land in the mirror: ${String(e)}`); return 'refused'; }
     },
@@ -108,7 +110,7 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
     },
 
     // RECONCILE: make the source entry at `p` match the MIRROR entry at `src`.
-    async push(src, p) {
+    async push(src, p, opts) {
       let mirror;
       try { mirror = await fsp.lstat(src); }
       catch {
@@ -143,7 +145,8 @@ export function systemSource(system: System, opts: { log?: (line: string) => voi
           const at = await system.lstat(p);
           if (at !== null && at.kind !== 'dir') await system.removeEntry(p);
           await system.mkdir(p, { recursive: true });
-          return system.chmod(p, mode);
+          if (opts.dirMode !== null) await system.chmod(p, opts.dirMode);
+          return;
         }
         return system.writeFileBytes(p, await fsp.readFile(src), { atomic: true, mode });
       };

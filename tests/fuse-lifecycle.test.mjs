@@ -205,6 +205,31 @@ const liveBoth = () => ({
 });
 
 describe('FUSE teardown state machine (fake driver, virtual clock)', () => {
+  // PINS: a run dir whose mirror holds read-only (0555) dirs is reclaimed — the
+  // teardown removes it rather than noting "could not reclaim" and leaking it.
+  // Skipped as root, which bypasses DAC so the arm would pass vacuously.
+  test('teardown reclaims a mirror holding read-only directories', {
+    skip: process.getuid?.() === 0 && 'root bypasses DAC, so 0555 constrains nothing',
+  }, async () => {
+    const { rundir, record } = await seedRun();
+    const ro = path.join(record.mirror, 'root');
+    await fs.mkdir(ro, { recursive: true });
+    await fs.writeFile(path.join(ro, 'f.txt'), 'x');
+    await fs.chmod(path.join(ro, 'f.txt'), 0o444);
+    await fs.chmod(ro, 0o555);
+    await fs.chmod(record.mirror, 0o555);
+    const driver = fakeDriver({ procs: liveBoth(), nsMounts: healthyMounts(record), conns: ['77'], devs: ownDev(record) });
+    let report;
+    try {
+      report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    } finally {
+      await fs.chmod(record.mirror, 0o755).catch(() => {});
+      await fs.chmod(ro, 0o755).catch(() => {});
+    }
+    assert.equal(report.removedRunDir, true, JSON.stringify(report.notes));
+    await assert.rejects(() => fs.stat(rundir), { code: 'ENOENT' });
+  });
+
   // PINS: unmounts are issued deepest-first; every one of them but the two held
   // back is issued BEFORE the abort, and the union root RIGHT AFTER it. Each
   // half matters — a set assertion would pass on an ordering that makes the

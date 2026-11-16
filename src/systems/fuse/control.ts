@@ -26,6 +26,7 @@ import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import { isSourceError, type RemoteSource } from './remoteSource.ts';
 import { MAX_FILE_BYTES } from '../protocol.ts';
+import { KeyedLock, removeOwnedTree, replaceViaScratch, widenDirMode } from './mirrorPerms.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
 //
@@ -52,6 +53,7 @@ export const CCU_FLAG_FOR_CREATE = 0x01;   // FETCH: the caller will CREATE `pat
 export const CCU_FLAG_FOR_WRITE  = 0x02;   // FETCH: the caller will MUTATE it
 export const CCU_FLAG_REMOVED    = 0x04;   // DIRTY: the worker REMOVED the entry
 export const CCU_FLAG_RELEASE_ONLY = 0x08; // DIRTY: release the claim, carry nothing
+export const CCU_FLAG_MODE_SET   = 0x10;   // DIRTY: the worker CHMODDED it — the mirror mode is its request
 
 export interface ControlRequest {
   op: number;
@@ -59,6 +61,7 @@ export interface ControlRequest {
   forWrite: boolean;
   removed: boolean;
   releaseOnly: boolean;
+  modeSet: boolean;
   path: string;
 }
 
@@ -88,6 +91,7 @@ export function decodeRequests(buf: Buffer): DecodeResult {
       forWrite: (flags & CCU_FLAG_FOR_WRITE) !== 0,
       removed: (flags & CCU_FLAG_REMOVED) !== 0,
       releaseOnly: (flags & CCU_FLAG_RELEASE_ONLY) !== 0,
+      modeSet: (flags & CCU_FLAG_MODE_SET) !== 0,
       path: buf.toString('utf8', off + CCU_REQ_HDR, off + CCU_REQ_HDR + pathlen),
     });
     off += CCU_REQ_HDR + pathlen;
@@ -223,6 +227,13 @@ export class ControlServer {
   // source's stale size while a writable handle held unpushed bytes, destroying
   // them, and the `DIRTY` would then push the mangled copy.
   #inflight = new Map<string, Promise<Buffer>>();
+  // Where a read-only mirror file's replacement is staged before its rename: a
+  // sibling of the mirror, on its filesystem and cc-owned, so the union never
+  // shows it.
+  // Serialises the read-only replace-by-rename of one mirror file between a
+  // parent LIST's re-stub and a FETCH of the file (different dispatch keys).
+  readonly #destLocks = new KeyedLock();
+  get #scratch(): string { return `${this.#opts.mirror}.refresh`; }
   // TRACKED EXPLICITLY, because `net.Server` exposes a connection COUNT and not
   // the sockets. `server.close()` stops accepting and then waits for every live
   // connection to end on its own — and the daemon holds one per FUSE worker
@@ -492,7 +503,7 @@ export class ControlServer {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
         case CCU_OP.LIST:  return await this.#list(req.path, dest);
         case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate, req.forWrite);
-        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite, req.releaseOnly);
+        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite, req.releaseOnly, req.modeSet);
         default:
           this.#opts.log?.(`cc-union control: unknown op ${req.op} for '${req.path}'`);
           return encodeReply(CCU_STATUS.REFUSED, EIO);
@@ -530,7 +541,7 @@ export class ControlServer {
         ? encodeReply(CCU_STATUS.READY, 0)
         : encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
-    await this.#shape(dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
+    await this.#shape(p, dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
     return encodeReply(CCU_STATUS.READY, 0);
   }
 
@@ -557,9 +568,13 @@ export class ControlServer {
       if (!this.#servable(child)) continue;
       want.add(c.name);
       if (this.#claimHeld(child)) continue;
-      await this.#shape(path.posix.join(dest, c.name), c.kind, c.size, c.mode, c.mtimeMs, c.target);
+      await this.#shape(child, path.posix.join(dest, c.name), c.kind, c.size, c.mode, c.mtimeMs, c.target);
     }
-    for (const name of await fsp.readdir(dest).catch(() => [] as string[])) {
+    const present = await fsp.readdir(dest).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return [] as string[];
+      throw e;
+    });
+    for (const name of present) {
       const child = path.posix.join(p, name);
       if (!want.has(name) && !this.#claimHeld(child)) {
         await this.#unmirror(path.posix.join(dest, name));
@@ -647,7 +662,7 @@ export class ControlServer {
     // already leaves alone a file whose size and ms-mtime match, so it and the
     // freshness check agree — but putting freshness FIRST would skip a `#shape`
     // that a kind change needs.
-    await this.#shape(dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
+    await this.#shape(p, dest, st.kind, st.size, st.mode, st.mtimeMs, st.target);
     if (st.kind !== 'file') return encodeReply(CCU_STATUS.READY, 0);
     // THE PROVIDER'S OWN CAP, CHECKED BEFORE THE TRANSFER IS ATTEMPTED — and
     // that saving is real rather than cosmetic. `readFileBytes` also refuses
@@ -666,10 +681,22 @@ export class ControlServer {
       return encodeReply(CCU_STATUS.REFUSED, EFBIG);
     }
     if (await this.#stillFresh(p, dest, st)) return encodeReply(CCU_STATUS.READY, 0);
-    const got = await this.#opts.source.fetch(p, dest);
+    // A READ-ONLY STUB IS NEVER OPENED FOR WRITE: it is replaced by rename from
+    // the scratch dir, which also leaves its mode and mtime the source's.
+    const cur = await fsp.lstat(dest).catch(() => null);
+    const viaScratch = cur !== null && cur.isFile() && (cur.mode & 0o200) === 0;
+    let got: 'ok' | 'absent' | 'refused' = 'refused';
+    if (viaScratch) {
+      await this.#destLocks.run(dest, () => replaceViaScratch(this.#scratch, dest, st.mode, st.mtimeMs, async (tmp) => {
+        got = await this.#opts.source.fetch(p, tmp);
+        return got === 'ok';
+      }));
+    } else {
+      got = await this.#opts.source.fetch(p, dest);
+    }
     if (got === 'absent') return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     if (got === 'refused') return encodeReply(CCU_STATUS.REFUSED, EACCES);
-    await fsp.chmod(dest, st.mode).catch(() => {});
+    if (!viaScratch) await fsp.chmod(dest, st.mode).catch(() => {});
     await this.#record(p, dest, st);
     return encodeReply(CCU_STATUS.READY, 0);
   }
@@ -725,7 +752,7 @@ export class ControlServer {
   // the original stays open, and releasing there left the next write batch on
   // that handle unprotected. `release` sends it clear, and is the only releaser.
   async #dirty(p: string, dest: string, removed: boolean, stillOpen = false,
-               releaseOnly = false): Promise<Buffer> {
+               releaseOnly = false, modeSet = false): Promise<Buffer> {
     // RELEASE_ONLY, AND IT IS ANSWERED BEFORE ANY SOURCE CALL. The handle is
     // closing and its `flush` already landed the bytes, so the releasing frame
     // has nothing left to carry — without this every written file uploaded
@@ -746,7 +773,17 @@ export class ControlServer {
       r = { error: `the mirror holds nothing at '${p}', and this session claimed it` };
     } else {
       await this.#restoreMode(p, dest);
-      r = await this.#opts.source.push(dest, p);
+      // A DIRECTORY'S MODE CROSSES ONLY ON DECLARED INTENT. The mirror
+      // directory carries owner rwx the source may not, so its mode is the
+      // worker's only when the worker chmodded it (MODE_SET) or just created
+      // it (a create claim); a utimens-style DIRTY ensures the directory
+      // exists and sends no mode. Read BEFORE the push, which cannot change it,
+      // and the directory is widened again after it on every outcome.
+      const mst = await fsp.lstat(dest).catch(() => null);
+      const isDir = mst !== null && mst.isDirectory();
+      const declared = modeSet || this.#claimed.get(p)?.createdHere === true;
+      r = await this.#opts.source.push(dest, p, { dirMode: isDir && declared ? mst.mode & 0o7777 : null });
+      if (isDir) await fsp.chmod(dest, widenDirMode(mst.mode & 0o7777)).catch(() => {});
       if (r !== 'ok') {
         // A FAILED PUSH IS LOUD AND STICKY, AND THE CLAIM IS KEPT — which is
         // what makes the worker's unpushed bytes survive. Dropping the claim
@@ -804,11 +841,12 @@ export class ControlServer {
   // 0644 — so pushing the mirror entry's own mode would silently strip a
   // 0755 script of its executable bit.
   //
-  // CHMOD THE MIRROR, DO NOT PASS A MODE THROUGH `push`. `RemoteSource.push`
-  // keeps its signature so both sources behave identically; the invariant
-  // `#shape` maintains — the mirror entry's mode is the source's — is RESTORED
-  // rather than bypassed; and the property becomes observable on this machine,
-  // so a test can assert the mirror as well as the source.
+  // FOR A FILE, CHMOD THE MIRROR, DO NOT PASS A MODE THROUGH `push`: the
+  // invariant `#shape` maintains — a mirror FILE's mode is the source's — is
+  // RESTORED rather than bypassed, so a test can assert the mirror as well as
+  // the source. A DIRECTORY is the other case: its mirror mode always carries
+  // cc's owner rwx, so `#dirty` passes `push` an explicit `dirMode` on declared
+  // intent only.
   //
   // A path with no recorded source mode is a file the worker created, and it
   // pushes the mirror's own mode. Correct.
@@ -913,36 +951,65 @@ export class ControlServer {
   // Make `<mirror>/P` be of `kind`, with the source's mode, size and mtime. A
   // mirror entry of the WRONG kind is replaced, not adjusted: a directory that
   // became a file on the source cannot be chmod'd into one.
-  async #shape(dest: string, kind: 'file' | 'dir' | 'symlink', size: number, mode: number, mtimeMs: number, target?: string): Promise<void> {
+  //
+  // DIRECTORIES ARE WIDENED, FILES STAY TRUE: a mirror dir is `mode | 0o700`
+  // so cc can always write into it, a mirror file keeps the source's mode, and
+  // a read-only file is refreshed by rename (`mirrorPerms.ts`).
+  // `p` is the REMOTE path, for the claim check.
+  async #shape(p: string, dest: string, kind: 'file' | 'dir' | 'symlink', size: number, mode: number, mtimeMs: number, target?: string): Promise<void> {
     await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
-    let cur: import('node:fs').Stats | null = null;
-    try { cur = await fsp.lstat(dest); } catch { /* absent */ }
-    const kindOf = (s: import('node:fs').Stats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
-    if (cur && kindOf(cur) !== kind) { await this.#unmirror(dest); cur = null; }
+    // `bigint: true`: an inode number can exceed 2^53 and the read-only branch below compares it.
+    let cur: import('node:fs').BigIntStats | null = null;
+    try { cur = await fsp.lstat(dest, { bigint: true }); }
+    catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+    const kindOf = (s: import('node:fs').BigIntStats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
+    if (cur && kindOf(cur) !== kind) { await removeOwnedTree(dest); cur = null; }
 
     if (kind === 'symlink') {
       if (cur && await fsp.readlink(dest).catch(() => null) === target) return;
-      await this.#unmirror(dest);
+      await removeOwnedTree(dest);
       await fsp.symlink(target ?? '', dest);
       return;
     }
     if (kind === 'dir') {
-      if (!cur) await fsp.mkdir(dest, { recursive: true });
-      await fsp.chmod(dest, mode).catch(() => {});
+      if (!cur) await fsp.mkdir(dest);
+      // RE-CHECKED HERE, right before the chmod: a worker's chmod takes the
+      // claim before its `fchmodat` lands, and widening after that would put
+      // `source|0700` where the worker's mode is for `#dirty` to push.
+      if (this.#claimHeld(p)) return;
+      await fsp.chmod(dest, widenDirMode(mode));
       return;
     }
     // A file already the right size and mtime is left ALONE — re-truncating it
     // would discard bytes an earlier FETCH put there, and every read is
     // preceded by an open and therefore by a FETCH, so the only thing that
     // would achieve is throwing work away.
-    if (cur && cur.size === size && Math.floor(cur.mtimeMs) === Math.floor(mtimeMs)) return;
+    if (cur && Number(cur.size) === size && Number(cur.mtimeMs) === Math.floor(mtimeMs)) return;
+    // An existing READ-ONLY file is replaced by rename, never opened for write.
+    if (cur && (Number(cur.mode) & 0o200) === 0) {
+      const seen = cur;
+      await this.#destLocks.run(dest, async () => {
+        // COMPARE BEFORE SWAPPING: a FETCH that replaced the file since `seen`
+        // was read holds newer bytes than this stub, so the stub must not land.
+        const now = await fsp.lstat(dest, { bigint: true }).catch(() => null);
+        if (!now || now.ino !== seen.ino || now.size !== seen.size || now.mtimeMs !== seen.mtimeMs) return;
+        await replaceViaScratch(this.#scratch, dest, mode, mtimeMs, async (tmp) => {
+          const fh = await fsp.open(tmp, fsc.O_CREAT | fsc.O_EXCL | fsc.O_WRONLY, 0o600);
+          try { await fh.truncate(size); } finally { await fh.close(); }
+          return true;
+        });
+      });
+      return;
+    }
     const fh = await fsp.open(dest, fsc.O_CREAT | fsc.O_WRONLY, mode);
     try { await fh.truncate(size); } finally { await fh.close(); }
     await fsp.chmod(dest, mode).catch(() => {});
     await fsp.utimes(dest, new Date(mtimeMs), new Date(mtimeMs)).catch(() => {});
   }
 
+  // Never throws, so reply semantics are unchanged; a failure is logged.
   async #unmirror(dest: string): Promise<void> {
-    await fsp.rm(dest, { recursive: true, force: true }).catch(() => {});
+    try { await removeOwnedTree(dest); }
+    catch (e) { this.#opts.log?.(`cc-union control: could not unmirror '${dest}': ${String(e)}`); }
   }
 }
