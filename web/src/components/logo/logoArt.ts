@@ -235,7 +235,7 @@ export function artToSvgString(art: Art, opts: {
 export const PWA_ICONS = {
   any: { art: 0.8, radius: 0.225 },
   apple: { art: 0.72 },
-  maskable: { art: 0.72 },
+  maskable: { art: 0.67 },
 };
 
 /** A PWA icon's text: the full mark in the light palette on `PWA_BACKGROUND`. */
