@@ -62,7 +62,11 @@ export interface RemoteSource {
   // absent. An op outside that — a device node, a hard link, an ownership
   // change — cannot be reconciled and is REFUSED by the daemon rather than
   // applied to the mirror alone (see union.c's `push_mirror` callers).
-  push(src: string, p: string): Promise<'ok' | { error: string }>;
+  // `opts.dirMode` is consulted only for a DIRECTORY: a number is chmod'd onto
+  // the source directory, `null` makes sure it exists and sends no chmod. The
+  // mirror directory's own mode is never the answer — it always carries
+  // cc's owner rwx.
+  push(src: string, p: string, opts: { dirMode: number | null }): Promise<'ok' | { error: string }>;
 }
 
 // ── THE DETERMINISTIC SOURCE ────────────────────────────────────────────────
@@ -174,7 +178,7 @@ export function localDirSource(root: string): RemoteSource {
         return 'ok';
       } catch (e) { return { error: (e as Error).message }; }
     },
-    async push(src, p) {
+    async push(src, p, opts) {
       const abs = resolve(p);
       if (abs === null) return { error: `'${p}' is outside the remote root` };
       try {
@@ -206,7 +210,7 @@ export function localDirSource(root: string): RemoteSource {
         }
         if (kind === 'dir') {
           await fsp.mkdir(abs, { recursive: true });
-          await fsp.chmod(abs, mirror.mode & 0o7777);
+          if (opts.dirMode !== null) await fsp.chmod(abs, opts.dirMode);
           return 'ok';
         }
         // MODE AND TIMES COME FROM THE MIRROR ENTRY, because the mirror entry

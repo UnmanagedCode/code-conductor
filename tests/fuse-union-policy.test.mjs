@@ -43,12 +43,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import * as controlNs from '../src/systems/fuse/control.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { detectToolchain } from '../src/systems/fuse/build.ts';
 import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
   CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED,
-  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
+  CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const DRIVER_SRC = path.join(HERE, 'fixtures', 'union-policy-driver.c');
@@ -482,9 +481,7 @@ describe('the compiled policy driver', { skip }, () => {
       // THE FIFTH BIT, `0x10` on DIRTY: the worker's chmod, so the mirror
       // directory's mode is the worker's exact request and is pushed. It must
       // differ from every vector above or a plain DIRTY would push a mode.
-      // Read off the namespace so a tree without the export fails this vector
-      // rather than the whole file's import.
-      ['REQ_MODE_SET', CCU_OP.DIRTY, controlNs.CCU_FLAG_MODE_SET,
+      ['REQ_MODE_SET', CCU_OP.DIRTY, CCU_FLAG_MODE_SET,
         { forCreate: false, forWrite: false, removed: false, releaseOnly: false, modeSet: true }],
     ];
     for (const [name, op, flags, want] of vectors) {
@@ -1440,17 +1437,17 @@ describe('the compiled policy driver', { skip }, () => {
 
     for (const op of PUSHES) {
       const body = bodyOf(op);
-      assert.match(body, /push_mirror\(/, `pt_${op} mutates the mirror and pushes nothing`);
+      assert.match(body, /push_mirror(_flags)?\(/, `pt_${op} mutates the mirror and pushes nothing`);
       assert.doesNotMatch(body, /refuse_unreconcilable\(/, `pt_${op} is in both lists`);
     }
     for (const op of REFUSES) {
       const body = bodyOf(op);
       assert.match(body, /refuse_unreconcilable\(/, `pt_${op} succeeds against the mirror alone`);
-      assert.doesNotMatch(body, /push_mirror\(/, `pt_${op} is in both lists`);
+      assert.doesNotMatch(body, /push_mirror(_flags)?\(/, `pt_${op} is in both lists`);
     }
     for (const op of VIA_RELEASE) {
       const body = bodyOf(op);
-      assert.doesNotMatch(body, /push_mirror\(|refuse_unreconcilable\(/,
+      assert.doesNotMatch(body, /push_mirror(_flags)?\(|refuse_unreconcilable\(/,
         `pt_${op} should land through pt_release's push, not its own`);
       assert.match(body, /fd_tier_set\(/, `pt_${op} does not mark its fd, so release cannot push`);
     }

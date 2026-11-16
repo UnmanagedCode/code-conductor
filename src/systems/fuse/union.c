@@ -1588,7 +1588,7 @@ static int pt_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 		int e = errno;
 		cred_leave();
 		if (rc == -1) { abandon_claim(path, r.tier); return -e; }
-		return r.tier == T_PROJECT ? push_mirror("chmod", path, 0) : 0;
+		return r.tier == T_PROJECT ? push_mirror_flags("chmod", path, CCU_FLAG_MODE_SET) : 0;
 	}
 }
 

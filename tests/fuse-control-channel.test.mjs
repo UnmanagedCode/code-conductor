@@ -19,16 +19,12 @@ import { promises as fs, openSync, closeSync, constants as fsConstants } from 'n
 import { mkdtemp } from './tmpRegistry.mjs';
 import { padPathTo, waitFor } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
-         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
-import * as controlNs from '../src/systems/fuse/control.ts';
+         CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_FLAG_MODE_SET, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 
 const ENOENT = 2, EIO = 5, EACCES = 13;
-// Namespace-read so a tree without the export fails the arms that use it
-// instead of failing the whole file's import.
-const CCU_FLAG_MODE_SET = controlNs.CCU_FLAG_MODE_SET ?? 0x10;
 
 // One request, one reply, on its own connection.
 // `raw` lets a caller drive the helper with bytes of its own — used by the
@@ -623,6 +619,8 @@ describe('the control channel, cc side', () => {
   // mkdir. Dies if the reconcile only handles files.
   test('DIRTY lands a directory the mirror gained', async () => {
     const p = '/srv/app/newdir';
+    // A mkdir is a create claim, which is what declares the directory's mode.
+    await call(sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, p);
     await fs.mkdir(inMirror(p), { recursive: true });
     await fs.chmod(inMirror(p), 0o750);
     const r = await call(sock, CCU_OP.DIRTY, 0, p);

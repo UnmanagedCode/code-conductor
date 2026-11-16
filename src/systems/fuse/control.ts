@@ -53,6 +53,7 @@ export const CCU_FLAG_FOR_CREATE = 0x01;   // FETCH: the caller will CREATE `pat
 export const CCU_FLAG_FOR_WRITE  = 0x02;   // FETCH: the caller will MUTATE it
 export const CCU_FLAG_REMOVED    = 0x04;   // DIRTY: the worker REMOVED the entry
 export const CCU_FLAG_RELEASE_ONLY = 0x08; // DIRTY: release the claim, carry nothing
+export const CCU_FLAG_MODE_SET   = 0x10;   // DIRTY: the worker CHMODDED it — the mirror mode is its request
 
 export interface ControlRequest {
   op: number;
@@ -60,6 +61,7 @@ export interface ControlRequest {
   forWrite: boolean;
   removed: boolean;
   releaseOnly: boolean;
+  modeSet: boolean;
   path: string;
 }
 
@@ -89,6 +91,7 @@ export function decodeRequests(buf: Buffer): DecodeResult {
       forWrite: (flags & CCU_FLAG_FOR_WRITE) !== 0,
       removed: (flags & CCU_FLAG_REMOVED) !== 0,
       releaseOnly: (flags & CCU_FLAG_RELEASE_ONLY) !== 0,
+      modeSet: (flags & CCU_FLAG_MODE_SET) !== 0,
       path: buf.toString('utf8', off + CCU_REQ_HDR, off + CCU_REQ_HDR + pathlen),
     });
     off += CCU_REQ_HDR + pathlen;
@@ -497,7 +500,7 @@ export class ControlServer {
         case CCU_OP.STAT:  return await this.#stat(req.path, dest);
         case CCU_OP.LIST:  return await this.#list(req.path, dest);
         case CCU_OP.FETCH: return await this.#fetch(req.path, dest, req.forCreate, req.forWrite);
-        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite, req.releaseOnly);
+        case CCU_OP.DIRTY: return await this.#dirty(req.path, dest, req.removed, req.forWrite, req.releaseOnly, req.modeSet);
         default:
           this.#opts.log?.(`cc-union control: unknown op ${req.op} for '${req.path}'`);
           return encodeReply(CCU_STATUS.REFUSED, EIO);
@@ -746,7 +749,7 @@ export class ControlServer {
   // the original stays open, and releasing there left the next write batch on
   // that handle unprotected. `release` sends it clear, and is the only releaser.
   async #dirty(p: string, dest: string, removed: boolean, stillOpen = false,
-               releaseOnly = false): Promise<Buffer> {
+               releaseOnly = false, modeSet = false): Promise<Buffer> {
     // RELEASE_ONLY, AND IT IS ANSWERED BEFORE ANY SOURCE CALL. The handle is
     // closing and its `flush` already landed the bytes, so the releasing frame
     // has nothing left to carry — without this every written file uploaded
@@ -767,7 +770,17 @@ export class ControlServer {
       r = { error: `the mirror holds nothing at '${p}', and this session claimed it` };
     } else {
       await this.#restoreMode(p, dest);
-      r = await this.#opts.source.push(dest, p);
+      // A DIRECTORY'S MODE CROSSES ONLY ON DECLARED INTENT. The mirror
+      // directory carries owner rwx the source may not, so its mode is the
+      // worker's only when the worker chmodded it (MODE_SET) or just created
+      // it (a create claim); a utimens-style DIRTY ensures the directory
+      // exists and sends no mode. Read BEFORE the push, which cannot change it,
+      // and the directory is widened again after it on every outcome.
+      const mst = await fsp.lstat(dest).catch(() => null);
+      const isDir = mst !== null && mst.isDirectory();
+      const declared = modeSet || this.#claimed.get(p)?.createdHere === true;
+      r = await this.#opts.source.push(dest, p, { dirMode: isDir && declared ? mst.mode & 0o7777 : null });
+      if (isDir) await fsp.chmod(dest, widenDirMode(mst.mode & 0o7777)).catch(() => {});
       if (r !== 'ok') {
         // A FAILED PUSH IS LOUD AND STICKY, AND THE CLAIM IS KEPT — which is
         // what makes the worker's unpushed bytes survive. Dropping the claim
@@ -825,11 +838,12 @@ export class ControlServer {
   // 0644 — so pushing the mirror entry's own mode would silently strip a
   // 0755 script of its executable bit.
   //
-  // CHMOD THE MIRROR, DO NOT PASS A MODE THROUGH `push`. `RemoteSource.push`
-  // keeps its signature so both sources behave identically; the invariant
-  // `#shape` maintains — the mirror entry's mode is the source's — is RESTORED
-  // rather than bypassed; and the property becomes observable on this machine,
-  // so a test can assert the mirror as well as the source.
+  // FOR A FILE, CHMOD THE MIRROR, DO NOT PASS A MODE THROUGH `push`: the
+  // invariant `#shape` maintains — a mirror FILE's mode is the source's — is
+  // RESTORED rather than bypassed, so a test can assert the mirror as well as
+  // the source. A DIRECTORY is the other case: its mirror mode always carries
+  // cc's owner rwx, so `#dirty` passes `push` an explicit `dirMode` on declared
+  // intent only.
   //
   // A path with no recorded source mode is a file the worker created, and it
   // pushes the mirror's own mode. Correct.

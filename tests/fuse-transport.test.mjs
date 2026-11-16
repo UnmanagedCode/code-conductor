@@ -45,7 +45,7 @@ import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE,
-  CCU_FLAG_RELEASE_ONLY } from '../src/systems/fuse/control.ts';
+  CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 import { MAX_FILE_BYTES } from '../src/systems/protocol.ts';
@@ -941,15 +941,24 @@ describe("the write path — mode, faults and the double reconcile", () => {
       assert.equal((await call(CCU_OP.STAT, 0, d)).status, CCU_STATUS.READY);
       await fs.chmod(path.join(mirror, d), 0o700);
       const beforeDir = await wire();
-      assert.equal((await call(CCU_OP.DIRTY, 0, d)).status, CCU_STATUS.READY);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_MODE_SET, d)).status, CCU_STATUS.READY);
       const dirFrames = (await wire()) - beforeDir;
       // THREE, AND THEY ARE ALL THE PUSH'S OWN: `systemSource.push`'s dir arm
-      // is `lstat` (the wrong-kind probe) + `mkdir -p` + `chmod`. A FOURTH
+      // with a declared mode (the worker's chmod) is `lstat` (the wrong-kind
+      // probe) + `mkdir -p` + `chmod`; an undeclared DIRTY sends no chmod and
+      // costs two (asserted next). A FOURTH
       // would be a source stat taken for a fingerprint only a FILE has — which
       // is what the local kind test in `#adoptWriteMtime` exists to avoid, and
       // what a mutant removing it puts back.
       assert.equal(dirFrames, 3,
         `a directory reconcile cost ${dirFrames} source round trips, not the push's own 3`);
+      const d2 = path.join(src, 'b-dir');
+      await fs.mkdir(d2);
+      assert.equal((await call(CCU_OP.STAT, 0, d2)).status, CCU_STATUS.READY);
+      const beforeUndeclared = await wire();
+      assert.equal((await call(CCU_OP.DIRTY, 0, d2)).status, CCU_STATUS.READY);
+      assert.equal((await wire()) - beforeUndeclared, 2,
+        'an undeclared directory DIRTY must send no chmod: lstat + mkdir -p only');
 
       // ── THE FILE ARM, and the saving it buys. Write through the union, then
       //    open the path again: the source's mtime is FRESH after the atomic
