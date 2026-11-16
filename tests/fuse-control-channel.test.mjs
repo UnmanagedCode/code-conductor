@@ -1507,7 +1507,9 @@ describe('read-only remote ancestors under a wide mirror root', {
       open();
       assert.equal((await fetching).status, CCU_STATUS.READY);
       assert.equal((await listing).status, CCU_STATUS.READY);
-      assert.equal(await fs.readFile(path.join(f.mirror, 'root/cc/ro.txt'), 'utf8'), 'version-two',
+      // The fetch copies the source as it is when the gate opens (v3), so the
+      // bytes are the fetched ones; a sparse stub would read as zeros.
+      assert.equal(await fs.readFile(path.join(f.mirror, 'root/cc/ro.txt'), 'utf8'), 'version-three-is-longer',
         'the fetched bytes were overwritten by a sparse stub');
     } finally { open?.(); await f.close(); }
   });

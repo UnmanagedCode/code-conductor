@@ -19,6 +19,25 @@ const OWNER_RWX = 0o700;
 // `mode` with owner rwx added; group, other, setgid and sticky bits are kept.
 export const widenDirMode = (mode: number): number => mode | OWNER_RWX;
 
+// A leaf-only mutex per key: `run` serialises callers on one key, and `fn` must
+// not take another `KeyedLock` key, so no lock order exists to get wrong.
+export class KeyedLock {
+  readonly #tails = new Map<string, Promise<void>>();
+
+  async run<T>(key: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.#tails.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const tail = prev.then(() => new Promise<void>((r) => { release = r; }));
+    this.#tails.set(key, tail);
+    await prev;
+    try { return await fn(); }
+    finally {
+      release();
+      if (this.#tails.get(key) === tail) this.#tails.delete(key);
+    }
+  }
+}
+
 // `rm -rf` that survives read-only directories BELOW `p`: on EACCES, give every
 // directory in the subtree owner rwx (best-effort) and remove again. It never
 // touches `p`'s parent — mirror directories are widened by invariant — so a
