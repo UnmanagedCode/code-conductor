@@ -25,6 +25,7 @@ import path from 'node:path';
 import { promises as fsp, writeFileSync, chmodSync } from 'node:fs';
 import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
+import { removeOwnedTree } from './mirrorPerms.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
 import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseStoreChain } from './plan.ts';
 import { suggestPin } from './tierTable.ts';
@@ -866,7 +867,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       notes.push('mount.json appeared between the verdict and the delete; leaving it for the sweep');
       report.wedged = true;
     } else {
-      try { await fsp.rm(rundir, { recursive: true, force: true }); report.removedRunDir = true; }
+      try { await removeOwnedTree(rundir); report.removedRunDir = true; }
       catch (e) { notes.push(`could not reclaim ${rundir}: ${(e as Error).message}`); }
     }
   }

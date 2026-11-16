@@ -122,12 +122,8 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       // children: every name a tier prefix under `top` leads through, less the
       // ones `hide` or `fail` suppress.
       //
-      // LISTED AT 0755, NOT 0555. A known gap: a child shaped into a mirror
-      // directory without owner-write fails, because `#stat` gives the mirror
-      // directory the remote's mode and cc's uid cannot then create the
-      // children `#list` shapes into it, so the marked readdir of a read-only
-      // remote directory answers EIO. The 0555 half above is the mkdir one.
-      await fs.chmod(remoteTop, 0o755);
+      // LISTED AT 0555, the remote's own mode: cc grants itself owner write
+      // only for the op that shapes a child into the mirror directory.
       const pinChildren = new Set();
       for (const e of inst._redirect.tiers) {
         const rel = path.relative(top, e.prefix);
@@ -185,5 +181,44 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
       if (inst) await instances.remove(inst.id);
     }
     assertNoResidue(before, runRoot, null, 'P2');
+  });
+
+  // P3 — the remote's `/` and every ancestor of the wide project are 0555.
+  // INVARIANT: read-only remote ancestors do not make the marked CLI's reads
+  // fail — the readdir, the stat and a file read all succeed, the worker sees
+  // the remote's true 0555, and teardown still reclaims the run dir.
+  test('P3 — read-only ancestors of a wide project: a marked readdir, stat and read succeed at the true mode', async () => {
+    const before = snapshot(runRoot);
+    const projDir = path.join(box, 'wide', 'appw');
+    const readOnly = [fakeRemote, ...ancestorsOf(projDir).map(a => path.join(fakeRemote, a))]
+      .filter(d => d !== path.join(fakeRemote, projDir));
+    const was = new Map();
+    for (const d of readOnly) {
+      const st = await fs.stat(d).catch(() => null);
+      if (!st) continue;
+      was.set(d, st.mode & 0o7777);
+    }
+    for (const d of was.keys()) await fs.chmod(d, 0o555);
+    let inst;
+    try {
+      inst = await spawnWorker('chroot', 'appw');
+      const record = await readRecord(inst.id);
+
+      const ls = await markedNode(inst, record, READDIR, inside(record, '/'));
+      assert.equal(ls.ok, true, `the marked readdir of / failed: ${ls.stderr}`);
+      const st = await markedNode(inst, record,
+        'console.log((require("fs").statSync(process.argv[1]).mode&0o777).toString(8))', inside(record, '/'));
+      assert.equal(st.ok, true, `the marked stat of / failed: ${st.stderr}`);
+      assert.equal(st.stdout.trim(), '555', 'the worker does not see the remote\u2019s true mode for /');
+      const rd = await markedNode(inst, record,
+        'console.log(require("fs").readFileSync(process.argv[1],"utf8").trim())',
+        inside(record, path.join(projDir, 'remote-marker.txt')));
+      assert.equal(rd.ok, true, `the marked read of remote-marker.txt failed: ${rd.stderr}`);
+      assert.equal(rd.stdout.trim(), 'SYSTEM-SIDE-PROJECT-FILE', 'the read did not come from the remote');
+    } finally {
+      for (const [d, m] of was) await fs.chmod(d, m).catch(() => {});
+      if (inst) await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'P3');
   });
 });

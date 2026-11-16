@@ -26,6 +26,7 @@ import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import { isSourceError, type RemoteSource } from './remoteSource.ts';
 import { MAX_FILE_BYTES } from '../protocol.ts';
+import { DirGrants, withOwnerWrite, removeOwnedTree } from './mirrorPerms.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
 //
@@ -223,6 +224,8 @@ export class ControlServer {
   // source's stale size while a writable handle held unpushed bytes, destroying
   // them, and the `DIRTY` would then push the mangled copy.
   #inflight = new Map<string, Promise<Buffer>>();
+  // cc's own write access to mirror dirs the source made read-only.
+  readonly #grants = new DirGrants();
   // TRACKED EXPLICITLY, because `net.Server` exposes a connection COUNT and not
   // the sockets. `server.close()` stops accepting and then waits for every live
   // connection to end on its own — and the daemon holds one per FUSE worker
@@ -545,7 +548,7 @@ export class ControlServer {
       await this.#unmirror(dest);
       return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     }
-    await fsp.mkdir(dest, { recursive: true });
+    await this.#grants.mkdirp(dest);
     const want = new Set<string>();
     for (const c of kids) {
       const child = path.posix.join(p, c.name);
@@ -559,7 +562,11 @@ export class ControlServer {
       if (this.#claimHeld(child)) continue;
       await this.#shape(path.posix.join(dest, c.name), c.kind, c.size, c.mode, c.mtimeMs, c.target);
     }
-    for (const name of await fsp.readdir(dest).catch(() => [] as string[])) {
+    const present = await this.#grants.inDir(dest, () => fsp.readdir(dest)).catch((e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') return [] as string[];
+      throw e;
+    });
+    for (const name of present) {
       const child = path.posix.join(p, name);
       if (!want.has(name) && !this.#claimHeld(child)) {
         await this.#unmirror(path.posix.join(dest, name));
@@ -628,7 +635,7 @@ export class ControlServer {
       const parent = await this.#opts.source.stat(path.posix.dirname(p));
       if (isSourceError(parent)) return this.#sourceFailed('FETCH', p, parent.error);
       if (parent === null) return encodeReply(CCU_STATUS.ABSENT, ENOENT);
-      await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
+      await this.#grants.mkdirp(path.posix.dirname(dest));
       // The path itself may legitimately not exist yet; an absent source entry
       // is not a refusal here, the create will make it — and cc records that it
       // is about to exist in the mirror alone.
@@ -666,7 +673,9 @@ export class ControlServer {
       return encodeReply(CCU_STATUS.REFUSED, EFBIG);
     }
     if (await this.#stillFresh(p, dest, st)) return encodeReply(CCU_STATUS.READY, 0);
-    const got = await this.#opts.source.fetch(p, dest);
+    // A READ-ONLY STUB IS OVERWRITTEN under a transient owner-write grant, and
+    // its mode is put back to the source's whatever the outcome.
+    const got = await withOwnerWrite(dest, st.mode, () => this.#opts.source.fetch(p, dest));
     if (got === 'absent') return encodeReply(CCU_STATUS.ABSENT, ENOENT);
     if (got === 'refused') return encodeReply(CCU_STATUS.REFUSED, EACCES);
     await fsp.chmod(dest, st.mode).catch(() => {});
@@ -913,36 +922,51 @@ export class ControlServer {
   // Make `<mirror>/P` be of `kind`, with the source's mode, size and mtime. A
   // mirror entry of the WRONG kind is replaced, not adjusted: a directory that
   // became a file on the source cannot be chmod'd into one.
+  //
+  // THE MIRROR MODE STAYS THE SOURCE'S. Every write below that a read-only
+  // parent or file would refuse goes through `DirGrants`/`withOwnerWrite`,
+  // which grant owner write for the one operation and restore the mode.
   async #shape(dest: string, kind: 'file' | 'dir' | 'symlink', size: number, mode: number, mtimeMs: number, target?: string): Promise<void> {
-    await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
-    let cur: import('node:fs').Stats | null = null;
-    try { cur = await fsp.lstat(dest); } catch { /* absent */ }
-    const kindOf = (s: import('node:fs').Stats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
-    if (cur && kindOf(cur) !== kind) { await this.#unmirror(dest); cur = null; }
+    const parent = path.posix.dirname(dest);
+    await this.#grants.mkdirp(parent);
+    await this.#grants.inDir(parent, async () => {
+      let cur: import('node:fs').Stats | null = null;
+      try { cur = await fsp.lstat(dest); }
+      catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
+      const kindOf = (s: import('node:fs').Stats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
+      if (cur && kindOf(cur) !== kind) { await removeOwnedTree(dest); cur = null; }
 
-    if (kind === 'symlink') {
-      if (cur && await fsp.readlink(dest).catch(() => null) === target) return;
-      await this.#unmirror(dest);
-      await fsp.symlink(target ?? '', dest);
-      return;
-    }
-    if (kind === 'dir') {
-      if (!cur) await fsp.mkdir(dest, { recursive: true });
+      if (kind === 'symlink') {
+        if (cur && await fsp.readlink(dest).catch(() => null) === target) return;
+        await removeOwnedTree(dest);
+        await fsp.symlink(target ?? '', dest);
+        return;
+      }
+      if (kind === 'dir') {
+        if (!cur) await fsp.mkdir(dest);
+        return;
+      }
+      // A file already the right size and mtime is left ALONE — re-truncating it
+      // would discard bytes an earlier FETCH put there, and every read is
+      // preceded by an open and therefore by a FETCH, so the only thing that
+      // would achieve is throwing work away.
+      if (cur && cur.size === size && Math.floor(cur.mtimeMs) === Math.floor(mtimeMs)) return;
+      // A NEW file's O_CREAT fd is writable whatever `mode` is; an EXISTING
+      // read-only one needs the owner-write grant to be re-truncated.
+      await withOwnerWrite(dest, mode, async () => {
+        const fh = await fsp.open(dest, fsc.O_CREAT | fsc.O_WRONLY, mode);
+        try { await fh.truncate(size); } finally { await fh.close(); }
+      });
       await fsp.chmod(dest, mode).catch(() => {});
-      return;
-    }
-    // A file already the right size and mtime is left ALONE — re-truncating it
-    // would discard bytes an earlier FETCH put there, and every read is
-    // preceded by an open and therefore by a FETCH, so the only thing that
-    // would achieve is throwing work away.
-    if (cur && cur.size === size && Math.floor(cur.mtimeMs) === Math.floor(mtimeMs)) return;
-    const fh = await fsp.open(dest, fsc.O_CREAT | fsc.O_WRONLY, mode);
-    try { await fh.truncate(size); } finally { await fh.close(); }
-    await fsp.chmod(dest, mode).catch(() => {});
-    await fsp.utimes(dest, new Date(mtimeMs), new Date(mtimeMs)).catch(() => {});
+      await fsp.utimes(dest, new Date(mtimeMs), new Date(mtimeMs)).catch(() => {});
+    });
+    // OUTSIDE the callback: `setDirMode` takes the directory's own lock.
+    if (kind === 'dir') await this.#grants.setDirMode(dest, mode).catch(() => {});
   }
 
+  // Never throws, so reply semantics are unchanged; a failure is logged.
   async #unmirror(dest: string): Promise<void> {
-    await fsp.rm(dest, { recursive: true, force: true }).catch(() => {});
+    try { await this.#grants.inDir(path.posix.dirname(dest), () => removeOwnedTree(dest)); }
+    catch (e) { this.#opts.log?.(`cc-union control: could not unmirror '${dest}': ${String(e)}`); }
   }
 }
