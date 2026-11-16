@@ -1,6 +1,6 @@
 // The PWA icons' plate and colours: the maskable icon is the light mark on the
 // app's light background, the manifest and icon.svg cannot drift from logoArt.ts,
-// and the maskable ink bound is a still-enforced limit past the spec's 0.4.
+// and the maskable ink bound is an enforced limit past the spec's 0.4.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

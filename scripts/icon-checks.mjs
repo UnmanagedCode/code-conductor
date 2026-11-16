@@ -1,6 +1,6 @@
 // The pixel self-checks scripts/build-icons.mjs runs on every PNG it writes.
 
-/** How far from the centre a maskable icon's ink may reach, as a fraction of its size. Past the maskable spec's 0.4 safe zone for a larger glyph, yet a tighter margin than before, so a typical round launcher mask keeps the whole mark, baton tip included (launchers crop differently; this is a margin, not a guarantee). It still bounds the art: a larger art box fails. */
+/** How far from the centre a maskable icon's ink may reach, as a fraction of its size. Past the maskable spec's 0.4 safe zone for a larger glyph, yet tight enough that a typical round launcher mask keeps the whole mark, baton tip included (launchers crop differently; this is a margin, not a guarantee). It bounds the art: a larger art box fails. */
 export const MASKABLE_INK_RADIUS = 0.44;
 
 /** What is wrong with the `size`² RGBA `px` for `check`, drawn on `plate` ([r, g, b]), or [] when nothing is. */
