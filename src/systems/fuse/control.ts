@@ -958,10 +958,11 @@ export class ControlServer {
   // `p` is the REMOTE path, for the claim check.
   async #shape(p: string, dest: string, kind: 'file' | 'dir' | 'symlink', size: number, mode: number, mtimeMs: number, target?: string): Promise<void> {
     await fsp.mkdir(path.posix.dirname(dest), { recursive: true });
-    let cur: import('node:fs').Stats | null = null;
-    try { cur = await fsp.lstat(dest); }
+    // `bigint: true`: an inode number can exceed 2^53 and the read-only branch below compares it.
+    let cur: import('node:fs').BigIntStats | null = null;
+    try { cur = await fsp.lstat(dest, { bigint: true }); }
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ENOENT') throw e; }
-    const kindOf = (s: import('node:fs').Stats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
+    const kindOf = (s: import('node:fs').BigIntStats): string => s.isSymbolicLink() ? 'symlink' : s.isDirectory() ? 'dir' : 'file';
     if (cur && kindOf(cur) !== kind) { await removeOwnedTree(dest); cur = null; }
 
     if (kind === 'symlink') {
@@ -983,14 +984,14 @@ export class ControlServer {
     // would discard bytes an earlier FETCH put there, and every read is
     // preceded by an open and therefore by a FETCH, so the only thing that
     // would achieve is throwing work away.
-    if (cur && cur.size === size && Math.floor(cur.mtimeMs) === Math.floor(mtimeMs)) return;
+    if (cur && Number(cur.size) === size && Number(cur.mtimeMs) === Math.floor(mtimeMs)) return;
     // An existing READ-ONLY file is replaced by rename, never opened for write.
-    if (cur && (cur.mode & 0o200) === 0) {
+    if (cur && (Number(cur.mode) & 0o200) === 0) {
       const seen = cur;
       await this.#destLocks.run(dest, async () => {
         // COMPARE BEFORE SWAPPING: a FETCH that replaced the file since `seen`
         // was read holds newer bytes than this stub, so the stub must not land.
-        const now = await fsp.lstat(dest).catch(() => null);
+        const now = await fsp.lstat(dest, { bigint: true }).catch(() => null);
         if (!now || now.ino !== seen.ino || now.size !== seen.size || now.mtimeMs !== seen.mtimeMs) return;
         await replaceViaScratch(this.#scratch, dest, mode, mtimeMs, async (tmp) => {
           const fh = await fsp.open(tmp, fsc.O_CREAT | fsc.O_EXCL | fsc.O_WRONLY, 0o600);

@@ -1226,7 +1226,10 @@ describe('read-only remote ancestors under a wide mirror root', {
       const sp = path.join(f.cc, 'ro.txt');
       await fs.chmod(sp, 0o644);
       await fs.writeFile(sp, 'readonly-two-longer');
-      const t = new Date(Date.now() + 5000);
+      // A WHOLE-SECOND mtime: a fractional one reads back with sub-ms noise that
+      // can floor to a different ms than cc stamps, making the FETCH's own shape
+      // re-stub and reuse the stub's freed inode.
+      const t = new Date(Math.ceil(Date.now() / 1000) * 1000 + 5000);
       await fs.utimes(sp, t, t);
       await fs.chmod(sp, 0o444);
       assert.equal((await call(f.sock, CCU_OP.STAT, 0, '/root/cc/ro.txt')).status, CCU_STATUS.READY);
@@ -1488,17 +1491,23 @@ describe('read-only remote ancestors under a wide mirror root', {
     try {
       await walkTo(f, '/root/cc/ro.txt');                                     // a v1 stub, read-only
       const sp = path.join(f.cc, 'ro.txt');
-      const bump = async (text, offsetMs) => {
+      // ONE mtime for every version, so only the SIZE tells a LIST the stub is
+      // stale. A fetch stamps the file with the mtime it saw before copying; if
+      // the versions differed in mtime too, a LIST arriving after the fetch
+      // would (legitimately, and silently) re-stub, and the outcome would
+      // depend on ordering rather than on the lock.
+      const stamp = new Date(Math.ceil(Date.now() / 1000) * 1000 + 5000);
+      const bump = async (text) => {
         await fs.chmod(sp, 0o644); await fs.writeFile(sp, text);
-        const t = new Date(Date.now() + offsetMs); await fs.utimes(sp, t, t); await fs.chmod(sp, 0o444);
+        await fs.utimes(sp, stamp, stamp); await fs.chmod(sp, 0o444);
       };
-      await bump('version-two', 5000);
+      await bump('version-two');
       gate = { promise: new Promise(r => { open = r; }) };
       const seen = new Promise(r => { reached = r; });
       const fetching = call(f.sock, CCU_OP.FETCH, 0, '/root/cc/ro.txt');
       fetching.catch(() => {});                                               // a failed assert below must not orphan it
       await seen;                                                             // the fetch holds the file
-      await bump('version-three-is-longer', 10000);                           // the LIST will see a newer source
+      await bump('version-three-is-longer');                           // the LIST will see a newer source
       const other = await f.open();
       const listing = call(other, CCU_OP.LIST, 0, '/root/cc');
       listing.catch(() => {});

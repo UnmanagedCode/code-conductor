@@ -29,13 +29,16 @@ export class KeyedLock {
     let release!: () => void;
     const tail = prev.then(() => new Promise<void>((r) => { release = r; }));
     this.#tails.set(key, tail);
-    await prev;
+    await prev;   // never rejects: every tail is `prev.then(<resolves on release>)`, and release runs in `finally`
     try { return await fn(); }
     finally {
       release();
       if (this.#tails.get(key) === tail) this.#tails.delete(key);
     }
   }
+
+  // Keys with a holder or waiter; zero when every run has settled.
+  get size(): number { return this.#tails.size; }
 }
 
 // `rm -rf` that survives read-only directories BELOW `p`: on EACCES, give every

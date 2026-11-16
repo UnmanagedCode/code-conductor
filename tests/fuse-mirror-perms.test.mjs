@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { promises as fs } from 'node:fs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { removeOwnedTree, replaceViaScratch, widenDirMode } from '../src/systems/fuse/mirrorPerms.ts';
+import { KeyedLock, removeOwnedTree, replaceViaScratch, widenDirMode } from '../src/systems/fuse/mirrorPerms.ts';
 
 const modeOf = async (p) => (await fs.stat(p)).mode & 0o777;
 
@@ -34,6 +34,34 @@ describe('widenDirMode', () => {
     assert.equal(widenDirMode(0o333), 0o733);
     assert.equal(widenDirMode(0o2555), 0o2755);
     assert.equal(widenDirMode(0o1000), 0o1700);
+  });
+});
+
+describe('KeyedLock', () => {
+  // PINS: callers on one key run one at a time in order.
+  test('serialises callers on one key, in order', async () => {
+    const lock = new KeyedLock();
+    const seen = [];
+    let open; const gate = new Promise(r => { open = r; });
+    const a = lock.run('k', async () => { seen.push('a-start'); await gate; seen.push('a-end'); });
+    const b = lock.run('k', async () => { seen.push('b'); });
+    await new Promise(r => setImmediate(r));
+    assert.deepEqual(seen, ['a-start'], 'the second caller ran while the first held the key');
+    open(); await Promise.all([a, b]);
+    assert.deepEqual(seen, ['a-start', 'a-end', 'b']);
+  });
+
+  // PINS: a throwing holder still releases its key (the next run completes), a
+  // different key is never blocked, and the map is empty once all have settled.
+  test('releases the key when the locked function throws, leaves other keys alone, and cleans up', async () => {
+    const lock = new KeyedLock();
+    await assert.rejects(() => lock.run('k', async () => { throw new Error('boom'); }), /boom/);
+    assert.equal(await lock.run('k', async () => 'second'), 'second');
+    let open; const gate = new Promise(r => { open = r; });
+    const held = lock.run('held', () => gate);
+    assert.equal(await lock.run('other', async () => 'free'), 'free', 'another key was blocked');
+    open(); await held;
+    assert.equal(lock.size, 0, 'a settled key was left in the map');
   });
 });
 
