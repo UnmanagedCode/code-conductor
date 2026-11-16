@@ -13,6 +13,7 @@
 // Replay source: the session jsonl's `hook_additional_context` attachment,
 // recognized by hookContextEventsFromAttachment in src/transcript.ts.
 
+import { isRecord } from '../shared/basics.ts';
 import type { UiEventOf } from '../shared/uiEvent.ts';
 
 type HookContext = UiEventOf<'hook_context'>;
@@ -23,9 +24,6 @@ export const HOOK_CONTEXT_EVENTS: readonly HookContextEventName[] = ['UserPrompt
 
 const isHookContextEventName = (v: unknown): v is HookContextEventName =>
   typeof v === 'string' && (HOOK_CONTEXT_EVENTS as readonly string[]).includes(v);
-
-const isPlainObject = (v: unknown): v is Record<string, unknown> =>
-  v != null && typeof v === 'object' && !Array.isArray(v);
 
 // THE constructor of the event, for every live and replay site.
 export function hookContextEvent({ hookEvent, toolUseId, toolName, text }: {
@@ -46,9 +44,9 @@ export function hookContextFromResponse(frame: Record<string, unknown> | null | 
   if (typeof frame.output !== 'string') return null;
   let parsed: unknown;
   try { parsed = JSON.parse(frame.output); } catch { return null; }
-  if (!isPlainObject(parsed)) return null;
+  if (!isRecord(parsed)) return null;
   const out = parsed.hookSpecificOutput;
-  if (!isPlainObject(out)) return null;
+  if (!isRecord(out)) return null;
   const text = out.additionalContext;
   if (typeof text !== 'string' || text === '') return null;
   return hookContextEvent({ hookEvent: 'UserPromptSubmit', toolUseId: null, toolName: null, text });
