@@ -1295,6 +1295,8 @@ describe('read-only remote ancestors under a wide mirror root', {
       await fs.mkdir(path.join(f.mirror, 'root'));
       await fs.chmod(path.join(f.mirror, 'root'), 0o555);
       await fs.chmod(f.mirror, 0o555);
+      const first = await call(f.sock, CCU_OP.LIST, 0, '/root');
+      assert.equal(first.status, CCU_STATUS.READY, `LIST '/root' under a read-only mirror dir: errno ${first.err}`);
       const reqs = [];
       for (let i = 0; i < 6; i++) {
         for (const [s, op, p] of [[f.sock, CCU_OP.LIST, '/'], [other, CCU_OP.STAT, '/'],
