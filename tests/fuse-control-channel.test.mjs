@@ -1220,7 +1220,6 @@ describe('read-only remote ancestors under a wide mirror root', {
       assert.equal(first.status, CCU_STATUS.READY, `errno ${first.err}`);
       assert.equal(await fs.readFile(mp, 'utf8'), 'readonly-1');
       assert.equal(await modeOf(mp), 0o444);
-      const ino1 = (await fs.stat(mp)).ino;
 
       const sp = path.join(f.cc, 'ro.txt');
       await fs.chmod(sp, 0o644);
@@ -1229,11 +1228,14 @@ describe('read-only remote ancestors under a wide mirror root', {
       await fs.utimes(sp, t, t);
       await fs.chmod(sp, 0o444);
       assert.equal((await call(f.sock, CCU_OP.STAT, 0, '/root/cc/ro.txt')).status, CCU_STATUS.READY);
+      // Compared against the STUB's inode, not an earlier one: a freed inode is
+      // reused by the next create, so only the live predecessor is a safe guard.
+      const stubIno = (await fs.stat(mp)).ino;
       const second = await call(f.sock, CCU_OP.FETCH, 0, '/root/cc/ro.txt');
       assert.equal(second.status, CCU_STATUS.READY, `errno ${second.err}`);
       assert.equal(await fs.readFile(mp, 'utf8'), 'readonly-two-longer');
       assert.equal(await modeOf(mp), 0o444);
-      assert.notEqual((await fs.stat(mp)).ino, ino1, 'the file was rewritten in place instead of replaced by rename');
+      assert.notEqual((await fs.stat(mp)).ino, stubIno, 'the file was rewritten in place instead of replaced by rename');
       assert.deepEqual(await fs.readdir(f.refresh).catch(() => null), [], 'the scratch dir holds a leftover temp file');
     } finally { await f.close(); }
   });
