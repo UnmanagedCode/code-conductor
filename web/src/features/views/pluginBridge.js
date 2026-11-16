@@ -32,7 +32,8 @@
 // <fallback>)` applies.
 //
 // History contract: entering a plugin costs exactly ONE joint history entry,
-// so hardware Back always lands on the conductor. The bridge enforces it by
+// so hardware Back lands on the session (the plugin as the rail where Collapse
+// shows, else Conductor). The bridge enforces it by
 // patching pushState → replaceState inside the iframe. (Documented
 // limitation: multi-page — non-SPA — plugins still pollute joint history.)
 (function () {

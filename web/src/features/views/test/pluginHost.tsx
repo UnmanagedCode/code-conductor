@@ -10,6 +10,7 @@ import { settle } from '@/test/settle';
 import { syncRoute } from '@/state/route';
 import type { Instance } from '@/state/types';
 import { uiStore } from '@/app/ui';
+import { closeDock } from '../dock';
 import { pluginFrames, type PluginRow } from '../plugins';
 
 export type StatusRow = { state?: string; enabled?: boolean; frontendKeepAlive?: boolean };
@@ -79,9 +80,12 @@ export function resetHost(url = '/') {
   });
 }
 
-/** Ends every frame through the host's own paths: leaving the view, then an evicting action naming each resident plugin. */
+/** Ends every frame through the host's own paths: leaving the view, then an evicting action naming each resident plugin. The route returns to the session and the dock is closed, so the next test's reset does not leave a plugin view the dock would park. */
 export async function endHost() {
   pluginFrames.leave();
+  history.replaceState(null, '', '/');
+  syncRoute();
+  closeDock();
   await act(async () => { await pluginFrames.reconcile({ action: 'restart', ids: pluginFrames.residentIds() }); });
   vi.unstubAllGlobals();
 }

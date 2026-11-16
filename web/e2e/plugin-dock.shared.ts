@@ -92,12 +92,6 @@ async function expectHidden(page: Page, what: string) {
   await expect(column(page), `${what}: the column hidden`).toHaveAttribute('data-dock-mode', 'hidden');
 }
 
-/** Picks `p` from the app switcher wherever it shows, whatever it opens (the URL is the session's for a split). */
-async function pick(page: Page, p: ProbePlugin) {
-  await next.openSwitcher(page);
-  await page.locator(`[data-app-id="${p.id}"]`).click();
-}
-
 /** Escape with the pointer clear of every tooltip (a closing tooltip takes the Escape). */
 async function escape(page: Page) {
   await parkPointer(page);
@@ -248,7 +242,7 @@ export async function fullCollapseFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function fullExitFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F7): Back from the full view lands on Conductor, never on a split, Escape collapses it to the rail (the Conductor pick then hides that), and a switch between plugins in full costs no history entry (Chromium's queued Back, which happy-dom cannot model).
+  // Invariant (F7): Back from the full view lands on the session with that plugin as the rail, never on a split, Escape collapses it to the rail the same way (the Conductor pick then hides that), and a switch between plugins in full costs no history entry (Chromium's queued Back, which happy-dom cannot model).
   desktopOnly();
   await onSession(page, cc, 'exit');
   await dockSplit(page, PLAIN);
@@ -256,7 +250,9 @@ export async function fullExitFlow({ page, cc }: Args): Promise<void> {
   await expect(page).toHaveURL(new RegExp(`#plugin/${PLAIN.id}/$`));
   await page.goBack();
   await expect(page).toHaveURL(/#session=/);
-  await expectHidden(page, 'Back from an expanded split');
+  await expect(column(page), 'Back from an expanded split gives the rail').toHaveAttribute('data-dock-mode', 'rail');
+  await next.leavePlugin(page);
+  await expectHidden(page, 'Conductor from that rail');
 
   await dockSplit(page, PLAIN);
   await toggle(page, 'Expand to full view').click();
@@ -273,7 +269,8 @@ export async function fullExitFlow({ page, cc }: Args): Promise<void> {
   expect(await historyLength(page), 'a switch in full costs no entry').toBe(entries);
   await page.goBack();
   await expect(page).toHaveURL(/#session=/);
-  await expectHidden(page, 'Back after a switch in full');
+  await expect(column(page), 'Back after a switch in full gives the rail').toHaveAttribute('data-dock-mode', 'rail');
+  await expect(column(page).locator('[data-dock-rail-label]'), 'the rail is on the plugin switched to').toContainText(KEEP.name);
 }
 
 /** Injects `<a target="_top">` to cc's own page at `#plugin/<id>/inner` into `from`'s page and clicks it with the real mouse. */
@@ -408,7 +405,7 @@ export async function keyboardFlow({ page, cc }: Args): Promise<void> {
 }
 
 export async function narrowWindowFlow({ page, cc }: Args): Promise<void> {
-  // Invariant (F9, F5, F7): a window too narrow for any split shows the plugin over the session without writing anything, Escape collapses it to the rail and a user's session pick closes it, keeping the remembered split; a window too narrow for the stored width clamps split; widening restores the stored width.
+  // Invariant (F9, F5, F7): a window too narrow for any split shows the plugin over the session without writing anything, Escape collapses it to the rail and a user's session pick collapses it again, keeping the split selected and remembered; a window too narrow for the stored width clamps split; widening restores the stored width.
   desktopOnly();
   const otherProject = label('narrow-other');
   const { sessionId: other } = await spawnSession(cc, otherProject);
@@ -451,21 +448,21 @@ export async function narrowWindowFlow({ page, cc }: Args): Promise<void> {
   expect(await storedDock(page)).toMatchObject({ id: PLAIN.id, mode: 'split' });
   expect(await page.evaluate((k) => localStorage.getItem(k), COLLAPSED_KEY), 'collapsed').toBe('true');
 
-  // (3) Expand covers again (a re-pick of the shown plugin does nothing); a session row click closes it.
+  // (3) Expand covers again (a re-pick of the shown plugin does nothing); a session row click collapses it again.
   await column(page).getByRole('button', { name: 'Expand plugin dock', exact: true }).click();
   await expect(section(page), 'fixture check: expanded').toBeVisible();
   await expect(main(page), 'fixture check: covered again').toBeHidden();
   await (await next.sessionRow(page, otherProject, other)).click();
   await expect(page).toHaveURL(new RegExp(`#session=${other}$`));
-  await expect(section(page), 'the session pick closed it').toBeHidden();
+  await expect(column(page), 'the session pick gave the rail').toHaveAttribute('data-dock-mode', 'rail');
   await expect(main(page)).toBeVisible();
-  expect(await storedDock(page), 'split stays remembered, nothing selected').toMatchObject({ id: null, mode: 'split' });
+  expect(await storedDock(page), 'split stays selected and remembered').toMatchObject({ id: PLAIN.id, mode: 'split' });
 
-  // (4) Widening reopens nothing; the next pick is the split at the stored width.
+  // (4) Widening keeps the rail; Expand is the split at the stored width.
   await page.setViewportSize({ width: ROOMY, height });
-  await expectHidden(page, 'wide again');
-  await pick(page, PLAIN);
-  await expectSplit(page, 'the next pick');
+  await expect(column(page), 'wide again: still the rail').toHaveAttribute('data-dock-mode', 'rail');
+  await column(page).getByRole('button', { name: 'Expand plugin dock', exact: true }).click();
+  await expectSplit(page, 'Expand');
   await expect(handle(page)).toHaveAttribute('aria-valuenow', String(W));
 }
 

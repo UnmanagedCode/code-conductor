@@ -19,17 +19,15 @@ import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { cn } from '@/lib/utils';
 import { appLabel, catalogStore, pluginFrames, refreshCatalog, residentSignal, RESIDENT_SUFFIX } from './plugins';
 import { shownApp, switcherSlot, type SwitcherSlot } from './dockLayout';
-import { closeDock, dockModeStore, dockStore, selectApp } from './dock';
-import { showActiveSession } from './ViewShell';
+import { closeToConductor, dockModeStore, dockStore, selectApp } from './dock';
 import { PluginIcon } from './PluginIcon';
 
 /** The Conductor entry's value in the switcher's radio group; no plugin id is empty. */
 const CONDUCTOR = '';
 
-/** Back to Conductor: no plugin in split, and the active session. */
+/** Back to Conductor: the one full close — no plugin docked or in full, and the active session. */
 export function exitToConductor() {
-  closeDock();
-  showActiveSession();
+  closeToConductor();
   closeSidebarOnMobile();
 }
 
