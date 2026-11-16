@@ -310,12 +310,16 @@ test('HookBroker: a redirect post note emits one hook context; no note emits not
   assert.equal(b.seen.length, 1, 'a {} answer emits nothing');
 });
 
-test('HookBroker: an envelope without a tool_use_id emits a null toolUseId', async () => {
+// INVARIANT: a missing or empty tool_use_id names no call, so the reported
+// toolUseId is null; an empty string never reaches the client as a call id.
+test('HookBroker: an envelope without a tool_use_id, or with an empty one, emits a null toolUseId', async () => {
   const redirect = { preToolUse: async () => ({ decision: 'allow' }), postToolUse: async () => 'n' };
   const b = recordingBroker({ getRedirect: () => redirect });
   await b.answer(postEnvelope('Bash', undefined));
-  assert.equal(b.seen.length, 1);
-  assert.equal(b.seen[0].toolUseId, null);
+  await b.answer(postEnvelope('Bash', ''));
+  assert.equal(b.seen.length, 2);
+  assert.equal(b.seen[0].toolUseId, null, 'missing tool_use_id');
+  assert.equal(b.seen[1].toolUseId, null, 'empty tool_use_id');
 });
 
 // INVARIANT: a throwing emitter cannot turn a context answer into a deny.

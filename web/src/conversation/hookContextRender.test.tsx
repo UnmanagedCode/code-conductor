@@ -68,6 +68,28 @@ describe('hook context fold', () => {
     expect(foldTrigger(fold).getAttribute('aria-expanded')).toBe('false');
   });
 
+  // INVARIANT: the marker and the fold sit on the card the context names, here the earlier of two.
+  it('a context naming the earlier card marks and fills that card only', async () => {
+    const { root } = await shown([
+      ...tool('m1', 0, 'tuEarly', 'Bash', { result: null }),
+      ...tool('m1', 1, 'tuLate', 'Bash', { result: null }),
+      toolContext('tuEarly', 'early nudge'),
+    ]);
+    const group = within(root).getByRole('button', { name: /actions?/ });
+    if (group.getAttribute('data-state') === 'closed') fireEvent.click(group);
+    await flush();
+    const [early, late] = [...root.querySelectorAll<HTMLElement>('[data-tool-trigger]')];
+    expect(within(early).getByRole('img', { name: 'Hook added context' })).toBeTruthy();
+    expect(within(late).queryByRole('img', { name: 'Hook added context' })).toBeNull();
+    fireEvent.click(early);
+    fireEvent.click(late);
+    await flush();
+    const cardOf = (trigger: HTMLElement) => trigger.parentElement!;
+    expect(folds(cardOf(early))).toHaveLength(1);
+    expect(folds(cardOf(late))).toHaveLength(0);
+    expect(folds(root)).toHaveLength(1);
+  });
+
   it('a loose context renders its own row, naming its tool', async () => {
     const { root } = await shown([toolContext('tuMissing', 'early')]);
     const [fold] = folds(root);

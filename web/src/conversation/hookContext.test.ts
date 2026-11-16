@@ -51,6 +51,19 @@ describe('hook context placement', () => {
     expect(looseTexts(m)).toEqual([]);
   });
 
+  // INVARIANT: a root context goes to the card its toolUseId names, not to the newest card.
+  it('a context naming the earlier of two root cards lands in that card, not the later one', () => {
+    const m = new ConversationModel();
+    feed(m, [
+      ...tool('m1', 0, 'tuEarly', 'Bash', { result: null }),
+      ...tool('m1', 1, 'tuLate', 'Bash', { result: null }),
+      toolContext('tuEarly', 'for the early card'),
+    ]);
+    expect(contextTexts(m.toolBlocks.get('tuEarly')!)).toEqual(['for the early card']);
+    expect(contextTexts(m.toolBlocks.get('tuLate')!)).toEqual([]);
+    expect(looseTexts(m)).toEqual([]);
+  });
+
   it('a context for a sub-agent\'s card, arriving untagged at root, lands in that card', () => {
     const m = new ConversationModel();
     feed(m, tool('m1', 0, 'tuAgent', 'Agent', { result: null, input: { description: 'x' } }));
