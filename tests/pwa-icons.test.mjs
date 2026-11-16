@@ -1,6 +1,6 @@
 // The PWA icons' plate and colours: the maskable icon is the light mark on the
 // app's light background, the manifest and icon.svg cannot drift from logoArt.ts,
-// and the maskable ink bound is a raised, still-enforced limit.
+// and the maskable ink bound is a still-enforced limit past the spec's 0.4.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -11,12 +11,12 @@ import { problems, MASKABLE_INK_RADIUS } from '../scripts/icon-checks.mjs';
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-test('the maskable icon is the light mark at 0.72 on #fcfbfa', () => {
+test('the maskable icon is the light mark at 0.67 on #fcfbfa', () => {
   const svg = pwaIconSvg('maskable', 512);
   const rect = svg.match(/<rect\b[^>]*>/)[0];
   assert.match(rect, /fill="#fcfbfa"/);
   assert.doesNotMatch(rect, /\srx=/);
-  const box = Math.round(512 * 0.72);
+  const box = Math.round(512 * 0.67);
   const nested = svg.match(/<svg\b[^>]*\sx="[^"]*"[^>]*>/)[0];
   const num = (n) => Number(nested.match(new RegExp(`\\s${n}="([^"]*)"`))[1]);
   assert.equal(num('width'), box);
@@ -47,10 +47,10 @@ function withInkAt(rFrac) {
 }
 
 test('the maskable bound tolerates ink past 0.4 and flags ink past MASKABLE_INK_RADIUS', async (t) => {
-  assert.ok(MASKABLE_INK_RADIUS > 0.45 && MASKABLE_INK_RADIUS < 0.49, 'bound sits between the two arms');
-  await t.test('ink at 0.45·size passes', () => assert.deepEqual(problems('maskable', SIZE, withInkAt(0.45), PLATE), []));
-  await t.test('ink at 0.49·size fails', () => {
-    const out = problems('maskable', SIZE, withInkAt(0.49), PLATE);
+  assert.ok(MASKABLE_INK_RADIUS > 0.43 && MASKABLE_INK_RADIUS < 0.45, 'bound sits between the two arms');
+  await t.test('ink at 0.43·size passes', () => assert.deepEqual(problems('maskable', SIZE, withInkAt(0.43), PLATE), []));
+  await t.test('ink at 0.45·size fails', () => {
+    const out = problems('maskable', SIZE, withInkAt(0.45), PLATE);
     assert.equal(out.length, 1);
     assert.match(out[0], /outside the safe zone/);
   });
