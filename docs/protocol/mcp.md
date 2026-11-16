@@ -109,7 +109,7 @@ Mechanics and invariants: [architecture.md → Instance lifecycle](../architectu
 - **Correlation.** On a JSON-RPC `tools/call` the server reads `params._meta["claudecode/toolUseId"]` (`TOOL_USE_ID_META_KEY`, `toolUseIdOf` — a non-empty string, else none) into the handler ctx as `toolUseId`. The CLI sends the same value as the PostToolUse envelope's `tool_use_id`, so parallel calls and subagent calls each get exactly their own call's nudge (pinned against the real CLI by `tests/tool-result-nudge-cli.real.test.mjs`).
 - **Store.** The handler queues the text on the caller's live Instance (`queueToolNudge` → `PendingToolNudges`, keyed by toolUseId; the same text under one id is kept once) before it returns; the CLI posts PostToolUse only after it has the result. The hook's `take` is one-shot. Every pending entry is cleared at each exit from `turn` (`Instance._setStatus`).
 - **Refusals queue nothing.** The result shape is the same with or without a nudge.
-- **The user does not see it.** The text reaches the model inside the tool result; the UI renders no line for it, and cc's transcript replay ignores the CLI's `hook_additional_context` attachment for PostToolUse.
+- **The user sees it collapsed in the call's card.** The text reaches the model inside the tool result; `HookBroker` also emits it as a `hook_context` event, and replay rebuilds it from the CLI's `hook_additional_context` attachment (see [ws-events.md](ws-events.md) → `hook_context`).
 - **Callers that get no tool-result nudge:**
   - a call inside `run_code` — the program's calls arrive over the REST alias, which reads no `_meta` (ctx `toolUseId: null`);
   - any other REST-alias call;

@@ -20,6 +20,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 ## [sessions.md](components/sessions.md) — hooks, transcripts, session edits and usage
 
 - [`src/hookBroker.ts`](components/sessions.md#srchookbrokerts)
+- [`src/hookContext.ts`](components/sessions.md#srchookcontextts)
 - [`src/toolResultNudges.ts`](components/sessions.md#srctoolresultnudgests)
 - [`src/conductorReadNudge.ts`](components/sessions.md#srcconductorreadnudgets)
 - [`src/taskNotification.ts`](components/sessions.md#srctasknotificationts)

@@ -97,7 +97,8 @@ import { DEFAULT_PLAYBOOK_ENFORCEMENT, type PlaybookEnforcement } from './playbo
 import { buildSettingsJSON, buildMcpConfigJSON, AWAITING_INPUT_MESSAGE } from './settings.ts';
 import { getOverageThreshold, getConductorCompactWindow, getConductorIdleNudge, resolveContextWindowTokens, resolveMidTurnSteering, getDebugByDefault, getTaskToolsEnabled, getAutoBackground, getBackend, isKnownBackend, resolveSpawnEffort } from './appSettings.ts';
 import { HookBroker, type HookEnvelope } from './hookBroker.ts';
-import { ConductorReadNudge, readNudgeEvent } from './conductorReadNudge.ts';
+import { ConductorReadNudge } from './conductorReadNudge.ts';
+import { hookContextEvent } from './hookContext.ts';
 import { PendingToolNudges } from './toolResultNudges.ts';
 import { SessionRedirect, isRedirectable, type RedirectableSystem } from './systems/toolRedirect.ts';
 import { bashRuleSources, bashRulesRefusal, findDisabledHooks, findUnenforceableBashRules, hooksDisabledRefusal } from './systems/bashRules.ts';
@@ -1034,13 +1035,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Per-instance PreToolUse/PostToolUse hook callback answerer: allows
     // local calls, applies the SessionRedirect policy to redirected ones,
     // answers a conductor's read-nudge tools and every session's tool-result
-    // nudges. See src/hookBroker.ts.
+    // nudges, and emits each context answer as a `hook_context` event. See
+    // src/hookBroker.ts.
     this._hooks = new HookBroker({
       // A GETTER, not the value: the redirect is attached after construction
       // (it needs this instance's emit) and dropped when the session ends.
       getRedirect: () => this._redirect,
       readNudge: this._readNudge,
-      onReadNudge: (n) => this._emitUi(readNudgeEvent(n)),
+      onHookContext: (c) => this._emitUi(hookContextEvent(c)),
       toolNudges: this._toolNudges,
     });
     this._stderr = '';

@@ -18,6 +18,7 @@ import { ImageZoom } from './ImageZoom';
 import { tokenizeJs, type JsTokenKind } from './jsTokens';
 import { SYNTAX_CLASS } from './syntaxClass';
 import { JsonTreeView } from './JsonTreeView';
+import { HookContextFold, HookContextIcon } from './folds';
 import { defaultOpen, detectJson, toResultParts, type JsonContainer } from './jsonTree';
 
 export type RenderCtx = {
@@ -226,6 +227,11 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
             subagent {formatTokens(node.agentUsage.tokens)} ctx{node.agentUsage.toolUses != null && ` · ${node.agentUsage.toolUses} tool use${node.agentUsage.toolUses === 1 ? '' : 's'}`}
           </span>
         )}
+        {node.hookContexts.length > 0 && (
+          <span role="img" aria-label="Hook added context" title="Hook added context" className="shrink-0 text-muted-foreground" data-hook-context-marker>
+            <HookContextIcon className="size-3.5" />
+          </span>
+        )}
         {time && <span className="shrink-0 text-[11px] text-muted-foreground tabular-nums">{time}</span>}
         <span className="shrink-0" title={node.status}>{STATUS_ICON[node.status]}</span>
         <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/tool:rotate-90" />
@@ -233,6 +239,7 @@ function ToolBlock({ node, ctx }: { node: ToolNode; ctx: RenderCtx }) {
       <CollapsibleContent className="mt-2 space-y-2">
         {args}
         {node.result && <ResultBlock node={node.result} model={ctx.model} />}
+        {node.hookContexts.map((c) => <HookContextFold key={c.id} node={c} model={ctx.model} />)}
       </CollapsibleContent>
       {node.sub && (
         <Collapsible open={node.reader.subOpen} onOpenChange={(o) => ctx.model.setReader(node, { subOpen: o })} className="mt-2 rounded-lg border border-dashed bg-background/60">

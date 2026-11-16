@@ -128,7 +128,7 @@ export type SystemLine = { label: string; text: string; tone: 'muted' | 'warn' |
 /** A kept system event as one annotated line. */
 export function systemLine({ subtype, data }: UiEventOf<'system'>): SystemLine {
   const switchFailed = subtype === 'model_switch_failed' && !data?.cancelled;
-  const warn = subtype === 'playbook_warn' || subtype === 'event_log_blocked' || subtype === 'read_nudge' || switchFailed;
+  const warn = subtype === 'playbook_warn' || subtype === 'event_log_blocked' || switchFailed;
   const errorish = subtype === 'crashed' || subtype === 'spawn_error' || subtype === 'renew_error' || subtype === 'auto_stop_overage';
   const tone: SystemLine['tone'] = warn ? 'warn' : errorish ? 'error' : 'muted';
   const title = switchFailed ? data?.error || null : null;
@@ -166,7 +166,6 @@ export function systemLine({ subtype, data }: UiEventOf<'system'>): SystemLine {
         return `${data?.tool ?? '?'}${target} would have been refused · ${data?.code ?? '?'}: ${data?.reason ?? ''}`;
       }
       case 'event_log_blocked': return `Event log not recording: ${data?.reason ?? '?'} — rows are dropped until this server holds the projects root again`;
-      case 'read_nudge': return data?.text ?? '';
       case 'cache_miss':
         if (data?.prevPrefix != null) {
           const evicted = data.evicted ?? Math.max(0, (data.prevPrefix ?? 0) - (data.cacheRead ?? 0));

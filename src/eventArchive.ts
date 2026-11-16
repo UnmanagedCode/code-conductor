@@ -126,9 +126,13 @@ function normalizeWindow(before: number | null, after: number | null, lastSeq: n
 // Content key for correlating a ring event against the replayed archive —
 // computed identically on both sides so a hit means the two really are the
 // same wire content. A `tool_result` correlates by its `toolUseId` (its
-// `msgId`/`blockIdx` are meaningless), and so does a `system`/`read_nudge` —
-// the CLI fires one PreToolUse per tool call and the broker injects at most one
-// nudge per hook, so the id names exactly one. A notified
+// `msgId`/`blockIdx` are meaningless). A tool `hook_context` correlates by its
+// hook event, call and text: one call may carry a context from cc's broker and
+// another from a user hook, and the text tells their twins apart. A
+// UserPromptSubmit `hook_context` keys null: its live and persisted ids differ,
+// and a text key would hit an earlier prompt's identical recall first; at the
+// ring head it abandons to the echo anchor, whose cut lands just after its
+// turn's echo and so excludes its twin. A notified
 // `system`/`task_notification` correlates by its task's tool_use_id AND status:
 // a background Agent may notify more than once per tool use, and the pair is
 // unique within a session. A `turn_boundary` (replay-only, but a ring holding
@@ -140,7 +144,7 @@ function correlationKey(ev: UiEvent): string | null {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
   const switchId = modelSwitchIdOf(ev);
   if (switchId != null) return `msw ${switchId}`;
-  if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
+  if (ev.kind === 'hook_context' && typeof ev.toolUseId === 'string') return `hc ${ev.hookEvent} ${ev.toolUseId} ${ev.text}`;
   if (isNotifiedTask(ev) && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${(ev.data as { status?: unknown }).status}`;
   // A turn_boundary whose delivery named no tool-use-id keys null, so at the ring head it abandons to the echo
   // anchor. Skipping it instead would be wrong: replay emits it, so its twin sits in the archive, and a cut
@@ -166,7 +170,7 @@ function buildFlatIndex(flat: SeqEvent[]): Map<string, number> {
 // these has a branch there. They cannot appear in `flat`, so skipping one while
 // hunting for a correlatable ring event can never serve archive content the
 // ring will serve again. Do NOT add a kind replay DOES emit (tool_use_start,
-// thinking_start/_redacted/_end, user_question, plan_request): skipping past
+// thinking_start/_redacted/_end, user_question, plan_request, hook_context): skipping past
 // one steps over its archive twin and duplicates it. `call_usage` has a second
 // reason to be here: it carries a `msgId` but no `blockIdx`, so correlationKey
 // names it null and, unlisted, it would abandon the cut.
@@ -179,9 +183,9 @@ const RING_ONLY_KINDS = new Set([
 // ONLY condition under which the head scan may step over an event.
 function neverPersisted(ev: UiEvent): boolean {
   if (RING_ONLY_KINDS.has(ev.kind)) return true;
-  // `system` is replayed for exactly these three subtypes (replayPersistedLine's
-  // soft-interrupt branch, its hook_additional_context branch and its
-  // queue-operation branch); every other subtype is a live-transport annotation
+  // `system` is replayed for exactly these subtypes (replayPersistedLine's
+  // soft-interrupt branch and its queue-operation branch, plus the ledger's
+  // model-switch dividers below); every other subtype is a live-transport annotation
   // with no persisted line behind it. A `task_notification` is replayed only
   // when notified — a foreground or stopped task's is live-only. Pinned by the
   // tripwire test in tests/archive-correlated-cut.test.mjs — if replay ever
@@ -194,7 +198,7 @@ function neverPersisted(ev: UiEvent): boolean {
   // jsonl. An identity switch's `model_changed` carries no `switchId` and stays
   // ring-only.
   if (modelSwitchIdOf(ev) != null) return false;
-  return ev.subtype !== 'soft_interrupted' && ev.subtype !== 'read_nudge';
+  return ev.subtype !== 'soft_interrupted';
 }
 
 // The ledger id a restart model switch's divider carries (modelSwitchEvent), or null.

@@ -243,7 +243,7 @@ const keyOf = ev => {
   if (ev.kind === 'tool_result' && typeof ev.toolUseId === 'string') return `tr ${ev.toolUseId}`;
   if (ev.kind === 'system' && (ev.subtype === 'model_changed' || ev.subtype === 'model_switch_failed')
       && typeof ev.data?.switchId === 'string' && ev.data.switchId) return `msw ${ev.data.switchId}`;
-  if (ev.kind === 'system' && ev.subtype === 'read_nudge' && typeof ev.toolUseId === 'string') return `rn ${ev.toolUseId}`;
+  if (ev.kind === 'hook_context' && typeof ev.toolUseId === 'string') return `hc ${ev.hookEvent} ${ev.toolUseId} ${ev.text}`;
   if (ev.kind === 'system' && ev.subtype === 'task_notification' && ev.data?.notified === true && typeof ev.toolUseId === 'string') return `tn ${ev.toolUseId} ${ev.data.status}`;
   if (ev.kind === 'turn_boundary' && typeof ev.toolUseId === 'string') return `tb ${ev.toolUseId} ${ev.status}`;
   return typeof ev.msgId === 'string' && typeof ev.blockIdx === 'number'
@@ -443,7 +443,7 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
 
 // Tripwire for the carve-out's soundness condition. `neverPersisted` in
 // src/eventArchive.ts skips `system` at every subtype EXCEPT
-// `soft_interrupted`, `read_nudge`, a notified `task_notification` and a
+// `soft_interrupted`, a notified `task_notification` and a
 // model-switch divider (`model_changed`/`model_switch_failed` carrying a ledger
 // `switchId`), on the premise that replay emits exactly those. If another one is
 // ever added, skipping it would silently duplicate it across the archive/ring
@@ -451,8 +451,8 @@ test('T25: a ring of only never-persisted events abandons to the echo fallback',
 // loud.
 //
 // PINS: the set of `system` subtypes the replay path can construct is exactly
-// {model_changed, model_switch_failed, read_nudge, soft_interrupted, task_notification}.
-test('T23: tripwire — replay constructs `system` for exactly five subtypes', async () => {
+// {model_changed, model_switch_failed, soft_interrupted, task_notification}.
+test('T23: tripwire — replay constructs `system` for exactly four subtypes', async () => {
   const srcDir = new URL('../src/', import.meta.url);
   const readWhole = async (url) => {
     const src = await fs.readFile(new URL(url, srcDir), 'utf8');
@@ -477,10 +477,10 @@ test('T23: tripwire — replay constructs `system` for exactly five subtypes', a
   // stays scoped to consolidateUserContent, the one replay-reachable event
   // constructor it owns; whole-file there would sweep up the LIVE parser's many
   // `system` sites, which say nothing about what replay emits. Likewise
-  // src/conductorReadNudge.ts is scoped to readNudgeEvent, the constructor
-  // replay reaches through readNudgeEventFromAttachment, and
-  // src/taskNotification.ts to taskNotificationEvent, the constructor replay
-  // reaches through taskNotificationFromEnqueue.
+  // src/taskNotification.ts is scoped to taskNotificationEvent, the
+  // constructor replay reaches through taskNotificationFromEnqueue.
+  // src/hookContext.ts is scanned whole: replay reaches it through
+  // hookContextEventsFromAttachment, and it builds no `system` event today.
   //
   // Residual limit, stated honestly: this catches a literal `kind: 'system'`
   // inside these scopes. A construction in a non-literal form (a subtype held
@@ -490,7 +490,7 @@ test('T23: tripwire — replay constructs `system` for exactly five subtypes', a
   const bodies = [
     await readWhole('transcript.ts'),
     await readBody('parser.ts', 'export function consolidateUserContent('),
-    await readBody('conductorReadNudge.ts', 'export function readNudgeEvent('),
+    await readWhole('hookContext.ts'),
     await readBody('taskNotification.ts', 'export function taskNotificationEvent('),
   ];
 
@@ -510,8 +510,8 @@ test('T23: tripwire — replay constructs `system` for exactly five subtypes', a
   // count: today's two sites legitimately share one subtype.
   assert.equal(found.length, sites, `scan found ${sites} \`system\` construction(s) in the replay path but only ${found.length} with an adjacent subtype — replay now builds a system event whose subtype this scan cannot read, so the set below no longer covers every site`);
 
-  assert.deepEqual(subtypes, ['model_changed', 'model_switch_failed', 'read_nudge', 'soft_interrupted', 'task_notification'],
-    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`read_nudge\`, \`soft_interrupted\`, a notified \`task_notification\` and a model-switch divider on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
+  assert.deepEqual(subtypes, ['model_changed', 'model_switch_failed', 'soft_interrupted', 'task_notification'],
+    `the \`system\` subtypes replay emits changed (${subtypes.join(', ')}). \`neverPersisted\` in src/eventArchive.ts skips \`system\` at every subtype except \`soft_interrupted\`, a notified \`task_notification\` and a model-switch divider on the premise that replay emits exactly those; a new subtype skipped there will duplicate across the archive/ring seam. Narrow the carve-out.`);
 
   // Positive control for the ledger splice: replay's divider always carries the
   // `switchId` the carve-out keys on, for both outcomes.
@@ -531,10 +531,10 @@ test('T23: tripwire — replay constructs `system` for exactly five subtypes', a
   assert.equal(emitted[0].kind, 'system');
   assert.equal(emitted[0].subtype, 'soft_interrupted');
 
-  const nudged = replayPersistedLine(nudgeAttachmentLine('tuC'));
+  // A hook context replays as its own kind, not as a `system` subtype.
+  const nudged = replayPersistedLine(contextAttachmentLine('tuC'));
   assert.equal(nudged.length, 1);
-  assert.equal(nudged[0].kind, 'system');
-  assert.equal(nudged[0].subtype, 'read_nudge');
+  assert.equal(nudged[0].kind, 'hook_context');
 
   const notified = replayPersistedLine(enqueueLine('tuC'));
   assert.equal(notified.length, 1);
@@ -543,49 +543,56 @@ test('T23: tripwire — replay constructs `system` for exactly five subtypes', a
   assert.equal(notified[0].data.notified, true, 'replay only ever emits a notified task_notification');
 });
 
-// ── read_nudge across the seam ───────────────────────────────────────────────
-// The CLI persists a PreToolUse `additionalContext` as a `hook_additional_context`
-// attachment between the tool_use line and its tool_result line; replay turns
-// cc's read nudge back into the same `system`/`read_nudge` event the broker
-// emitted live, keyed by the CLI's tool_use_id.
-function nudgeAttachmentLine(toolUseID) {
+// ── hook_context across the seam ─────────────────────────────────────────────
+// The CLI persists a hook's `additionalContext` as a `hook_additional_context`
+// attachment — a tool hook's between the tool_use line and its tool_result
+// line, a UserPromptSubmit one right after its prompt line; replay turns each
+// context string back into the `hook_context` event the live path emitted.
+function contextAttachmentLine(toolUseID, { text = readNudgeText(8), hookEvent = 'PreToolUse', tool = 'mcp__code-conductor__project_read', uuid = `att-${toolUseID}` } = {}) {
   return {
-    type: 'attachment', uuid: `att-${toolUseID}`, isSidechain: false,
+    type: 'attachment', uuid, isSidechain: false,
     attachment: {
-      type: 'hook_additional_context', content: [readNudgeText(8)],
-      hookName: 'PreToolUse:mcp__code-conductor__project_read', toolUseID, hookEvent: 'PreToolUse',
+      type: 'hook_additional_context', content: [text],
+      hookName: hookEvent === 'UserPromptSubmit' ? hookEvent : `${hookEvent}:${tool}`, toolUseID, hookEvent,
     },
   };
 }
+const toolContextHead = (toolUseId, text, _seq) => ({
+  kind: 'hook_context', hookEvent: 'PreToolUse', toolUseId, toolName: 'mcp__code-conductor__project_read', text, _seq,
+});
 
-// PINS: a `read_nudge` ring head whose twin is in the archive correlates by its
-// toolUseId — an exact cut, no gap, no duplication.
-test('T26: a read_nudge head present in the archive correlates by toolUseId', async () => {
+// textBlockLines() + one tool call carrying the given context lines.
+function toolCallLines(toolUseId, contextLines) {
+  const [prompt, assistant] = textBlockLines();
+  return [
+    prompt,
+    assistant,
+    { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
+      { type: 'tool_use', id: toolUseId, name: 'mcp__code-conductor__project_read', input: {} },
+    ] } },
+    ...contextLines,
+    { type: 'user', uuid: 'u1', message: { role: 'user', content: [
+      { type: 'tool_result', tool_use_id: toolUseId, content: 'file bytes' },
+    ] } },
+  ];
+}
+
+// PINS: a tool `hook_context` ring head whose twin is in the archive correlates
+// by its call — an exact cut, no gap, no duplication.
+test('T26: a tool hook_context head present in the archive correlates', async () => {
   const r = await freshProjectsRoot();
   try {
     const cwd = '/fake/t26';
-    const [prompt, assistant] = textBlockLines();
-    await writeJsonl(cwd, SID, [
-      prompt,
-      assistant,
-      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [
-        { type: 'tool_use', id: 'tuN', name: 'mcp__code-conductor__project_read', input: {} },
-      ] } },
-      nudgeAttachmentLine('tuN'),
-      { type: 'user', uuid: 'u1', message: { role: 'user', content: [
-        { type: 'tool_result', tool_use_id: 'tuN', content: 'file bytes' },
-      ] } },
-    ]);
+    await writeJsonl(cwd, SID, toolCallLines('tuN', [contextAttachmentLine('tuN')]));
     const ring = [
-      { kind: 'system', subtype: 'read_nudge', toolUseId: 'tuN', data: { count: 8 }, _seq: 59 },
+      toolContextHead('tuN', readNudgeText(8), 59),
       { kind: 'tool_result', toolUseId: 'tuN', _seq: 60 },
     ];
     const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
     // 1 echo + 24 text events, then tool_use_start + tool_use at 25/26.
-    assert.equal(arch.events[27].kind, 'system', 'fixture check: replay emits the nudge at flat index 27');
-    assert.equal(arch.events[27].subtype, 'read_nudge');
+    assert.equal(arch.events[27].kind, 'hook_context', 'fixture check: replay emits the context at flat index 27');
     assert.equal(arch.events[28].kind, 'tool_result', 'fixture check: its tool_result follows at 28');
-    assert.equal(arch.cut, 27, 'cut lands exactly on the archived read_nudge');
+    assert.equal(arch.cut, 27, 'cut lands exactly on the archived hook_context');
     assert.equal(arch.gap, false, 'a correlated cut is an exact stitch — no gap');
     assertNoDuplication(arch, ring, 'T26');
   } finally {
@@ -593,21 +600,78 @@ test('T26: a read_nudge head present in the archive correlates by toolUseId', as
   }
 });
 
-// PINS: a `read_nudge` head that misses the archive abandons to the echo
+// PINS: a tool `hook_context` head that misses the archive abandons to the echo
 // fallback — `neverPersisted` does not skip it.
-test('T27: a read_nudge head missing from the archive abandons — it is not skipped', async () => {
+test('T27: a tool hook_context head missing from the archive abandons — it is not skipped', async () => {
   const r = await freshProjectsRoot();
   try {
     const cwd = '/fake/t27';
     await writeJsonl(cwd, SID, textBlockLines());
-    const ring = [
-      { kind: 'system', subtype: 'read_nudge', toolUseId: 'tuMissing', data: { count: 8 }, _seq: 59 },
-      RING_TAIL,
-    ];
+    const ring = [toolContextHead('tuMissing', readNudgeText(8), 59), RING_TAIL];
     const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 60, userEchoCount: 1 });
-    assert.equal(arch.cut, 1, 'a read_nudge head may be in the archive — abandon to the echo anchor, do not skip to the tail');
+    assert.equal(arch.cut, 1, 'a hook_context head may be in the archive — abandon to the echo anchor, do not skip to the tail');
     assert.equal(arch.gap, true);
     assertNoDuplication(arch, ring, 'T27');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// PINS: the context's text is part of its key — two contexts on one call (cc's
+// and a user hook's) each correlate to their own twin, not to the first.
+test('T33: two contexts on one call correlate to their own twins', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t33';
+    await writeJsonl(cwd, SID, toolCallLines('tuTwo', [
+      contextAttachmentLine('tuTwo', { text: 'first context', uuid: 'att-a' }),
+      contextAttachmentLine('tuTwo', { text: 'second context', uuid: 'att-b' }),
+    ]));
+    const ring = [
+      toolContextHead('tuTwo', 'second context', 59),
+      { kind: 'tool_result', toolUseId: 'tuTwo', _seq: 60 },
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 1 });
+    assert.equal(arch.events[27].text, 'first context', 'fixture check: the first context at 27');
+    assert.equal(arch.events[28].text, 'second context', 'fixture check: the second at 28');
+    assert.equal(arch.cut, 28, 'the head correlates to its own twin, keeping the first context in the archive');
+    assert.equal(arch.gap, false);
+    assertNoDuplication(arch, ring, 'T33');
+  } finally {
+    await rmrf(r.home);
+  }
+});
+
+// PINS: a UserPromptSubmit `hook_context` keys null, so at the ring head it
+// abandons to the echo fallback — which lands just after its turn's echo and so
+// serves each recall once, even when two prompts got identical recall text (a
+// text key would hit the earlier prompt's twin first).
+test('T34: a UserPromptSubmit hook_context head abandons; identical recall on two prompts is served once each', async () => {
+  const r = await freshProjectsRoot();
+  try {
+    const cwd = '/fake/t34';
+    const recall = 'identical recall';
+    const ups = (uuid) => contextAttachmentLine(`hook-${uuid}`, { hookEvent: 'UserPromptSubmit', text: recall, uuid });
+    await writeJsonl(cwd, SID, [
+      { type: 'user', uuid: 'u0', message: { role: 'user', content: 'prompt 0' } },
+      ups('att-0'),
+      { type: 'assistant', uuid: 'a0', message: { id: 'm0', role: 'assistant', content: [{ type: 'text', text: 'answer 0' }] } },
+      { type: 'user', uuid: 'u1', message: { role: 'user', content: 'prompt 1' } },
+      ups('att-1'),
+      { type: 'assistant', uuid: 'a1', message: { id: 'm1', role: 'assistant', content: [{ type: 'text', text: 'answer 1' }] } },
+    ]);
+    const ring = [
+      { kind: 'hook_context', hookEvent: 'UserPromptSubmit', toolUseId: null, toolName: null, text: recall, _seq: 59 },
+      { kind: 'text_end', msgId: 'm1', blockIdx: 0, _seq: 60 },
+    ];
+    const arch = await buildArchive({ place: localPlace(cwd), sessionId: SID, ring, trimmedBefore: 59, userEchoCount: 2 });
+    // echo0, recall, text_delta, text_end, echo1, recall, text_delta, text_end.
+    assert.deepEqual(arch.events.map(e => e.kind),
+      ['user_echo', 'hook_context', 'text_delta', 'text_end', 'user_echo', 'hook_context', 'text_delta', 'text_end'], 'fixture check');
+    assert.equal(arch.cut, 5, 'the cut lands just after the second prompt\'s echo');
+    assert.equal(arch.gap, true, 'the echo fallback marks a gap');
+    const served = arch.events.slice(0, arch.cut).filter(e => e.kind === 'hook_context');
+    assert.equal(served.length, 1, 'the archive serves the first prompt\'s recall once; the ring serves the second\'s');
   } finally {
     await rmrf(r.home);
   }

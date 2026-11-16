@@ -201,6 +201,17 @@ interface CompactionEvent extends UiEventBase {
   durationMs: number | null;
 }
 interface HookEvent extends UiEventBase { kind: 'hook'; event: unknown; data: unknown }
+/** Text a hook added to the model's context (`hookSpecificOutput.additionalContext`). Live and replay build it with `hookContextEvent` (src/hookContext.ts). */
+interface HookContextEvent extends UiEventBase {
+  kind: 'hook_context';
+  hookEvent: 'UserPromptSubmit' | 'PreToolUse' | 'PostToolUse';
+  /** The call the context was added to; null for UserPromptSubmit. */
+  toolUseId: string | null;
+  /** The hooked tool; null for UserPromptSubmit. */
+  toolName: string | null;
+  /** Verbatim and non-empty. */
+  text: string;
+}
 // `blockIdx` is the message-level index of `message.content[0]`: the CLI sends
 // one message as one envelope or as one envelope per block, and the parser
 // counts the blocks of every envelope it saw for the message, so the index holds
@@ -263,7 +274,7 @@ export type UiEvent =
   | ThinkingStartEvent | ThinkingDeltaEvent | ThinkingEndEvent | ThinkingRedactedEvent
   | ToolUseStartEvent | ToolUseInputDeltaEvent | ToolUseEvent
   | UserQuestionEvent | PlanRequestEvent | ToolResultEvent | UserEchoEvent
-  | CompactionEvent | HookEvent | AssistantMessageEvent | TurnEndEvent | TurnBoundaryEvent | ControlResponseEvent
+  | CompactionEvent | HookEvent | HookContextEvent | AssistantMessageEvent | TurnEndEvent | TurnBoundaryEvent | ControlResponseEvent
   | RawEvent | OverageMessageQueuedEvent | SegmentSeamEvent | HistoryGapEvent | TaskCompletionEvent
   | SystemEvent;
 

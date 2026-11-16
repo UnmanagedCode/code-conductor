@@ -196,7 +196,7 @@ describe('system lines', () => {
     expect(shouldRenderSystem({ kind: 'system', subtype: 'status', data: { status: 'requesting' } })).toBe(false);
     expect(shouldRenderSystem({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed' } } })).toBe(false);
     expect(shouldRenderSystem({ kind: 'system', subtype: 'rate_limit_event', data: { rate_limit_info: { status: 'allowed_warning' } } })).toBe(true);
-    for (const s of ['read_nudge', 'playbook_warn', 'event_log_blocked', 'model_switch_failed', 'model_changed', 'init', 'stderr']) {
+    for (const s of ['playbook_warn', 'event_log_blocked', 'model_switch_failed', 'model_changed', 'init', 'stderr']) {
       expect(shouldRenderSystem({ kind: 'system', subtype: s, data: {} })).toBe(true);
     }
     expect(shouldRenderSystem({ kind: 'system', subtype: 'task_notification', data: { notified: true } })).toBe(true);
@@ -259,8 +259,7 @@ describe('system lines', () => {
     expect(l.text).not.toContain('{');
   });
 
-  it('a read nudge carries the verbatim text as a warning; an ordinary line is not a warning', () => {
-    expect(systemLine({ kind: 'system', subtype: 'read_nudge', data: { text: 'You have read 8 files' } })).toMatchObject({ text: 'You have read 8 files', tone: 'warn' });
+  it('an ordinary line is not a warning', () => {
     expect(systemLine({ kind: 'system', subtype: 'stderr', data: { line: 'noise' } }).tone).toBe('muted');
   });
 

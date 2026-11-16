@@ -2,19 +2,19 @@
 // PreToolUse hook counts project_read/project_bash calls since the last
 // delegation and, at the thresholds, answers with an `additionalContext`
 // reminder that points at the role doc's gate-decision rule. Pure units over
-// the counter, the wording, the matcher, the replay recognizer, the broker's
-// nudge path and the settings JSON. The spawned-instance half is in
-// tests/hook-callback.test.mjs.
+// the counter, the wording, the matcher, the broker's nudge path and the
+// settings JSON. The spawned-instance half and the nudge's `hook_context`
+// emission are in tests/hook-callback.test.mjs; its replay is in
+// tests/hook-context.test.mjs.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import {
   ConductorReadNudge, READ_NUDGE_MATCHER, READ_NUDGE_RULE,
-  readNudgeText, parseReadNudgeText, readNudgeEvent,
+  readNudgeText,
 } from '../src/conductorReadNudge.ts';
 import { HookBroker } from '../src/hookBroker.ts';
-import { replayPersistedLine } from '../src/transcript.ts';
 import { buildSettingsJSON, HOOK_HTTP_TIMEOUT_S } from '../src/settings.ts';
 
 const READ = 'mcp__code-conductor__project_read';
@@ -120,10 +120,6 @@ test('wording', () => {
   const t8 = readNudgeText(8);
   assert.ok(t8.includes(READ_NUDGE_RULE), 'points at the rule');
   assert.ok(t8.includes('8'), 'carries the count');
-  assert.equal(parseReadNudgeText(readNudgeText(16)), 16);
-  assert.equal(parseReadNudgeText('cc probe codeword PLATYPUS-7731.'), null);
-  assert.equal(parseReadNudgeText(`prefix ${t8}`), null, 'anchored at the start');
-  assert.equal(parseReadNudgeText(`${t8} suffix`), null, 'anchored at the end');
 });
 
 test('the referenced role-doc text exists', async () => {
@@ -140,59 +136,6 @@ test('matcher', () => {
     assert.ok(!re.test(name), `rejects ${name}`);
   }
   assert.ok(!/^[a-zA-Z0-9_|]+$/.test(READ_NUDGE_MATCHER), 'the CLI must treat it as a regex, not a plain list');
-});
-
-const attachmentLine = ({ text, hookName = `PreToolUse:${READ}`, hookEvent = 'PreToolUse', toolUseID = 'toolu_n8' }) => ({
-  parentUuid: 'p', isSidechain: false, type: 'attachment', uuid: 'att-1',
-  attachment: { type: 'hook_additional_context', content: [text], hookName, toolUseID, hookEvent },
-});
-
-test('replay recognizer', async (t) => {
-  await t.test('our text on a counted tool replays as one read_nudge', () => {
-    const evs = replayPersistedLine(attachmentLine({ text: readNudgeText(8) }));
-    assert.equal(evs.length, 1);
-    assert.equal(evs[0].kind, 'system');
-    assert.equal(evs[0].subtype, 'read_nudge');
-    assert.equal(evs[0].toolUseId, 'toolu_n8');
-    assert.equal(evs[0].data.count, 8);
-    assert.equal(evs[0].data.text, readNudgeText(8));
-    assert.equal(evs[0].parentToolUseId, null);
-  });
-  await t.test('project_bash is recognized too', () => {
-    const evs = replayPersistedLine(attachmentLine({ text: readNudgeText(16), hookName: `PreToolUse:${BASH}` }));
-    assert.equal(evs.length, 1);
-    assert.equal(evs[0].data.tool, BASH);
-  });
-  await t.test('foreign text on the same hook replays nothing', () => {
-    assert.deepEqual(replayPersistedLine(attachmentLine({ text: 'cc probe codeword PLATYPUS-7731.' })), []);
-  });
-  await t.test('our text on PreToolUse:Bash replays nothing', () => {
-    assert.deepEqual(replayPersistedLine(attachmentLine({ text: readNudgeText(8), hookName: 'PreToolUse:Bash' })), []);
-  });
-  await t.test('our text on a delegation tool replays nothing', () => {
-    assert.deepEqual(replayPersistedLine(attachmentLine({ text: readNudgeText(8), hookName: `PreToolUse:${SEND}` })), []);
-  });
-  await t.test('our text under PostToolUse replays nothing', () => {
-    assert.deepEqual(replayPersistedLine(attachmentLine({ text: readNudgeText(8), hookEvent: 'PostToolUse' })), []);
-  });
-  await t.test('a line without a string toolUseID replays nothing', () => {
-    assert.deepEqual(replayPersistedLine(attachmentLine({ text: readNudgeText(8), toolUseID: null })), []);
-  });
-});
-
-test('live = replay: the broker-emitted event deep-equals the replayed one', async () => {
-  const seen = [];
-  const nudge = new ConductorReadNudge();
-  const broker = new HookBroker({ getRedirect: () => null, readNudge: nudge, onReadNudge: (n) => seen.push(n) });
-  for (let i = 1; i <= 8; i++) await post(broker, envelope(BASH, `toolu_${i}`));
-  assert.equal(seen.length, 1);
-  const live = readNudgeEvent(seen[0]);
-  const [replayed] = replayPersistedLine(attachmentLine({
-    text: seen[0].text, hookName: `PreToolUse:${BASH}`, toolUseID: 'toolu_8',
-  }));
-  const { parentToolUseId, ...replayedRest } = replayed;
-  assert.equal(parentToolUseId, null);
-  assert.deepEqual(live, replayedRest);
 });
 
 test('settings: a worker\'s settings do not depend on the conductor flag', () => {

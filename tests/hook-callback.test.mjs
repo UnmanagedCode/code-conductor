@@ -16,8 +16,9 @@ import { WORKER_TOOLS_MATCHER, WORKER_TOOLS_POLICY } from '../src/settings.ts';
 import { workerToolDeniedReason, WORKER_TOOL_DENIED_IN_STAGE } from '../src/playbooks.ts';
 import { getDefaultPlaybookEnforcement, setDefaultPlaybookEnforcement } from '../src/conductorConventions.ts';
 import { OPEN_LEASE } from './playbook-fixtures.mjs';
-import { READ_NUDGE_MATCHER, readNudgeText } from '../src/conductorReadNudge.ts';
-import { TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
+import { ConductorReadNudge, READ_NUDGE_MATCHER, readNudgeText } from '../src/conductorReadNudge.ts';
+import { PendingToolNudges, TOOL_RESULT_NUDGE_MATCHER } from '../src/toolResultNudges.ts';
+import { HookBroker } from '../src/hookBroker.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -118,7 +119,7 @@ test('hook-callback for an unknown instance id replies 200 + deny (CLI auto-deny
 // A conductor's settings carry a second, anchored PreToolUse entry on
 // project_read/project_bash/spawn_instance/send_prompt. The broker answers it
 // with NO permission decision — `{}`, or `additionalContext` alone at the 8th
-// and 16th counted call of a run — and emits a visible system/read_nudge event.
+// and 16th counted call of a run — and emits a visible `hook_context` event.
 
 const READ = 'mcp__code-conductor__project_read';
 const SEND = 'mcp__code-conductor__send_prompt';
@@ -146,7 +147,7 @@ const workerToolsUrl = (inst) => {
   u.searchParams.set('policy', WORKER_TOOLS_POLICY);
   return u.toString();
 };
-const ringNudges = (inst) => inst.ring.toArray().filter(ev => ev.kind === 'system' && ev.subtype === 'read_nudge');
+const ringNudges = (inst) => inst.ring.toArray().filter(ev => ev.kind === 'hook_context');
 
 test('conductor spawn argv carries the nudge hook; a worker\'s does not', async () => {
   const cond = await spawnConductor();
@@ -204,24 +205,131 @@ test('conductor in plan mode: still no permission decision', async () => {
   assert.deepEqual(await hook(cond.id, SEND, 'tu_plan_send'), {});
 });
 
-test('nudge is a visible UI event', async () => {
+// INVARIANT: the read nudge reaches the client as exactly one `hook_context`
+// frame naming its call, carrying verbatim the text the model was given.
+test('nudge is a visible hook_context event', async () => {
   const cond = await spawnConductor();
   const c = await wsClient(wsUrl);
   try {
     c.send({ t: 'subscribe', id: cond.id });
     await c.wait(m => m.t === 'snapshot');
     for (let n = 1; n <= 8; n++) await hook(cond.id, READ, `tu_v${n}`);
-    const frame = await c.wait(m => m.t === 'event' && m.ev?.kind === 'system' && m.ev.subtype === 'read_nudge');
-    assert.equal(frame.ev.toolUseId, 'tu_v8');
-    assert.equal(frame.ev.data.count, 8);
-    assert.equal(frame.ev.data.tool, READ);
-    assert.equal(frame.ev.data.text, readNudgeText(8));
+    const frame = await c.wait(m => m.t === 'event' && m.ev?.kind === 'hook_context');
+    const { _seq, parentToolUseId, ...ev } = frame.ev;
+    assert.deepEqual(ev, { kind: 'hook_context', hookEvent: 'PreToolUse', toolUseId: 'tu_v8', toolName: READ, text: readNudgeText(8) });
+    assert.equal(c.messages.filter(m => m.t === 'event' && m.ev?.kind === 'hook_context').length, 1, 'one frame for the one nudge');
     const inRing = ringNudges(cond);
     assert.equal(inRing.length, 1);
     assert.equal(inRing[0].toolUseId, 'tu_v8');
   } finally {
     await c.close();
   }
+});
+
+// ── HookBroker: every context answer emits one hook_context ─────────────────
+
+// A minimal express-Response stand-in: records the one body the broker sends.
+function fakeRes() {
+  return {
+    headersSent: false, statusCode: null, body: undefined,
+    status(c) { this.statusCode = c; return this; },
+    json(b) { this.body = b; this.headersSent = true; return this; },
+  };
+}
+
+async function answer(broker, envelope) {
+  const res = fakeRes();
+  broker.handle(envelope, res);
+  await new Promise(r => setImmediate(r));
+  assert.ok(res.headersSent, 'the broker answered the hook');
+  return res;
+}
+
+// A broker whose onHookContext records each emission and whether the body had
+// already been sent when it ran.
+function recordingBroker(opts) {
+  const seen = [];
+  let res = null;
+  const broker = new HookBroker({ ...opts, onHookContext: (c) => seen.push({ ...c, afterBody: res?.headersSent === true }) });
+  return {
+    seen,
+    async answer(envelope) {
+      res = fakeRes();
+      broker.handle(envelope, res);
+      await new Promise(r => setImmediate(r));
+      assert.ok(res.headersSent, 'the broker answered the hook');
+      return res;
+    },
+  };
+}
+
+const SPAWN_TOOL = 'mcp__code-conductor__spawn_instance';
+const postEnvelope = (tool, id, extra = {}) => ({ hook_event_name: 'PostToolUse', tool_name: tool, tool_use_id: id, tool_input: {}, ...extra });
+const preEnvelope = (tool, id, extra = {}) => ({ hook_event_name: 'PreToolUse', tool_name: tool, tool_use_id: id, tool_input: {}, ...extra });
+
+// INVARIANT: each answer carrying `additionalContext` emits exactly one
+// context (event, call id, tool, the body's text verbatim), and only after the
+// body is sent; a `{}` answer emits nothing.
+test('HookBroker: the read nudge emits one hook context after its body', async () => {
+  const b = recordingBroker({ getRedirect: () => null, readNudge: new ConductorReadNudge() });
+  for (let n = 1; n <= 7; n++) assert.deepEqual((await b.answer(preEnvelope(READ, `tu_${n}`))).body, {});
+  assert.deepEqual(b.seen, [], 'a {} answer emits nothing');
+  const res = await b.answer(preEnvelope(READ, 'tu_8'));
+  assert.deepEqual(res.body, NUDGE_BODY(8), 'the body is still additionalContext alone');
+  assert.deepEqual(b.seen, [{ hookEvent: 'PreToolUse', toolUseId: 'tu_8', toolName: READ, text: readNudgeText(8), afterBody: true }]);
+});
+
+test('HookBroker: a tool-result nudge emits one hook context keyed by the envelope\'s tool_use_id', async () => {
+  const toolNudges = new PendingToolNudges();
+  toolNudges.queue('tu_spawn', 'NUDGE TEXT');
+  const b = recordingBroker({ getRedirect: () => null, toolNudges });
+  assert.deepEqual((await b.answer(postEnvelope(SPAWN_TOOL, 'tu_other'))).body, {});
+  assert.deepEqual(b.seen, [], 'nothing pending: {} and no emission');
+  const res = await b.answer(postEnvelope(SPAWN_TOOL, 'tu_spawn'));
+  assert.deepEqual(res.body, { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'NUDGE TEXT' } });
+  assert.deepEqual(b.seen, [{ hookEvent: 'PostToolUse', toolUseId: 'tu_spawn', toolName: SPAWN_TOOL, text: 'NUDGE TEXT', afterBody: true }]);
+});
+
+test('HookBroker: a subagent call\'s tool-result nudge is emitted too', async () => {
+  const toolNudges = new PendingToolNudges();
+  toolNudges.queue('tu_sub', 'SUB NUDGE');
+  const b = recordingBroker({ getRedirect: () => null, toolNudges });
+  await b.answer(postEnvelope(SPAWN_TOOL, 'tu_sub', { agent_id: 'agent-1' }));
+  assert.deepEqual(b.seen.map(s => s.toolUseId), ['tu_sub']);
+});
+
+test('HookBroker: a redirect post note emits one hook context; no note emits nothing', async () => {
+  let note = 'pushed back';
+  const redirect = { preToolUse: async () => ({ decision: 'allow' }), postToolUse: async () => note };
+  const b = recordingBroker({ getRedirect: () => redirect });
+  const res = await b.answer(postEnvelope('Bash', 'tu_bash'));
+  assert.deepEqual(res.body, { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: 'pushed back' } });
+  assert.deepEqual(b.seen, [{ hookEvent: 'PostToolUse', toolUseId: 'tu_bash', toolName: 'Bash', text: 'pushed back', afterBody: true }]);
+  note = null;
+  assert.deepEqual((await b.answer(postEnvelope('Bash', 'tu_bash2'))).body, {});
+  assert.equal(b.seen.length, 1, 'a {} answer emits nothing');
+});
+
+// INVARIANT: a missing or empty tool_use_id names no call, so the reported
+// toolUseId is null; an empty string never reaches the client as a call id.
+test('HookBroker: an envelope without a tool_use_id, or with an empty one, emits a null toolUseId', async () => {
+  const redirect = { preToolUse: async () => ({ decision: 'allow' }), postToolUse: async () => 'n' };
+  const b = recordingBroker({ getRedirect: () => redirect });
+  await b.answer(postEnvelope('Bash', undefined));
+  await b.answer(postEnvelope('Bash', ''));
+  assert.equal(b.seen.length, 2);
+  assert.equal(b.seen[0].toolUseId, null, 'missing tool_use_id');
+  assert.equal(b.seen[1].toolUseId, null, 'empty tool_use_id');
+});
+
+// INVARIANT: a throwing emitter cannot turn a context answer into a deny.
+test('HookBroker: a throwing onHookContext still leaves the 200 context answer', async () => {
+  const nudge = new ConductorReadNudge();
+  const broker = new HookBroker({ getRedirect: () => null, readNudge: nudge, onHookContext: () => { throw new Error('emit failed'); } });
+  for (let n = 1; n <= 7; n++) await answer(broker, preEnvelope(READ, `tu_t${n}`));
+  const res = await answer(broker, preEnvelope(READ, 'tu_t8'));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.body, NUDGE_BODY(8), 'the context answer stands — no deny');
 });
 
 test('subagent calls are ignored', async () => {
