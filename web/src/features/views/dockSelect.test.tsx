@@ -259,17 +259,18 @@ describe('Dock to side', () => {
 });
 
 describe('a session pick', () => {
-  it('in full a session pick closes the plugin and the switcher reads Conductor, even for a plugin expanded from split', async () => {
-    // Invariant (F5): full and split never coexist, so leaving the full view by a session pick lands on Conductor, never on a split.
+  it('a session pick out of the full view collapses it into the dock, even for a plugin expanded from split', async () => {
+    // Invariant (F5): full and split never coexist, so leaving the full view by a session pick shows the rail on that plugin beside the picked session, never a split.
     await mountApp();
     await dockSplit('alpha');
     await pressColumn('Expand to full view');
     expect(location.hash, 'control: the full view').toBe('#plugin/alpha/');
     await select(OTHER.id, { userGesture: true });
     expect(location.hash, 'fixture check: the picked session').toBe('#session=sess-2');
-    expect(mode()).toBe('hidden');
+    expect(mode()).toBe('rail');
     expect(sessionShown()).toBe(true);
-    expect(await checkedNow()).toEqual(['conductor']);
+    expect(await checkedNow()).toEqual(['alpha']);
+    expect(dockStore.get()).toMatchObject({ id: 'alpha', mode: 'full' });
   });
 
   it('in split a session pick swaps the session beside the plugin, which keeps its frame', async () => {
@@ -287,23 +288,24 @@ describe('a session pick', () => {
 });
 
 describe('a window too narrow for any split', () => {
-  it('in a window too narrow for any split, a session pick closes the plugin and keeps the remembered split', async () => {
-    // Invariant (F9, F5): a split shown full-screen leaves like the full view on a user's session pick, but the split stays remembered.
+  it('in a window too narrow for any split, a session pick collapses the plugin to the rail and keeps the split selected and remembered', async () => {
+    // Invariant (F9, F5): a split shown full-screen collapses on a user's session pick (a rail always fits) with no history step back; the split stays selected and remembered, and Expand restores it once the window fits.
     await narrowSplit();
+    const historyBack = vi.spyOn(history, 'back');
     await select(OTHER.id, { userGesture: true });
     expect(location.hash).toBe('#session=sess-2');
     expect(sessionShown(), 'the picked session shows').toBe(true);
-    expect(mode()).toBe('hidden');
-    expect(shownFrames(), 'no frame shown').toEqual([]);
-    expect(await checkedNow()).toEqual(['conductor']);
-    expect(dockStore.get().mode, 'split stays remembered').toBe('split');
-    expect(dockStore.get().id, 'nothing selected').toBeNull();
+    expect(mode()).toBe('rail');
+    expect(historyBack, 'no history step back').not.toHaveBeenCalled();
+    expect(dockStore.get()).toMatchObject({ id: 'alpha', mode: 'split' });
     emitWidth(WIDE);
     await settle();
-    expect(mode(), 'widening reopens nothing').toBe('hidden');
+    expect(mode(), 'widening keeps the rail').toBe('rail');
+    await pressColumn('Expand plugin dock');
+    expectSplit('Expand');
     await pickApp('beta');
-    expectSplit('the next pick');
-    expect(location.hash).toBe('#session=sess-2');
+    expectSplit('a pick from split with split remembered swaps into split');
+    expect(dockStore.get().id).toBe('beta');
   });
 
   it('in a window too narrow for any split, a non-gesture selection leaves the full-screen plugin up', async () => {
@@ -314,8 +316,8 @@ describe('a window too narrow for any split', () => {
     expect(dockStore.get().id).toBe('alpha');
   });
 
-  it('in a window too narrow for any split, Escape collapses to the rail with no history step and the split remembered; Expand then a session pick closes it', async () => {
-    // Invariant (F9, F7): Escape on a split shown full-screen gives the rail (a rail always fits) without a history step, keeping the split selected and remembered; only a session pick closes the plugin.
+  it('in a window too narrow for any split, Escape collapses to the rail with no history step and the split remembered; Expand then a session pick collapses it again', async () => {
+    // Invariant (F9, F7): Escape on a split shown full-screen gives the rail (a rail always fits) without a history step, keeping the split selected and remembered; a session pick after Expand collapses it again.
     await narrowSplit();
     const historyBack = vi.spyOn(history, 'back');
     await escape();
@@ -328,8 +330,8 @@ describe('a window too narrow for any split', () => {
     await pressColumn('Expand plugin dock');
     expect(mode(), 'covering again').toBe('full');
     await select(OTHER.id, { userGesture: true });
-    expect(mode(), 'a session pick closes it').toBe('hidden');
-    expect(dockStore.get().id, 'nothing selected').toBeNull();
+    expect(mode(), 'a session pick collapses it again').toBe('rail');
+    expect(dockStore.get().id, 'still selected').toBe('alpha');
     emitWidth(WIDE);
     await settle();
     await pickApp('beta');
@@ -338,29 +340,102 @@ describe('a window too narrow for any split', () => {
 });
 
 describe('leaving the full view', () => {
-  const EXITS: [string, () => Promise<void>][] = [
-    ['Back from a full view entered by Expand lands on Conductor, never split', async () => {
+  const EXITS: [string, () => Promise<void>, string][] = [
+    ['Back from a full view entered by Expand lands on the rail, never split', async () => {
       await dockSplit('alpha');
       await pressColumn('Expand to full view');
       expect(location.hash, 'fixture check: expanded').toBe('#plugin/alpha/');
       await back();
-    }],
-    ['Back after switching A→B in full lands on Conductor', async () => {
+    }, 'alpha'],
+    ['Back after switching A→B in full lands on the rail of B', async () => {
       await pickApp('alpha');
       await pickApp('beta');
       expect(location.hash, 'fixture check: B in full').toBe('#plugin/beta/');
       await back();
-    }],
+    }, 'beta'],
   ];
 
-  it.each(EXITS)('%s', async (_title, exit) => {
-    // Invariant (F7): every exit from the full view lands on the session with no plugin on screen.
+  it.each(EXITS)('%s', async (_title, exit, rail) => {
+    // Invariant (F7): every exit from the full view lands on the session with the plugin it left as the rail.
     await mountApp();
     await exit();
     expect(location.hash).toBe(ANCHOR);
-    expect(mode()).toBe('hidden');
+    expect(mode()).toBe('rail');
     expect(sessionShown()).toBe(true);
-    expect(await checkedNow()).toEqual(['conductor']);
+    expect(await checkedNow()).toEqual([rail]);
+  });
+
+  it('an exit keeps the page\'s place: the rail holds the subpath on the same frame', async () => {
+    // Invariant: the parked dock records the leaving route's subpath, so the frame is neither reloaded nor sent back to its start.
+    await mountApp();
+    await go('#plugin/alpha/deep');
+    const frame = sharedFrame()!;
+    expect(frame, 'fixture check: Alpha\'s frame').not.toBeNull();
+    await select(OTHER.id, { userGesture: true });
+    expect(dockStore.get()).toMatchObject({ id: 'alpha', subpath: '/deep' });
+    expect(mode()).toBe('rail');
+    expect(sharedFrame() === frame, 'the same frame node').toBe(true);
+    expect(frame.getAttribute('src')).not.toContain('/start');
+  });
+
+  it.each([['Settings', openSettings], ['Costs', openCosts]])('opening %s from the full view parks the plugin, and the session shows the rail', async (_n, open) => {
+    // Invariant: a covering view hides the column but parks the plugin collapsed; returning to the session shows the rail.
+    const inner = fetch as unknown as (url: string, init?: RequestInit) => Promise<Response>;
+    vi.stubGlobal('fetch', vi.fn((url: string, init?: RequestInit) => (url === '/api/costs/summary' ? Promise.resolve(new Response(JSON.stringify({ row_count: 0 }))) : inner(url, init))));
+    await mountApp();
+    await go('#plugin/alpha/');
+    await act(async () => { open(); });
+    await settle();
+    expect(mode(), 'covered').toBe('hidden');
+    expect(dockStore.get().id).toBe('alpha');
+    expect(localStorage.getItem('code-conductor:plugin-dock-collapsed')).toBe('true');
+    await select(ACTIVE.id, { userGesture: true });
+    expect(mode()).toBe('rail');
+    expect(await checkedNow()).toEqual(['alpha']);
+  });
+
+  it('Back from a covering view re-enters the full view', async () => {
+    // Invariant: Back from Settings returns to the `#plugin/…` entry, and entering the full view clears the parked dock.
+    await mountApp();
+    await go('#plugin/alpha/');
+    await act(async () => { openSettings(); });
+    await settle();
+    await back();
+    expect(location.hash).toBe('#plugin/alpha/');
+    expect(mode()).toBe('full');
+    expect(dockStore.get().id).toBeNull();
+  });
+
+  it('a session hash typed in the address bar parks the plugin as the rail', async () => {
+    // Invariant: a hashchange out of the full view is an exit like any other.
+    await mountApp();
+    await go('#plugin/alpha/');
+    await go('#session=sess-2');
+    expect(mode()).toBe('rail');
+    expect(await checkedNow()).toEqual(['alpha']);
+  });
+
+  it('Conductor is the only full close and persists nothing transient', async () => {
+    // Invariant: the Conductor pick never parks the plugin, so neither the collapsed flag nor the dock id is ever written.
+    await mountApp();
+    await go('#plugin/alpha/');
+    const setItem = vi.spyOn(localStorage, 'setItem');
+    await pickApp('conductor');
+    expect(mode()).toBe('hidden');
+    expect(dockStore.get().id).toBeNull();
+    const calls = setItem.mock.calls;
+    expect(calls.filter(([k, v]) => k === 'code-conductor:plugin-dock-collapsed' && v === 'true'), 'no transient collapse').toEqual([]);
+    expect(calls.filter(([k, v]) => k === 'code-conductor:plugin-dock' && JSON.parse(v).id === 'alpha'), 'no transient dock id').toEqual([]);
+  });
+
+  it('a plugin the catalog does not list still closes on Back', async () => {
+    // Invariant (characterization): with no switcher entry no rail can show, so leaving closes as before.
+    net.status.zeta = plainRow();
+    await mountApp();
+    await go('#plugin/zeta/');
+    await back();
+    expect(mode()).toBe('hidden');
+    expect(dockStore.get().id).toBeNull();
   });
 
   it('Escape from a full view entered by Expand gives the rail on that plugin, with full remembered', async () => {

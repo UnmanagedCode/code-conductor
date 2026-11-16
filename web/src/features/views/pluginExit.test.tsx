@@ -205,4 +205,16 @@ describe('below md', () => {
     expect(posts() - p, 'no POST').toBe(0);
     expect(lifecycle() - l, 'no start/stop/restart/disable').toBe(0);
   });
+
+  it('no rail shows below md, so a session pick still closes the plugin, hiding a keep-alive frame', async () => {
+    // Invariant: the leave hook parks only where a rail can show; below md a session pick leaves nothing docked.
+    await mountApp();
+    await go('#plugin/beta/');
+    const frame = residentFrame('beta')!;
+    await act(async () => { selectInstance(ACTIVE.id, { userGesture: true }); });
+    await settle();
+    expect(column()!.hidden || column()!.dataset.dockMode === 'hidden', 'column hidden').toBe(true);
+    expect(dockStore.get().id).toBeNull();
+    expect(residentFrame('beta') === frame && frame.hidden, 'resident and hidden').toBe(true);
+  });
 });

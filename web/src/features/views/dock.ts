@@ -10,7 +10,8 @@ import { on } from '@/app/events';
 import { openPlugin } from './api';
 import { leaveView, showActiveSession } from './ViewShell';
 import { catalogStore, type RouteMirror } from './plugins';
-import type { DockMode } from './dockLayout';
+import { canCollapseFullView, type DockMode } from './dockLayout';
+import { WIDE_QUERY } from '@/lib/useMediaQuery';
 
 /** The mode a pick from Conductor opens; written only by the column's toggle. */
 export type DockPref = 'full' | 'split';
@@ -57,13 +58,22 @@ dockStore.subscribe(() => {
   try { localStorage.setItem(DOCK_STORAGE_KEY, JSON.stringify({ id, subpath, mode })); } catch { /* storage unavailable */ }
 });
 
-/** Full and split never coexist: entering the full view (a pick, Expand, a link while no split shows, the address bar, Forward) ends split, so every exit but Collapse lands on Conductor. Only the transition into the plugin view clears, so Dock to side and `collapseFullView` can select while the route is still leaving it, and then land on the session with the plugin docked. */
-let inPlugin = routeStore.get().route.view === 'plugin';
-if (inPlugin && dockStore.get().id !== null) closeDock();
+/** Set while `closeToConductor` changes the route, so the leave below does not park the plugin it is closing. */
+let closingToConductor = false;
+
+/** Full and split never coexist: entering the full view (a pick, Expand, a link while no split shows, the address bar, Forward) ends split. Leaving it parks the plugin as the collapsed dock at the page it was on, wherever Collapse shows (`canCollapseFullView`), so every exit but the switcher's Conductor collapses it; an exit that already docked it (Dock to side, Collapse) is left alone. Only the transition into the plugin view clears, so Dock to side and `collapseFullView` can select while the route is still leaving it. The subscription runs inside `routeStore.set`, before React renders, so the frame is never reloaded. */
+let prev = routeStore.get().route;
+if (prev.view === 'plugin' && dockStore.get().id !== null) closeDock();
 routeStore.subscribe(() => {
-  const now = routeStore.get().route.view === 'plugin';
-  if (now && !inPlugin && dockStore.get().id !== null) closeDock();
-  inPlugin = now;
+  const next = routeStore.get().route;
+  const was = prev;
+  prev = next;
+  if (next.view === 'plugin' && was.view !== 'plugin') {
+    if (dockStore.get().id !== null) closeDock();
+  } else if (was.view === 'plugin' && next.view !== 'plugin' && was.pluginId && !closingToConductor && dockStore.get().id === null
+    && canCollapseFullView(matchMedia(WIDE_QUERY).matches, catalogStore.get().apps.map((a) => a.id), was.pluginId)) {
+    parkCollapsed(was.pluginId, was.pluginPath);
+  }
 });
 
 /** The plugin column's mode, published by PluginView from dockLayout: `App` hides the main slot while it is 'full' (the full view, or a split too narrow to fit), and the app switcher's slots place the one switcher by it. */
@@ -87,9 +97,9 @@ export function followFrameLink(hash: string) {
   if (!showLinkInDock(hash)) location.hash = hash;
 }
 
-/** A session pick closes a full-screen plugin, as in the full view. Only a user's pick: the first-connect restore keeps what a reload restored. */
+/** A user's session pick collapses a split shown full-screen in a window too narrow for it (a rail always fits); a pick out of the full view is the route leave above. Only a user's pick: the first-connect restore keeps what a reload restored. */
 on('select', ({ userGesture }) => {
-  if (userGesture && dockModeStore.get().mode === 'full') closeDock();
+  if (userGesture && dockModeStore.get().mode === 'full' && routeStore.get().route.view !== 'plugin') setDockCollapsed(true);
 });
 
 /** Split: the docked frame's own navigation is remembered as the dock's subpath. */
@@ -98,10 +108,10 @@ export const dockMirror: RouteMirror = (id, path) => {
   if (id === cur.id && path !== cur.subpath) dockStore.set({ subpath: path });
 };
 
-/** The switcher's pick: the full view below md, from a plugin view, or with full remembered while no plugin shows beside the session; else split beside the session, closing a view that covers it. */
+/** The switcher's pick: the full view below md, from a plugin view, or with full remembered while no plugin shows expanded beside the session (a rail does not count); else split beside the session, closing a view that covers it. */
 export function selectApp(id: string, desktop: boolean) {
   const { view } = routeStore.get().route;
-  if (!desktop || view === 'plugin' || (dockStore.get().mode === 'full' && dockBesideStore.get().id === null)) {
+  if (!desktop || view === 'plugin' || (dockStore.get().mode === 'full' && (dockBesideStore.get().id === null || dockCollapsedStore.get().collapsed))) {
     openPlugin(id);
     return;
   }
@@ -125,6 +135,19 @@ export function expandDock() {
   openPlugin(id, subpath.slice(1));
 }
 
+/** Docks plugin `id` collapsed at the page `pluginPath`, keeping the remembered mode (a later pick from Conductor opens full again). */
+function parkCollapsed(id: string, pluginPath: string) {
+  setDockCollapsed(true);
+  dockStore.set({ id, subpath: `/${pluginPath}` });
+}
+
+/** The one full close (the switcher's Conductor): no plugin docked or in full, and the active session. Nothing is parked on the way, so nothing transient is persisted. */
+export function closeToConductor() {
+  closingToConductor = true;
+  try { showActiveSession(); } finally { closingToConductor = false; }
+  closeDock();
+}
+
 /** Docks the full view's plugin at its page's route, then leaves the full view; entering the view again re-uses the same frame. */
 function dockRouteApp(mode?: DockPref) {
   const { pluginId, pluginPath } = routeStore.get().route;
@@ -140,7 +163,8 @@ export function dockFullView() {
 
 /** Full → rail: docks the full view's plugin collapsed and leaves the full view, keeping the remembered mode (a later pick from Conductor opens full again). */
 export function collapseFullView() {
-  if (!routeStore.get().route.pluginId) return;
-  setDockCollapsed(true);
-  dockRouteApp();
+  const { pluginId, pluginPath } = routeStore.get().route;
+  if (!pluginId) return;
+  parkCollapsed(pluginId, pluginPath);
+  leaveView();
 }

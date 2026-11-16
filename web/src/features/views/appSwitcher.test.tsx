@@ -92,9 +92,9 @@ describe('the app switcher', () => {
     expect(checkedApps(menu), 'precondition: the plugin is current again').toEqual(['pl']);
     await closeSwitcher();
     await go('#session=abc');
-    expect(viewOpen(), 'an outside hash change closes the plugin view').toBe(false);
+    expect(viewOpen(), 'an outside hash change leaves the full view (the rail is aria-hidden)').toBe(false);
     menu = await openSwitcher();
-    expect(checkedApps(menu), 'an outside hash change away from the plugin').toEqual(['conductor']);
+    expect(checkedApps(menu), 'an outside hash change parks the plugin as the rail').toEqual(['pl']);
     await closeSwitcher();
   });
 

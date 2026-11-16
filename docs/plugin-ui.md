@@ -101,7 +101,7 @@ An **optional host capability, not a contract requirement**: a plugin that ignor
 | Layout | Active session |
 |---|---|
 | Docked split (desktop) | the session beside the dock |
-| Plugin full-screen (`#plugin/<id>/…`) | the session cc returns to when the plugin view closes |
+| Plugin full-screen (`#plugin/<id>/…`) | the session cc returns to when the plugin view is left |
 | Phone (below `md`; no split) | same as full-screen |
 | Any other full-page view (settings, costs, …) | same: the retained selection |
 

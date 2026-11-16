@@ -15,7 +15,7 @@ vi.mock('@/features/notifications/NotifyToggle', () => ({ NotifyToggle: () => nu
 vi.mock('@/features/session/SessionView', () => ({ SessionView: () => <div data-view="session" /> }));
 vi.mock('@/features/dialogs/DialogsHost', () => ({ DialogsHost: () => null }));
 
-import { column, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, plainRow, postRoute, residentFrame, resetHost, sessionShown, sharedFrame, standInWindow, viewOpen } from './test/pluginHost';
+import { column, DOCK_CATALOG, dockSplit, endHost, go, keepRow, mountApp, navigate, net, pickApp, plainRow, postRoute, residentFrame, resetHost, sessionShown, sharedFrame, standInWindow, viewOpen } from './test/pluginHost';
 import { settle } from '@/test/settle';
 import { Markdown } from '@/components/Markdown';
 import { clickLink } from '@/test/linkClick';
@@ -111,7 +111,8 @@ describe('a plugin link in the transcript', () => {
     act(() => { history.back(); });
     await settle();
     expect(sessionShown()).toBe(true);
-    expect(frame.hidden).toBe(true);
+    await pickApp('conductor');
+    expect(frame.hidden, 'Conductor hides the resident page').toBe(true);
     expect(await clickLinkTo('#plugin/beta/?review=r-9&thread=t-7')).toBe(true);
     expect(residentFrame('beta')).toBe(frame);
     expect(frame.getAttribute('src')).toBe(src);

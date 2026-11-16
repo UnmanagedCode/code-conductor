@@ -178,6 +178,7 @@ describe('the plugin dock collapse', () => {
     await press(COLLAPSE);
     await pickApp('beta');
     expect(mode()).toBe('split');
+    expect(location.hash, 'on the session, not a full view').toBe(ANCHOR);
     expect(rail()).toBeNull();
     expect(ctl(COLLAPSE)).not.toBeNull();
   });
@@ -326,6 +327,22 @@ describe('full-pane collapse', () => {
     expect(sharedFrame() === frame && !frame.hidden, 'the same frame node, shown').toBe(true);
     expect(frame.getAttribute('src')).toBe('/plugins/alpha/');
     expect(starts()).toBe(startsBefore);
+  });
+
+  it('a rail does not stop a full pick: with full remembered, picking another plugin beside a rail opens its full view, and leaving it parks that plugin', async () => {
+    // Invariant: a rail is not "a plugin showing beside the session", so a pick with full remembered opens the full view (clearing the rail); leaving it docks the new plugin.
+    await mountApp();
+    await openFull();
+    await press(COLLAPSE);
+    expect(dockStore.get(), 'fixture check: rail on alpha, full remembered').toMatchObject({ id: 'alpha', mode: 'full' });
+    await pickApp('beta');
+    expect(location.hash).toBe('#plugin/beta/');
+    expect(mode()).toBe('full');
+    expect(dockStore.get().id).toBeNull();
+    await act(async () => { history.back(); });
+    await settle();
+    expect(mode()).toBe('rail');
+    expect(dockStore.get().id).toBe('beta');
   });
 
   it('the full mode stays remembered after a full-pane Collapse: a Conductor pick then a pick of the plugin opens its full view', async () => {

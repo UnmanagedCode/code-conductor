@@ -1,6 +1,6 @@
 // The plugin column's mode rules and the plugin on screen, one per test, the split limit at its boundary, and where the app switcher shows.
 import { describe, expect, it } from 'vitest';
-import { canSplit, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, type DockMode, maxPanel, shownApp, switcherSlot } from './dockLayout';
+import { canCollapseFullView, canSplit, DOCK_PANEL_MIN_WIDTH, DOCK_TRANSCRIPT_MIN_WIDTH, dockLayout, type DockMode, maxPanel, shownApp, switcherSlot } from './dockLayout';
 
 /** The narrowest main row a split fits in. */
 const SPLIT_MIN_ROW = DOCK_PANEL_MIN_WIDTH + DOCK_TRANSCRIPT_MIN_WIDTH;
@@ -8,6 +8,19 @@ const CATALOG = ['alpha', 'beta'];
 type Input = Parameters<typeof dockLayout>[0];
 const input = (over: Partial<Input> = {}): Input => ({
   desktop: true, view: 'session', routePluginId: null, catalogIds: CATALOG, dockId: null, available: 1100, collapsed: false, ...over,
+});
+
+describe('canCollapseFullView', () => {
+  it.each([
+    [true, ['alpha'], 'alpha', true],
+    [true, ['alpha'], 'zeta', false],
+    [false, ['alpha'], 'alpha', false],
+    [false, [], 'alpha', false],
+  ] as const)('desktop %s, catalog %j, plugin %s → %s, and the bar\'s dismiss agrees', (desktop, ids, id, want) => {
+    // Invariant: the leave hook and the bar's Collapse/Close choice share one rule.
+    expect(canCollapseFullView(desktop, [...ids], id)).toBe(want);
+    expect(dockLayout(input({ desktop, view: 'plugin', routePluginId: id, catalogIds: [...ids] })).dismiss).toBe(want ? 'collapse' : 'close');
+  });
 });
 
 describe('dockLayout', () => {
