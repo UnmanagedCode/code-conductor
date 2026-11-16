@@ -5,14 +5,13 @@
 // rule. It never denies or alters a call.
 //
 // The single source for everything the nudge is made of: the tool lists, the
-// settings matcher, the thresholds, the wording, the UI event shape, and the
-// replay recognizer that rebuilds that event from the session jsonl. Wired by
-// src/settings.ts (the hook entry), src/hookBroker.ts (the answer),
-// src/instances.ts (the per-instance counter + its reset at every exit from
-// `turn`) and src/transcript.ts (replay).
+// settings matcher, the thresholds and the wording. Wired by src/settings.ts
+// (the hook entry), src/hookBroker.ts (the answer) and src/instances.ts (the
+// per-instance counter + its reset at every exit from `turn`). The user sees
+// the nudge as an ordinary hook context (src/hookContext.ts), live and on
+// replay.
 
 import { TOOL_NAME_PREFIX } from './playbooks.ts';
-import type { UiEvent } from '../shared/uiEvent.ts';
 
 // Each extends the run.
 const COUNTED_TOOLS = ['project_read', 'project_bash'].map(t => TOOL_NAME_PREFIX + t);
@@ -39,24 +38,8 @@ const READ_NUDGE_TEMPLATE =
   + `${bare(DELEGATION_TOOLS, ' or ')}. `
   + `Before the next read, apply "${READ_NUDGE_RULE}" from your Conductor role doc.`;
 
-const [TEMPLATE_HEAD, TEMPLATE_TAIL] = READ_NUDGE_TEMPLATE.split(COUNT_SLOT);
-const PARSE_RE = new RegExp(`^${escapeRegex(TEMPLATE_HEAD)}(\\d+)${escapeRegex(TEMPLATE_TAIL)}$`);
-
 export function readNudgeText(count: number): string {
   return READ_NUDGE_TEMPLATE.replace(COUNT_SLOT, String(count));
-}
-
-// The count a nudge text carries, or null when `text` is not one.
-export function parseReadNudgeText(text: string): number | null {
-  const m = PARSE_RE.exec(text);
-  return m ? Number(m[1]) : null;
-}
-
-export interface ReadNudge {
-  count: number;
-  toolName: string;
-  toolUseId: string;
-  text: string;
 }
 
 // One per conductor Instance, in memory only.
@@ -81,37 +64,4 @@ export class ConductorReadNudge {
   reset(): void {
     this._run = 0;
   }
-}
-
-// THE constructor of the `system`/`read_nudge` event, for the live path and
-// replay alike. The literal `kind`/`subtype` pair is read by the replay
-// tripwire in tests/archive-correlated-cut.test.mjs.
-export function readNudgeEvent({ count, toolName, toolUseId, text }: ReadNudge): UiEvent {
-  return { kind: 'system', subtype: 'read_nudge', toolUseId, data: { count, tool: toolName, text } };
-}
-
-// The jsonl attachment the CLI writes for a PreToolUse `additionalContext`.
-export interface HookContextAttachment {
-  type?: unknown;
-  hookEvent?: unknown;
-  hookName?: unknown;
-  toolUseID?: unknown;
-  content?: unknown;
-}
-
-// Rebuilds the read_nudge event from its persisted attachment; null for any
-// other attachment (a user's own hook, a redirect note).
-export function readNudgeEventFromAttachment(att: HookContextAttachment | null | undefined): UiEvent | null {
-  if (!att || att.type !== 'hook_additional_context' || att.hookEvent !== 'PreToolUse') return null;
-  if (typeof att.toolUseID !== 'string' || typeof att.hookName !== 'string') return null;
-  if (!att.hookName.startsWith('PreToolUse:')) return null;
-  const toolName = att.hookName.slice('PreToolUse:'.length);
-  if (!COUNTED_TOOLS.includes(toolName)) return null;
-  if (!Array.isArray(att.content)) return null;
-  for (const text of att.content) {
-    if (typeof text !== 'string') continue;
-    const count = parseReadNudgeText(text);
-    if (count != null) return readNudgeEvent({ count, toolName, toolUseId: att.toolUseID, text });
-  }
-  return null;
 }

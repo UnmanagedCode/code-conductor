@@ -100,7 +100,6 @@ describe('action groups', () => {
   it('a system note the turn survives does not collapse the group', () => {
     const m = new ConversationModel();
     feed(m, tool('m1', 0, 'tu1', 'Bash', { result: null }));
-    m.apply({ kind: 'system', subtype: 'read_nudge', data: { text: 'read it' } });
     m.apply({ kind: 'system', subtype: 'playbook_warn', data: { tool: 'x' } });
     m.apply({ kind: 'system', subtype: 'task_notification', data: { notified: true, status: 'completed' } });
     expect(onlyGroup(m).open).toBe(true);

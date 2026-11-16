@@ -63,9 +63,9 @@ t('an additionalContext-only PreToolUse reply persists a hook_additional_context
     assert.ok(atts.length >= 1, 'the reply was persisted as a hook_additional_context attachment keyed by the envelope\'s tool_use_id');
     assert.equal(atts[0].hookEvent, 'PreToolUse');
     assert.equal(atts[0].hookName, 'PreToolUse:Bash');
-    // The shape readNudgeEventFromAttachment depends on: an ARRAY of strings,
-    // one of which is the hook's additionalContext verbatim. A bare string here
-    // would leave the read nudge unreplayable.
+    // The shape hookContextEventsFromAttachment (src/hookContext.ts) depends
+    // on: an ARRAY of strings, one of which is the hook's additionalContext
+    // verbatim. A bare string here would leave the context unreplayable.
     assert.ok(Array.isArray(atts[0].content), `content is ${typeof atts[0].content}, not an array — replay would drop the nudge`);
     assert.ok(atts[0].content.some(c => c === MARKER), 'one content element is the additionalContext string, verbatim');
   } finally { await hooks.close(); await clean(); }

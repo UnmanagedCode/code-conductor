@@ -1,7 +1,7 @@
 // Per-instance answerer for the tool-hook http callbacks, plus the JSON
 // response helpers, so none of that needs to clutter the Instance class. The
 // broker only reaches back into the Instance via the getRedirect() and
-// onReadNudge() callbacks and the pending tool-result nudges it's constructed
+// onHookContext() callbacks and the pending tool-result nudges it's constructed
 // with, keeping the dependency arrow one-way.
 //
 // It answers two hook events. `PreToolUse`: a local session's calls are all
@@ -26,10 +26,16 @@
 // — with NO permission decision, because an explicit `allow` skips the CLI's own
 // permission flow, plan mode included. The body is `{}`, or `additionalContext`
 // alone when the call earns a nudge. Those tools never reach the redirect.
+//
+// Every answer carrying `additionalContext` (a tool-result nudge, a redirect
+// note, a read nudge) is reported through `onHookContext` AFTER its body is
+// sent, so the user sees what the model was given (src/hookContext.ts). The
+// CLI's live hook frames carry no tool_use_id; this is the only live source
+// that ties a tool hook's context to its call.
 
 import type { Response } from 'express';
 import type { RedirectDecision } from './systems/toolRedirect.ts';
-import type { ConductorReadNudge, ReadNudge } from './conductorReadNudge.ts';
+import type { ConductorReadNudge } from './conductorReadNudge.ts';
 import { isToolResultNudgeTool, type PendingToolNudges } from './toolResultNudges.ts';
 
 interface PreToolUseOutput {
@@ -92,6 +98,14 @@ export interface HookRedirector {
   postToolUse(toolName: string, toolInput: Record<string, unknown>, toolResponse: unknown): Promise<string | null>;
 }
 
+// One context answer, as reported to onHookContext.
+export interface HookContextAnswer {
+  hookEvent: 'PreToolUse' | 'PostToolUse';
+  toolUseId: string | null;
+  toolName: string | null;
+  text: string;
+}
+
 export interface HookBrokerOptions {
   // The session's redirection policy, or null for a local project. A GETTER
   // because it is attached after the Instance is constructed and dropped when
@@ -99,8 +113,9 @@ export interface HookBrokerOptions {
   getRedirect: () => HookRedirector | null;
   // A conductor's run counter; absent on every other instance.
   readNudge?: ConductorReadNudge | null;
-  // Called AFTER the hook is answered, so a throw here cannot turn into a deny.
-  onReadNudge?: (n: ReadNudge) => void;
+  // Called once per answer carrying `additionalContext`, AFTER the hook is
+  // answered, so a throw here cannot turn into a deny.
+  onHookContext?: (c: HookContextAnswer) => void;
   // The session's queued tool-result nudges, taken by toolUseId.
   toolNudges?: PendingToolNudges | null;
 }
@@ -108,14 +123,14 @@ export interface HookBrokerOptions {
 export class HookBroker {
   private readonly _getRedirect: () => HookRedirector | null;
   private readonly _readNudge: ConductorReadNudge | null;
-  private readonly _onReadNudge: ((n: ReadNudge) => void) | null;
+  private readonly _onHookContext: ((c: HookContextAnswer) => void) | null;
   private readonly _toolNudges: PendingToolNudges | null;
 
-  constructor({ getRedirect, readNudge = null, onReadNudge, toolNudges = null }: HookBrokerOptions) {
+  constructor({ getRedirect, readNudge = null, onHookContext, toolNudges = null }: HookBrokerOptions) {
     if (typeof getRedirect !== 'function') throw new Error('HookBroker requires getRedirect()');
     this._getRedirect = getRedirect;
     this._readNudge = readNudge;
-    this._onReadNudge = onReadNudge ?? null;
+    this._onHookContext = onHookContext ?? null;
     this._toolNudges = toolNudges;
   }
 
@@ -145,15 +160,11 @@ export class HookBroker {
       if (this._toolNudges && isToolResultNudgeTool(toolName)) {
         const toolUseId = typeof envelope.tool_use_id === 'string' ? envelope.tool_use_id : '';
         const nudge = toolUseId ? this._toolNudges.take(toolUseId) : null;
-        if (!res.headersSent) {
-          res.status(200).json(nudge ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: nudge } } : {});
-        }
+        this._respondContext(res, 'PostToolUse', envelope, nudge);
         return;
       }
       const note = redirect ? await redirect.postToolUse(toolName, toolInput, envelope.tool_response) : null;
-      if (!res.headersSent) {
-        res.status(200).json(note ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: note } } : {});
-      }
+      this._respondContext(res, 'PostToolUse', envelope, note);
       return;
     }
 
@@ -161,13 +172,7 @@ export class HookBroker {
       // A subagent's calls are not the conductor's own reading: they neither
       // count nor reset the run.
       const nudge = envelope?.agent_id != null ? null : this._readNudge.observe(toolName);
-      if (!res.headersSent) {
-        res.status(200).json(nudge ? { hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: nudge.text } } : {});
-      }
-      if (nudge) {
-        const toolUseId = typeof envelope?.tool_use_id === 'string' ? envelope.tool_use_id : '';
-        this._onReadNudge?.({ ...nudge, toolName, toolUseId });
-      }
+      this._respondContext(res, 'PreToolUse', envelope, nudge?.text ?? null);
       return;
     }
 
@@ -181,5 +186,23 @@ export class HookBroker {
       updatedInput = decision.updatedInput;
     }
     respondAllow(res, updatedInput);
+  }
+
+  // Answers with `text` as `additionalContext` alone, or `{}` when null; then,
+  // for a context answer, reports it through onHookContext. Answering first
+  // means a throwing reporter finds `res.headersSent` and cannot become a deny.
+  private _respondContext(
+    res: Response,
+    hookEventName: 'PreToolUse' | 'PostToolUse',
+    envelope: HookEnvelope | null | undefined,
+    text: string | null,
+  ): void {
+    if (!res.headersSent) {
+      res.status(200).json(text ? { hookSpecificOutput: { hookEventName, additionalContext: text } } : {});
+    }
+    if (!text) return;
+    const toolUseId = typeof envelope?.tool_use_id === 'string' && envelope.tool_use_id ? envelope.tool_use_id : null;
+    const toolName = typeof envelope?.tool_name === 'string' ? envelope.tool_name : null;
+    this._onHookContext?.({ hookEvent: hookEventName, toolUseId, toolName, text });
   }
 }

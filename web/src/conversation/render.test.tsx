@@ -154,14 +154,12 @@ describe('annotations', () => {
     expect(kids.map((n) => n.getAttribute('data-subtype') ?? n.getAttribute('data-item'))).toEqual(['stderr', 'assistant', 'stderr']);
   });
 
-  it('a read nudge and a playbook warning render warning-styled; a stderr line does not', async () => {
+  it('a playbook warning renders warning-styled; a stderr line does not', async () => {
     const { root } = await shown([
-      { kind: 'system', subtype: 'read_nudge', data: { text: 'nudge text' } },
       { kind: 'system', subtype: 'playbook_warn', data: { tool: 'send_prompt', code: 'X', reason: 'r' } },
       { kind: 'system', subtype: 'stderr', data: { line: 'noise' } },
     ]);
-    expect([...root.querySelectorAll('[data-tone="warn"]')].map((n) => n.getAttribute('data-subtype'))).toEqual(['read_nudge', 'playbook_warn']);
-    expect(root.querySelector('[data-subtype="read_nudge"]')!.textContent).toContain('nudge text');
+    expect([...root.querySelectorAll('[data-tone="warn"]')].map((n) => n.getAttribute('data-subtype'))).toEqual(['playbook_warn']);
   });
 
   it('a nudge between a tool_use and its result does not close the group, and the result attaches', async () => {
@@ -169,7 +167,7 @@ describe('annotations', () => {
     feed(m, [
       { kind: 'tool_use_start', msgId: 'm1', blockIdx: 0, toolUseId: 'tu8', name: 'mcp__code-conductor__project_read' },
       { kind: 'tool_use', msgId: 'm1', blockIdx: 0, toolUseId: 'tu8', name: 'mcp__code-conductor__project_read', input: {} },
-      { kind: 'system', subtype: 'read_nudge', data: { text: 'n' } },
+      { kind: 'hook_context', hookEvent: 'PreToolUse', toolUseId: 'tu8', toolName: 'mcp__code-conductor__project_read', text: 'n' },
       toolResult({ toolUseId: 'tu8', content: 'file bytes RESULT-MARK' }),
     ]);
     const group = (m.items[0] as any).children[0];

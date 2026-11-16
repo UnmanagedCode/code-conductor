@@ -20,6 +20,7 @@ import { planPathFromInput } from './planFile.ts';
 import { AWAITING_INPUT_MESSAGE, EARLIER_AWAITING_INPUT_MESSAGES } from './settings.ts';
 import { TaskStarts, taskNotificationFromFrame, type TaskFrame } from './taskNotification.ts';
 import { isNarration } from './narration.ts';
+import { hookContextFromResponse } from './hookContext.ts';
 import { parseAuthorMarker } from './promptAuthor.ts';
 import type { UiEvent, UiEventOf, SystemData, UserEchoAttachment, AssistantWireMessage, PromptAuthor } from '../shared/uiEvent.ts';
 import type { Usage } from '../shared/usage.ts';
@@ -234,6 +235,11 @@ export class Parser {
     if (obj.subtype === 'task_notification') {
       return [taskNotificationFromFrame(obj, this._taskStarts.take((obj as TaskFrame).task_id))];
     }
+    // A UserPromptSubmit hook's context REPLACES its frame, so the ring never
+    // holds the (often multi-KB) text twice. Every other hook frame passes
+    // through and stays hidden.
+    const hookContext = hookContextFromResponse(obj as Record<string, unknown>);
+    if (hookContext) return [hookContext];
     return [cliSystemEvent(obj.subtype ?? 'unknown', obj)];
   }
 

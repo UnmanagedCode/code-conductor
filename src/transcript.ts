@@ -22,7 +22,7 @@ import { PlanFileTracker, planPathFromInput } from './planFile.ts';
 import { isNarration, type BlockProbe } from './narration.ts';
 import type { UiEvent } from '../shared/uiEvent.ts';
 import { QuestionAnswerCorrelator } from './questionAnswerStamp.ts';
-import { readNudgeEventFromAttachment } from './conductorReadNudge.ts';
+import { hookContextEventsFromAttachment } from './hookContext.ts';
 import { taskNotificationFromEnqueue, turnBoundaryFromDelivery } from './taskNotification.ts';
 import { getModelSwitchesForSegment, type ModelSwitchEntry } from './sessionStore.ts';
 import { errCode } from '../shared/basics.ts';
@@ -225,12 +225,12 @@ export function replayPersistedLine(
     return tagAndReturn();
   }
 
-  // A PreToolUse `additionalContext`, persisted between the tool_use line and
-  // its tool_result line. Only cc's own read nudge is rebuilt — the same event
-  // the broker emitted live; every other hook's context stays off the transcript.
+  // A hook's `additionalContext`: a Pre/PostToolUse one persisted between the
+  // tool_use line and its tool_result line, a UserPromptSubmit one right after
+  // its prompt line. One `hook_context` per context string, the same event the
+  // live path builds (src/hookContext.ts).
   if (line.type === 'attachment' && line.attachment?.type === 'hook_additional_context') {
-    const ev = readNudgeEventFromAttachment(line.attachment);
-    if (ev) events.push(ev);
+    events.push(...hookContextEventsFromAttachment(line.attachment));
     return tagAndReturn();
   }
 

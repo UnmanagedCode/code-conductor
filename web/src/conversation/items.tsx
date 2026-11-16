@@ -1,12 +1,11 @@
 import * as React from 'react';
 import {
-  AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, ChevronRightIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
-  CodeXmlIcon, FileTextIcon, GitForkIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
-  RotateCcwIcon, ShrinkIcon, TriangleAlertIcon, TypeIcon,
+  AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
+  FileTextIcon, GitForkIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
+  RotateCcwIcon, ShrinkIcon, TriangleAlertIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { CopyButton } from '@/components/CopyButton';
 import { Markdown, MarkdownInlineEnd } from '@/components/Markdown';
 import { SpeakButton } from '@/features/voice/SpeakButton';
@@ -18,7 +17,7 @@ import { splitForwardedMessages } from '@shared/forwardFrame';
 import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type NarrationNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
 import { fieldText, PlanCard, QuestionCard } from './cards';
-import { BubbleBody } from './BubbleBody';
+import { ActionRow, Folded, FoldedBody, HookContextFold, MD_TEXT, ViewToggle } from './folds';
 import { compactionLabel, systemLine, taskNotificationHeadline, turnEndParts } from './format';
 import { ImageZoom } from './ImageZoom';
 import { SPEAK_INLINE, SPEAK_REVEAL } from './speakSlot';
@@ -84,28 +83,13 @@ const RootItemView = React.memo(function RootItemView({ node, ctx, actions, curr
     case 'queued': return <QueuedView node={node} />;
     case 'compaction': return <CompactionView node={node} model={ctx.model} />;
     case 'divider': return <DividerView node={node} actions={ctx.model.isSub ? null : actions} currentSegment={currentSegment} />;
+    case 'hook_context': return <HookContextFold node={node} model={ctx.model} withTool />;
   }
 }, (a, b) => a.node === b.node && a.rev === b.rev && a.actions === b.actions && a.currentSegment === b.currentSegment && a.ctx === b.ctx
   && a.controlsBelow === b.controlsBelow && a.carries === b.carries && a.carriesRev === b.carriesRev && a.afterAssistant === b.afterAssistant);
 
 // ── User ─────────────────────────────────────────────────────────────────
 
-function ViewToggle({ view, onChange }: { view: 'rendered' | 'raw'; onChange: (v: 'rendered' | 'raw') => void }) {
-  return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <Button variant="ghost" size="icon-sm" className="size-7 text-muted-foreground" aria-label={view === 'raw' ? 'Show rendered markdown' : 'Show raw text'}
-          onClick={(e) => { e.stopPropagation(); onChange(view === 'raw' ? 'rendered' : 'raw'); }}>
-          {view === 'raw' ? <TypeIcon className="size-3.5" /> : <CodeXmlIcon className="size-3.5" />}
-        </Button>
-      </TooltipTrigger>
-      <TooltipContent>{view === 'raw' ? 'Show rendered markdown' : 'Show raw text'}</TooltipContent>
-    </Tooltip>
-  );
-}
-
-// Single newlines inside a paragraph are line breaks people typed: keep them.
-const MD_TEXT = 'whitespace-pre-wrap';
 /** The horizontal inset of transcript text: a user bubble's padding. The attachments row and assistant prose share it, so their content starts at the bubble's text. */
 export const TEXT_INSET_X = 'px-4';
 /** A user bubble: a soft tint and an accent strip on its right edge, the side its author speaks from; no outline. A tone adds the colours. */
@@ -117,45 +101,6 @@ function UserText({ text, view }: { text: string; view: 'rendered' | 'raw' }) {
   return view === 'raw'
     ? <div className="text-[15px] leading-relaxed whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</div>
     : <Markdown text={text} className={MD_TEXT} />;
-}
-
-function Folded({ icon, title, children, tone = 'muted', kind, multiline = false, open, onOpenChange }: {
-  icon: React.ReactNode; title: React.ReactNode; children: () => React.ReactNode; tone?: 'muted' | 'info'; kind: string; multiline?: boolean;
-  open: boolean; onOpenChange: (open: boolean) => void;
-}) {
-  // The body is built on first expand and kept afterwards: Radix renders no
-  // children while closed, so forceMount keeps the built body mounted and
-  // `hidden` hides it.
-  const [opened, setOpened] = React.useState(open);
-  return (
-    <Collapsible open={open} onOpenChange={(o) => { onOpenChange(o); if (o) setOpened(true); }} className={cn('rounded-xl border bg-card', tone === 'info' && 'border-info/30')} data-fold={kind}>
-      <CollapsibleTrigger className="group/fold flex w-full items-center gap-2 px-3 py-2 text-left text-sm" data-fold-trigger>
-        <span className="shrink-0 text-muted-foreground">{icon}</span>
-        <span className={cn('min-w-0 flex-1', multiline ? 'whitespace-pre-line wrap-anywhere' : 'truncate')} data-fold-title>{title}</span>
-        <ChevronRightIcon className="size-3.5 shrink-0 text-muted-foreground transition-transform group-data-[state=open]/fold:rotate-90" />
-      </CollapsibleTrigger>
-      <CollapsibleContent forceMount hidden={!open} className="border-t px-3 py-3">{opened && children()}</CollapsibleContent>
-    </Collapsible>
-  );
-}
-
-/** A transcript item's row of helper icons (raw toggle, copy, rewind, fork). Every such row is right-aligned. */
-function ActionRow({ className, ...props }: React.ComponentProps<'div'>) {
-  return <div data-action-row className={cn('flex items-center justify-end gap-0.5', className)} {...props} />;
-}
-
-function FoldedBody({ text, render, view, onViewChange }: { text: string; render?: () => React.ReactNode; view: TextView; onViewChange: (view: TextView) => void }) {
-  return (
-    <div className="space-y-2">
-      <ActionRow>
-        <ViewToggle view={view} onChange={onViewChange} />
-        <CopyButton getText={() => text} label="Copy text" />
-      </ActionRow>
-      <BubbleBody>
-        {view === 'raw' ? <pre className="text-sm whitespace-pre-wrap wrap-anywhere" data-view="raw">{text}</pre> : render ? render() : <Markdown text={text} className={MD_TEXT} />}
-      </BubbleBody>
-    </div>
-  );
 }
 
 function Section({ label, children }: { label: string; children: React.ReactNode }) {
@@ -313,6 +258,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
           <UserText text={node.displayText} view={view} />
         </div>
       ) : null}
+      {node.hookContexts.map((c) => <HookContextFold key={c.id} node={c} model={model} />)}
       <Attachments list={node.attachments} resolve={actions?.resolveAttachmentUrl} />
       <ActionRow className="opacity-0 transition-opacity group-hover/user:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100" data-user-actions>
         {node.transcribed && (

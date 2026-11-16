@@ -59,6 +59,8 @@ export type ToolNode = Base & {
   agentUsage: { tokens: number; toolUses: number | null } | null;
   result: ResultNode | null;
   sub: ConversationModel | null;
+  /** The context hooks added to this call, in arrival order. */
+  hookContexts: HookContextNode[];
   /** The card, its sub-agent section, and its Arguments. `argsFolds`: the reader's folds in the Arguments JSON tree, keyed by container id; absent = the default. */
   reader: { open: boolean; subOpen: boolean; argsOpen: boolean; argsFolds: Record<string, boolean> };
 };
@@ -90,6 +92,8 @@ export type UserNode = Base & {
   forward: { payload: string; count: number } | null;
   answer: { questions: any[]; answers: any[] | null } | null;
   attachments: any[];
+  /** The context a UserPromptSubmit hook added to this prompt, in arrival order. */
+  hookContexts: HookContextNode[];
   userIndex: number | null;
   segmentId: string | null;
   origin: string;
@@ -142,13 +146,18 @@ export type CompactionNode = Base & {
   reader: { open: boolean; view: TextView };
 };
 export type DividerNode = Base & { type: 'divider'; kind: 'gap' | 'seam' | 'replayed'; segmentId?: string | null; count?: number };
+/**
+ * Text a hook added to the model's context. It hangs off its prompt or its tool card; a root item only while its
+ * target is not rendered (a tool context then moves into its card when the card appears). `reader`: its fold.
+ */
+export type HookContextNode = Base & { type: 'hook_context'; ev: UiEventOf<'hook_context'>; reader: { open: boolean; view: TextView } };
 
 export type RootItem =
   | UserNode | AssistantNode | SystemNode | TurnEndNode | PlanNode | QuestionNode
-  | TaskCompletionNode | QueuedNode | CompactionNode | DividerNode;
+  | TaskCompletionNode | QueuedNode | CompactionNode | DividerNode | HookContextNode;
 export type NodeT = RootItem | AssistantChild | GroupChild;
 /** The nodes that carry a `reader`. */
-export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | SystemNode | CompactionNode;
+export type ReaderNode = ThinkingNode | ResultNode | ToolNode | UserNode | SystemNode | CompactionNode | HookContextNode;
 
 // ── Rules shared with the old renderer ───────────────────────────────────
 
@@ -175,7 +184,7 @@ const SHOWN_SYSTEM_SUBTYPES = new Set([
   'init', 'stderr', 'exit', 'spawn_error', 'crashed',
   'permission_denied', 'history_load_error', 'auto_stop_overage',
   'auto_resume', 'auto_resume_skipped', 'soft_interrupted', 'drain_abort',
-  'model_changed', 'model_switch_failed', 'cache_miss', 'playbook_warn', 'event_log_blocked', 'renew_error', 'read_nudge',
+  'model_changed', 'model_switch_failed', 'cache_miss', 'playbook_warn', 'event_log_blocked', 'renew_error',
 ]);
 
 /** Which system events the conversation shows; the rest is per-turn noise. */
@@ -301,6 +310,8 @@ export class ConversationModel {
   orphanChildEvents = new Map<string | null, UiEvent[]>();
   /** Live call_usage events whose message isn't rendered yet, by msgId: a tail or page can start between the two. */
   orphanCallUsage = new Map<string, UiEventOf<'call_usage'>>();
+  /** Root items holding a tool's hook context while its card is not rendered, by toolUseId; a page's pass to the live model on prependPage. */
+  private looseHookContexts = new Map<string, HookContextNode[]>();
   private pendingCompaction: CompactionNode | null = null;
   private compaction: CompactionNode | null = null;
 
@@ -415,6 +426,7 @@ export class ConversationModel {
     this.sawSegmentCloser = false;
     this.orphanChildEvents.clear();
     this.orphanCallUsage.clear();
+    this.looseHookContexts.clear();
     this.pendingCompaction = null;
     this.compaction = null;
     this.segmentId = null;
@@ -670,6 +682,7 @@ export class ConversationModel {
       case 'overage_message_queued':
         return this.pushRoot(this.make<QueuedNode>({ type: 'queued', ev, delivered: false }, this));
       case 'system': return this.renderSystemEvent(ev);
+      case 'hook_context': return this.renderHookContext(ev);
       case 'turn_end':
         this.failPendingCompaction(null);
         // A turn the CLI starts unprompted (a background task's notification) has no user_echo to end this one.
@@ -767,6 +780,58 @@ export class ConversationModel {
       if (found) return found;
     }
     return null;
+  }
+
+  /** The card for `toolUseId` in this model or any sub-agent model under it. */
+  private findToolBlock(toolUseId: string): ToolNode | null {
+    const own = this.toolBlocks.get(toolUseId);
+    if (own) return own;
+    for (const sub of this.subConvs.values()) {
+      const found = sub.findToolBlock(toolUseId);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  // ── Hook context ──────────────────────────────────────────────────────
+
+  /**
+   * A UserPromptSubmit context goes under the latest prompt: live, the echo is emitted at send and the hook's
+   * frame follows; on replay, the attachment line follows its prompt line. A tool context goes into its card,
+   * wherever in the sub-agent tree that card is: the broker's events carry no parent tag. With no target
+   * rendered, the context is a loose root row.
+   */
+  private renderHookContext(ev: UiEventOf<'hook_context'>) {
+    const node = this.make<HookContextNode>({ type: 'hook_context', ev, reader: { open: false, view: 'rendered' } }, null);
+    if (ev.toolUseId == null) {
+      const prompt = this.items.findLast((i): i is UserNode => i.type === 'user');
+      if (prompt) return this.attachHookContext(prompt, node);
+      return this.pushRoot(node);
+    }
+    const block = this.root.findToolBlock(ev.toolUseId);
+    if (block) return this.attachHookContext(block, node);
+    const loose = this.root.looseHookContexts;
+    const list = loose.get(ev.toolUseId) ?? [];
+    list.push(node);
+    loose.set(ev.toolUseId, list);
+    this.root.pushRoot(node);
+  }
+
+  private attachHookContext(target: UserNode | ToolNode, node: HookContextNode) {
+    node.parent = target;
+    target.hookContexts.push(node);
+    this.touch(node);
+  }
+
+  /** Move the loose contexts waiting for `toolUseId` into its card, now rendered. */
+  private claimLooseHookContexts(toolUseId: string, block: ToolNode) {
+    const nodes = this.looseHookContexts.get(toolUseId);
+    if (!nodes) return;
+    this.looseHookContexts.delete(toolUseId);
+    this.items = this.items.filter((i) => !(nodes as RootItem[]).includes(i));
+    for (const n of nodes) this.attachHookContext(block, n);
+    this.rev++;
+    this.touch(null);
   }
 
   // ── Assistant envelopes and action groups ─────────────────────────────
@@ -921,11 +986,14 @@ export class ConversationModel {
     const block = this.make<ToolNode>({
       type: 'tool', name: ev.name ?? 'tool', toolUseId: ev.toolUseId ?? null, partialJson: '', input: null,
       status: 'streaming', startedAt: null, elapsedMs: null, agentUsage: null, result: null, sub: null,
+      hookContexts: [],
       reader: { open: false, subOpen: true, argsOpen: false, argsFolds: {} },
     }, null);
     this.blocksByKey.set(`${ev.msgId ?? '?'}:${ev.blockIdx ?? 0}:tool`, block);
     if (ev.toolUseId) this.toolBlocks.set(ev.toolUseId, block);
     this.appendToWrap(this.ensureMessageWrap(ev.msgId), block, true);
+    // The broker's HTTP hook can beat the CLI's stdout line that starts the card.
+    if (ev.toolUseId) this.root.claimLooseHookContexts(ev.toolUseId, block);
   }
 
   private renderToolInputDelta(ev: UiEventOf<'tool_use_input_delta'>) {
@@ -1136,6 +1204,7 @@ export class ConversationModel {
       displayText: !injectedFold && !renew ? text : '',
       transcribed, skill, wake, idleNudge, renew, forward, answer,
       attachments: Array.isArray(ev.attachments) ? ev.attachments : [],
+      hookContexts: [],
       userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex as number : null,
       segmentId: this.segmentId,
       origin: this.isSub ? 'synthetic' : hasUserText ? promptOrigin(ev) : 'synthetic',
@@ -1300,6 +1369,12 @@ export class ConversationModel {
     for (const [pid, block] of page.toolBlocks) {
       if (this.orphanChildEvents.has(pid)) this.adoptToolBlock(pid, block);
     }
+    // A context loose below the seam belongs to a card the page brings; the page's own loose ones wait for an older page.
+    for (const id of [...this.looseHookContexts.keys()]) {
+      const block = page.findToolBlock(id);
+      if (block) this.claimLooseHookContexts(id, block);
+    }
+    for (const [id, nodes] of page.looseHookContexts) this.looseHookContexts.set(id, [...(this.looseHookContexts.get(id) ?? []), ...nodes]);
     // A call_usage at the page's head waits for the older page holding its message.
     for (const [msgId, ev] of page.orphanCallUsage) this.orphanCallUsage.set(msgId, ev);
     this.rev++;
