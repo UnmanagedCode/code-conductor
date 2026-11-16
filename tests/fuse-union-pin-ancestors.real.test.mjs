@@ -222,4 +222,39 @@ describe('a worker inside a FUSE-union chroot: host-pin ancestors under a wide m
     }
     assertNoResidue(before, runRoot, null, 'P3');
   });
+
+  // P4 — a directory's mode reaches the remote only on a declared intent.
+  // INVARIANT: a marked `utimes` of a remote-0555 directory leaves the REMOTE
+  // directory 0555 even though the mirror directory cc shaped is widened, and a
+  // marked `chmod 555` of a 0755 directory lands 0555 on the remote.
+  test('P4 — a marked utimes leaves a remote-0555 dir at 0555, and a marked chmod 555 lands 0555', async () => {
+    const before = snapshot(runRoot);
+    const projDir = path.join(box, 'wide', 'appw');
+    const rd = path.join(fakeRemote, projDir, 'd');
+    const rd2 = path.join(fakeRemote, projDir, 'd2');
+    await fs.mkdir(rd, { recursive: true });
+    await fs.mkdir(rd2, { recursive: true });
+    await fs.chmod(rd2, 0o755);
+    await fs.chmod(rd, 0o555);
+    let inst;
+    try {
+      inst = await spawnWorker('chroot', 'appw');
+      const record = await readRecord(inst.id);
+      const touch = await markedNode(inst, record,
+        'const t=new Date(1e12);require("fs").utimesSync(process.argv[1],t,t)',
+        inside(record, path.join(projDir, 'd')));
+      assert.equal(touch.ok, true, `the marked utimes failed: ${touch.stderr}`);
+      assert.equal((await fs.stat(rd)).mode & 0o7777, 0o555, 'cc pushed its widened mode to the remote on a utimes');
+
+      const chm = await markedNode(inst, record,
+        'require("fs").chmodSync(process.argv[1],0o555)', inside(record, path.join(projDir, 'd2')));
+      assert.equal(chm.ok, true, `the marked chmod failed: ${chm.stderr}`);
+      assert.equal((await fs.stat(rd2)).mode & 0o7777, 0o555, 'the worker\u2019s chmod 555 did not land on the remote');
+    } finally {
+      await fs.chmod(rd, 0o755).catch(() => {});
+      await fs.chmod(rd2, 0o755).catch(() => {});
+      if (inst) await instances.remove(inst.id);
+    }
+    assertNoResidue(before, runRoot, null, 'P4');
+  });
 });

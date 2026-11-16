@@ -43,6 +43,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import * as controlNs from '../src/systems/fuse/control.ts';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { detectToolchain } from '../src/systems/fuse/build.ts';
 import { encodeRequest, encodeReply, decodeRequests, CCU_OP, CCU_STATUS,
@@ -466,18 +467,25 @@ describe('the compiled policy driver', { skip }, () => {
     // vectors.
     const vectors = [
       ['REQ', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE,
-        { forCreate: true, forWrite: false, removed: false, releaseOnly: false }],
+        { forCreate: true, forWrite: false, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_WRITE,
-        { forCreate: false, forWrite: true, removed: false, releaseOnly: false }],
+        { forCreate: false, forWrite: true, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_CREATE_WRITE', CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE,
-        { forCreate: true, forWrite: true, removed: false, releaseOnly: false }],
+        { forCreate: true, forWrite: true, removed: false, releaseOnly: false, modeSet: false }],
       ['REQ_REMOVED', CCU_OP.DIRTY, CCU_FLAG_REMOVED,
-        { forCreate: false, forWrite: false, removed: true, releaseOnly: false }],
+        { forCreate: false, forWrite: false, removed: true, releaseOnly: false, modeSet: false }],
       // T20 — THE FOURTH BIT. `0x08`, on DIRTY, and it must be DISTINCT from
       // every vector above: reusing `0x04` would make a release-only frame
       // decode as a removal and delete the file on the system.
       ['REQ_RELEASE_ONLY', CCU_OP.DIRTY, CCU_FLAG_RELEASE_ONLY,
-        { forCreate: false, forWrite: false, removed: false, releaseOnly: true }],
+        { forCreate: false, forWrite: false, removed: false, releaseOnly: true, modeSet: false }],
+      // THE FIFTH BIT, `0x10` on DIRTY: the worker's chmod, so the mirror
+      // directory's mode is the worker's exact request and is pushed. It must
+      // differ from every vector above or a plain DIRTY would push a mode.
+      // Read off the namespace so a tree without the export fails this vector
+      // rather than the whole file's import.
+      ['REQ_MODE_SET', CCU_OP.DIRTY, controlNs.CCU_FLAG_MODE_SET,
+        { forCreate: false, forWrite: false, removed: false, releaseOnly: false, modeSet: true }],
     ];
     for (const [name, op, flags, want] of vectors) {
       assert.ok(hex[name], `the C side printed no ${name} vector`);
@@ -1261,6 +1269,20 @@ describe('the compiled policy driver', { skip }, () => {
     // handles.
     assert.match(body, /fd_claimed\[fd\] &&\s+\(enum tier\)fd_tier\[fd\] == T_PROJECT\) \{\s+push_mirror_flags\("release"/,
       'INVARIANT: the release frame is sent only for a CLAIMED project-tier handle');
+  });
+
+  // PINS: `pt_chmod`'s path arm declares the worker's chmod to cc with
+  // CCU_FLAG_MODE_SET — the only thing that lets cc tell a worker's chmod of a
+  // directory from its own widening — and its fh arm sends no frame at all.
+  // A SOURCE-SHAPE ASSERTION, for the reason T19's is: the fixture cannot reach
+  // an op body.
+  test('pt_chmod sends its reconcile with CCU_FLAG_MODE_SET', async () => {
+    const src = await fs.readFile(UNION_C, 'utf8');
+    const body = bodyOfIn(src, 'chmod');
+    assert.match(body, /push_mirror_flags\("chmod", path, CCU_FLAG_MODE_SET\)/,
+      'INVARIANT: pt_chmod pushes through push_mirror_flags with CCU_FLAG_MODE_SET — a flagless push '
+      + 'leaves cc unable to tell a worker chmod of a directory from its own widening');
+    assert.doesNotMatch(body, /push_mirror\("chmod"/, 'a flagless chmod push is still present');
   });
 
   // WHICH OP BODIES ASK. `policy_mutation_check` owns the EROFS answer and

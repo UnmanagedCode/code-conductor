@@ -20,11 +20,15 @@ import { mkdtemp } from './tmpRegistry.mjs';
 import { padPathTo, waitFor } from './helpers.mjs';
 import { ControlServer, encodeRequest, decodeRequests, encodeReply,
          CCU_OP, CCU_STATUS, CCU_FLAG_FOR_CREATE, CCU_FLAG_FOR_WRITE, CCU_FLAG_REMOVED, CCU_MAGIC, CCU_REPLY_LEN } from '../src/systems/fuse/control.ts';
+import * as controlNs from '../src/systems/fuse/control.ts';
 import { localDirSource } from '../src/systems/fuse/remoteSource.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
 import { tierFixtureInput } from './tierFixture.mjs';
 
 const ENOENT = 2, EIO = 5, EACCES = 13;
+// Namespace-read so a tree without the export fails the arms that use it
+// instead of failing the whole file's import.
+const CCU_FLAG_MODE_SET = controlNs.CCU_FLAG_MODE_SET ?? 0x10;
 
 // One request, one reply, on its own connection.
 // `raw` lets a caller drive the helper with bytes of its own — used by the
@@ -1353,6 +1357,92 @@ describe('read-only remote ancestors under a wide mirror root', {
       assert.equal((await call(f.sock, CCU_OP.LIST, 0, '/root/cc/w')).status, CCU_STATUS.READY);
       assert.deepEqual(await fs.readdir(path.join(f.mirror, 'root/cc/w')), []);
       assert.equal(await modeOf(path.join(f.mirror, 'root/cc/w')), 0o733);
+    } finally { await f.close(); }
+  });
+
+  // THE DIRECTORY-MODE ARMS. A worker's chmod/mkdir/utimens on a directory
+  // reaches the source as a DIRTY, but the mirror directory always carries
+  // owner rwx — so the mirror's mode is NOT what to push. A mode is sent only
+  // on DECLARED intent: CCU_FLAG_MODE_SET (the worker's chmod) or a create
+  // claim (the worker's mkdir); anything else (utimens) ensures the directory
+  // exists and sends no chmod. After the push the mirror directory is widened
+  // again.
+  const walkTo = async (f, p) => {
+    for (const q of ['/', '/root', '/root/cc', p]) assert.equal((await call(f.sock, CCU_OP.STAT, 0, q)).status, CCU_STATUS.READY, q);
+  };
+
+  // PINS: a worker `chmod 555 d` lands 0555 on the source, the mirror directory
+  // is re-widened, and a child that later appears there still shapes into it.
+  test('M7: a worker chmod 555 pushes 0555 and the mirror dir is re-widened', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await walkTo(f, '/root/cc/d');
+      const md = path.join(f.mirror, 'root/cc/d');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');   // the op's ROUTE claim
+      await fs.chmod(md, 0o555);                                              // the daemon's fchmodat
+      const r = await call(f.sock, CCU_OP.DIRTY, CCU_FLAG_MODE_SET, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o555, 'the remote gets the worker\'s exact mode');
+      assert.equal(await modeOf(md), 0o755, 'the mirror dir is widened again');
+      await f.editSource(path.join(f.cc, 'd'), () => fs.writeFile(path.join(f.cc, 'd', 'child'), 'kid'));
+      const l = await call(f.sock, CCU_OP.LIST, 0, '/root/cc/d');
+      assert.equal(l.status, CCU_STATUS.READY, `errno ${l.err}`);
+      assert.deepEqual(await fs.readdir(md), ['child']);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `touch d` (utimens, no flags, no create claim) on a remote-0555
+  // directory leaves it 0555 — cc's widened bits never reach the remote.
+  test('M9: a utimens-style DIRTY of a read-only remote dir sends no chmod', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await fs.chmod(path.join(f.cc, 'd'), 0o555);
+      await walkTo(f, '/root/cc/d');
+      const md = path.join(f.mirror, 'root/cc/d');
+      assert.equal(await modeOf(md), 0o755, 'precondition: the mirror dir is widened');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');
+      const t = new Date(Date.now() + 5000);
+      await fs.utimes(md, t, t);
+      const r = await call(f.sock, CCU_OP.DIRTY, 0, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o555, 'cc pushed its widened mode to the remote');
+      assert.equal(await modeOf(md), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `mkdir -m 555 nd` — a create claim — lands 0555 on the source and
+  // re-widens the mirror directory.
+  test('M10: a worker mkdir of a 0555 dir pushes 0555 and the mirror dir is widened', async () => {
+    const f = await fixture();
+    try {
+      for (const q of ['/', '/root', '/root/cc']) await call(f.sock, CCU_OP.STAT, 0, q);
+      const c = await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_CREATE | CCU_FLAG_FOR_WRITE, '/root/cc/nd');
+      assert.equal(c.status, CCU_STATUS.READY, `errno ${c.err}`);
+      const md = path.join(f.mirror, 'root/cc/nd');
+      await fs.mkdir(md, { mode: 0o555 });                                    // the daemon's mkdirat
+      const r = await call(f.sock, CCU_OP.DIRTY, 0, '/root/cc/nd');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'nd')), 0o555);
+      assert.equal(await modeOf(md), 0o755);
+    } finally { await f.close(); }
+  });
+
+  // PINS: `chmod 755 d` on a remote-0555 dir whose mirror is already 0755 — a
+  // local no-op — still lands 0755 on the remote. A scheme that compared the
+  // mirror mode against `true | 0o700` would read it as "no chmod" and lose it.
+  test('M11: a worker chmod 755 of a remote-0555 dir lands 0755', async () => {
+    const f = await fixture();
+    try {
+      await fs.mkdir(path.join(f.cc, 'd'));
+      await fs.chmod(path.join(f.cc, 'd'), 0o555);
+      await walkTo(f, '/root/cc/d');
+      await call(f.sock, CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, '/root/cc/d');
+      await fs.chmod(path.join(f.mirror, 'root/cc/d'), 0o755);
+      const r = await call(f.sock, CCU_OP.DIRTY, CCU_FLAG_MODE_SET, '/root/cc/d');
+      assert.equal(r.status, CCU_STATUS.READY, `errno ${r.err}`);
+      assert.equal(await modeOf(path.join(f.cc, 'd')), 0o755);
     } finally { await f.close(); }
   });
 });
