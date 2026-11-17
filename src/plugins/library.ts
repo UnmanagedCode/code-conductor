@@ -217,6 +217,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     description: 'Save reusable run_code modules and run them from any later program with cc.code_library.run.',
     repo: 'https://github.com/UnmanagedCode/code-library',
   },
+  {
+    id: 'code-hindsight',
+    name: 'Code Hindsight',
+    description: 'Runs the Hindsight agent-memory server in Docker on the cc host and gives cc sessions memory: hooks recall from and retain into its banks.',
+    repo: 'https://github.com/UnmanagedCode/code-hindsight',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
