@@ -225,6 +225,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-inbox',
+    name: 'Code Inbox',
+    description: 'Lets your conductors and agents exchange signed messages with other cc installs over a shared folder, the network or a hub, so every sender can be verified.',
+    repo: 'https://github.com/UnmanagedCode/code-inbox',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
