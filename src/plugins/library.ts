@@ -233,6 +233,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     postClone: 'npm install',
     postPull: 'npm install',
   },
+  {
+    id: 'code-editor',
+    name: 'Code Editor',
+    description: 'Browse, view, edit and search the files of any cc project or worktree from the cc UI, on desktop and on a phone — local and remote-System projects alike.',
+    repo: 'https://github.com/UnmanagedCode/code-editor',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
