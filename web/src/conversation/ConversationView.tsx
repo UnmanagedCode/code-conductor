@@ -17,6 +17,10 @@ import { cn } from '@/lib/utils';
 
 /** Side padding of the transcript list and the sticky-pin column. Each carries it inside its own width cap, so their content boxes, and the user bubbles in them, line up. */
 const TRANSCRIPT_PAD_X = 'px-3 md:px-6';
+/** Closer than this to the bottom, "Jump to latest" stays hidden. */
+const NEAR_BOTTOM_PX = 50;
+/** Within this of the bottom (or past it, in an overscroll bounce), the reader is at the bottom and following re-arms. */
+const AT_BOTTOM_PX = 2;
 
 /**
  * Where the reader left the transcript scrolled up, while `conversation.clears` still reads `clears`.
@@ -45,9 +49,13 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const column = useSessionColumn();
   const pin = useStore(pinStore, (s) => s.pin);
   const gutter = useStore(pinStore, (s) => s.gutter);
-  const sticky = React.useRef(true);
+  const follow = React.useRef(true);
+  const touching = React.useRef(false);
+  /** A frame's write the touch gate skipped, for the lift to replay. */
+  const heldBack = React.useRef(false);
+  const seen = React.useRef({ top: 0, height: 0, client: 0 });
   const shownClears = React.useRef(conversation.clears);
-  const [atBottom, setAtBottom] = React.useState(true);
+  const [nearBottom, setNearBottom] = React.useState(true);
 
   const activeId = inst?.id ?? null;
   // An ended pane has no instance to serve its attachments: they are addressed by session.
@@ -82,25 +90,67 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       attachmentBase && filename ? attachmentBase + encodeURIComponent(filename) : null,
   }), [rewind, fork, attachmentBase]);
 
-  // Stick to the bottom while the reader is there; leave them alone otherwise. A cleared
-  // transcript (another session, a rewind, a reconnect) starts at the bottom again.
+  const fromBottom = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
+  const observe = (el: HTMLElement) => { seen.current = { top: el.scrollTop, height: el.scrollHeight, client: el.clientHeight }; };
+  const syncNear = (el: HTMLElement) => setNearBottom(fromBottom(el) < NEAR_BOTTOM_PX);
+  const toBottom = (el: HTMLElement) => {
+    el.scrollTop = el.scrollHeight;
+    heldBack.current = false;
+    observe(el);
+    setNearBottom(true);
+  };
+
+  // Follow the tail while the reader is at the bottom: any move up stops it, and only the very bottom or Jump to
+  // latest resumes it. Nothing is written while a finger is down. A cleared transcript (another session, a rewind,
+  // a reconnect) starts at the bottom again.
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
     if (conversation.clears !== shownClears.current) {
       shownClears.current = conversation.clears;
-      sticky.current = true;
-      setAtBottom(true);
+      follow.current = true;
     }
-    if (el && sticky.current) el.scrollTop = el.scrollHeight;
+    if (!el) return;
+    if (follow.current && !touching.current) return toBottom(el);
+    if (follow.current) heldBack.current = true;
+    // Growth below is recorded as it renders, never the position (a finger's move may not have reported yet), so a
+    // later shrink above is measured against the tallest content since the last observed position.
+    seen.current.height = Math.max(seen.current.height, el.scrollHeight);
+    syncNear(el);
   }, [rev]);
 
   // Mounting onto the transcript the reader left scrolled up (a full-page view closing) resumes their place.
   React.useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || !leftAt || leftAt.clears !== conversation.clears) return;
-    sticky.current = false;
-    setAtBottom(false);
+    follow.current = false;
     el.scrollTop = leftAt.top;
+    observe(el);
+    syncNear(el);
+  }, []);
+
+  // Nothing is written while a finger is on the transcript: on iOS a scrollTop write cuts a live touch scroll off.
+  // The gate opens when the last touch anywhere ends: a touch event goes to where its finger started, so a second
+  // finger lifting off the pin, Jump to latest or the composer never reaches the transcript.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const down = () => { touching.current = true; };
+    const up = (e: TouchEvent) => {
+      if (!touching.current || e.touches.length > 0) return;
+      touching.current = false;
+      // Lifting replays the write the gate held back, if the reader is still following; it closes no other gap.
+      if (follow.current && heldBack.current) toBottom(el);
+      else syncNear(el);
+      heldBack.current = false;
+    };
+    el.addEventListener('touchstart', down, { passive: true });
+    window.addEventListener('touchend', up, { passive: true });
+    window.addEventListener('touchcancel', up, { passive: true });
+    return () => {
+      el.removeEventListener('touchstart', down);
+      window.removeEventListener('touchend', up);
+      window.removeEventListener('touchcancel', up);
+    };
   }, []);
 
   // Register the viewport the lazy pager measures and splices against.
@@ -114,7 +164,9 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
         const prevTop = el.scrollTop;
         const prevHeight = el.scrollHeight;
         fn();
-        // React commits synchronously on the next flush; restore after layout.
+        // React commits synchronously on the next flush; restore after layout. The one write gated on neither a
+        // finger nor following: it keeps the content under the reader still as a page lands above (gating it would
+        // jump the content a page under the finger), and it only moves the position down, never reading as a move up.
         requestAnimationFrame(() => { el.scrollTop = prevTop + (el.scrollHeight - prevHeight); });
       },
     });
@@ -134,11 +186,17 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
   const onScroll = () => {
     const el = scrollRef.current;
     if (!el) return;
-    const near = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    sticky.current = near;
-    leftAt = near ? null : { clears: conversation.clears, top: el.scrollTop };
-    if (near !== atBottom) setAtBottom(near);
-    if (el.scrollTop < 200) void lazyHistory.loadEarlier();
+    const top = el.scrollTop;
+    const prev = seen.current;
+    // A drop from content shrinking or the viewport growing back is the browser's clamp or anchoring, not the reader.
+    const shrink = Math.max(0, prev.height - el.scrollHeight) + Math.max(0, el.clientHeight - prev.client);
+    // At the bottom first: an iOS bottom bounce (past the bottom, easing back) re-arms rather than disarms.
+    if (fromBottom(el) <= AT_BOTTOM_PX) follow.current = true;
+    else if (top < prev.top - 1 - shrink) follow.current = false;
+    observe(el);
+    leftAt = follow.current ? null : { clears: conversation.clears, top };
+    syncNear(el);
+    if (top < 200) void lazyHistory.loadEarlier();
   };
 
   const isEmpty = conversation.items.length === 0;
@@ -194,13 +252,16 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
           ) : null}
         </div>
       </div>
-      {!atBottom && (
+      {!nearBottom && (
         <Button
           size="icon-sm"
           variant="secondary"
           className="absolute right-1/2 bottom-3 translate-x-1/2 rounded-full shadow-md"
           aria-label="Jump to latest"
           onClick={() => {
+            // Re-armed here, not on landing: a smooth scroll's destination is fixed when it starts, so
+            // under a growing transcript it lands short of the bottom; the next frame's write takes over.
+            follow.current = true;
             const el = scrollRef.current;
             if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' });
           }}

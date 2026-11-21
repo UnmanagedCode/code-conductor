@@ -18,6 +18,7 @@ export const ANDROID_SPECS = [
   'conversation-bubbles.spec.ts',
   'conversation-machinery.spec.ts',
   'conversation-scroll.spec.ts',
+  'conversation-stream-scroll.spec.ts',
   'dialog-scroll.spec.ts',
   'header-dot.spec.ts',
   'image-zoom.spec.ts',

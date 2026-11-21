@@ -1,11 +1,13 @@
 // The transcript's scroll position in a real browser: stuck to the bottom
 // for live output, left alone once scrolled up, the bottom again after a rewind,
 // the reader's place again after a full-page view, an older page spliced above
-// without moving what the reader sees, and a real multi-segment lineage walk.
+// without moving what the reader sees, a real multi-segment lineage walk, and a
+// reply streaming under a reader who holds or drags the transcript
+// (dragWhileStreamingFlow, on fixtures/scenario-conversation-stream-scroll.json).
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
-import { createProject, mcpCall } from './harness/api.ts';
+import { api, createProject, mcpCall } from './harness/api.ts';
 import { resumeSeeded, seedTurns, type SeedSegment } from './harness/lineage.ts';
 import { next } from './flows/ui.ts';
 import { bringTo, offsetFromTop, sendAll, tallPrompt } from './flows/stickyPin.ts';
@@ -222,4 +224,129 @@ export async function lineageFlow({ page, cc }: Args): Promise<void> {
   const first = prompts.filter({ hasText: /^delta prompt 0$/ });
   await expect(next.bubbleAction(first, 'rewind')).toBeEnabled();
   await expect(next.bubbleAction(first, 'fork')).toBeEnabled();
+}
+
+// ── holding and dragging while output streams ────────────────────────────
+
+/** ConversationView's NEAR_BOTTOM_PX: further than this from the bottom, Jump to latest shows. */
+const NEAR_BOTTOM_PX = 50;
+/** ConversationView's AT_BOTTOM_PX: within this of the bottom, following resumes. */
+const AT_BOTTOM_PX = 2;
+
+/** The transcript's scrollTop once it has held still for three animation frames. */
+const settledTop = (transcript: Locator) => transcript.evaluate((s) => new Promise<number>((resolve) => {
+  let last = s.scrollTop;
+  let still = 0;
+  const tick = () => {
+    const now = s.scrollTop;
+    still = now === last ? still + 1 : 0;
+    last = now;
+    if (still >= 3) resolve(now); else requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}));
+
+/**
+ * A real finger over the transcript, clear of the pin at its top and Jump to latest at its bottom.
+ * CDP touch points stay down between Input.dispatchTouchEvent calls, so a frame can land while it is held.
+ */
+async function fingerOn(page: Page, transcript: Locator) {
+  const box = await transcript.boundingBox();
+  if (!box) throw new Error('fingerOn: the transcript has no box');
+  const x = box.x + box.width / 2;
+  const y = box.y + box.height * 0.55;
+  const cdp = await page.context().newCDPSession(page);
+  const send = (type: string, at?: number) => cdp.send('Input.dispatchTouchEvent', { type, touchPoints: at === undefined ? [] : [{ x, y: at }] } as never);
+  return {
+    down: () => send('touchStart', y),
+    /** Moves the finger down by `dy` px in `steps` moves: the content scrolls up. */
+    drag: async (dy: number, steps: number) => { for (let i = 1; i <= steps; i++) await send('touchMove', y + (dy * i) / steps); },
+    up: () => send('touchEnd'),
+    detach: () => cdp.detach(),
+  };
+}
+
+export async function dragWhileStreamingFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: while a reply streams, a reader holding or dragging the transcript is never moved: a finger held still
+  // at the bottom catches up once on lifting, a drag up of any size stops following, and Jump to latest resumes it.
+  test.skip(cc.engine === 'live', "the flow drives the fake engine's stream-scroll scenario");
+  const project = label('stream');
+  await createProject(cc, project);
+  await next.open(page);
+  await next.startSessionIn(page, project);
+  const inst = await instanceIn(cc, project);
+  const transcript = next.transcript(page);
+  await next.sendPrompt(page, 'SCROLL-STREAM drag me');
+  await expect(transcript.getByText('stream line 59'), 'fixture check: the held reply streamed its opening').toBeAttached();
+  await expectAtBottom(page, transcript, 'as the reply streams');
+
+  /** Releases the scenario's next held frame: it answers each permission-mode change with the next part of the turn. */
+  const release = async () => {
+    const listed = (await api<{ id: string; mode: string }[]>(cc, 'GET', '/api/instances')).body.find((i) => i.id === inst.id);
+    await mcpCall(cc, 'set_mode', { sessionId: inst.sessionId, mode: listed?.mode ?? 'default' });
+  };
+  /** Releases frame `k` and waits for it to render: the view's layout effect ran in the same commit. */
+  const frame = async (k: number) => {
+    await release();
+    await expect(transcript.getByText(`STREAM-FRAME-${k}`)).toBeAttached();
+  };
+  /** The transcript settles within 1px of `top`. */
+  const stays = async (top: number, what: string) => expect(Math.abs(await settledTop(transcript) - top), what).toBeLessThanOrEqual(1);
+
+  if (test.info().project.use.hasTouch) {
+    const finger = await fingerOn(page, transcript);
+    try {
+      // Held still at the bottom.
+      const before = await settledTop(transcript);
+      await finger.down();
+      await frame(1);
+      await stays(before, 'a frame landing under a resting finger moves nothing');
+      await expect(jumpToLatest(page)).toBeVisible();
+      await finger.up();
+      await expect.poll(() => fromBottom(transcript), { message: 'lifting catches up to the bottom' }).toBeLessThanOrEqual(1);
+      await expect(jumpToLatest(page)).toBeHidden();
+
+      // A slow drag up, inside the affordance band.
+      await finger.down();
+      await finger.drag(40, 8);
+      const dragged = await settledTop(transcript);
+      const off = await fromBottom(transcript);
+      expect(off > AT_BOTTOM_PX && off < NEAR_BOTTOM_PX, `fixture check: the drag ended inside the affordance band (${off}px from the bottom); retune its travel`).toBe(true);
+      await frame(2);
+      await stays(dragged, 'a frame landing under a finger that dragged up moves nothing');
+      await expect(jumpToLatest(page)).toBeVisible();
+      await finger.up();
+      await frame(3);
+      await stays(dragged, 'after lifting, a reader who dragged up stays where they dragged to');
+    } finally {
+      await finger.detach();
+    }
+
+    await jumpToLatest(page).tap();
+    await expect.poll(() => fromBottom(transcript), { message: 'Jump to latest lands on the bottom' }).toBeLessThanOrEqual(1);
+    await frame(4);
+    await expect.poll(() => fromBottom(transcript), { message: 'and keeps following' }).toBeLessThanOrEqual(1);
+    await expect(jumpToLatest(page)).toBeHidden();
+  } else {
+    const box = await transcript.boundingBox();
+    if (!box) throw new Error('dragWhileStreamingFlow: the transcript has no box');
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height * 0.55);
+    await page.mouse.wheel(0, -30);
+    const nudged = await settledTop(transcript);
+    const off = await fromBottom(transcript);
+    expect(off > AT_BOTTOM_PX && off < NEAR_BOTTOM_PX, `fixture check: the wheel ended inside the affordance band (${off}px from the bottom)`).toBe(true);
+    await frame(1);
+    await stays(nudged, 'a frame after a small wheel up moves nothing');
+    await expect(jumpToLatest(page)).toBeVisible();
+    await jumpToLatest(page).click();
+    await expect.poll(() => fromBottom(transcript), { message: 'Jump to latest lands on the bottom' }).toBeLessThanOrEqual(1);
+    for (const k of [2, 3, 4]) {
+      await frame(k);
+      await expect.poll(() => fromBottom(transcript), { message: `following after frame ${k}` }).toBeLessThanOrEqual(1);
+    }
+    await expect(jumpToLatest(page)).toBeHidden();
+  }
+
+  await release();
+  await expect(next.turnEnds(page), 'fixture check: the last release ends the turn').toHaveCount(1);
 }
