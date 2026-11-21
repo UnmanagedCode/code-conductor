@@ -164,7 +164,13 @@ the session column's pointer-only edge handles: an `aria-hidden` overlay (`[data
 
 ## `web/src/app/viewport.ts`
 
-`startViewportFollow({win, root})` sets `--app-height` on `root` to `visualViewport.height × scale` when that is more than `HEIGHT_SLACK_PX` under `innerHeight`, else removes it; at a scale within `ZOOM_EPSILON` of 1 it calls `scrollTo(0, 0)` when the page or visual viewport is offset (never while pinch-zoomed). No `visualViewport`: no-op. Tests: `web/src/app/viewport.test.ts`.
+`startViewportFollow({win, root})` syncs on start and on every `visualViewport` `resize` and `scroll`; the returned stop removes both listeners. No `visualViewport`: no-op.
+
+- **Variables** (all on `root`): `APP_HEIGHT_VAR` (`--app-height`), `APP_TOP_VAR` (`--app-top`), `APP_LEFT_VAR` (`--app-left`). The shell's `SHELL_BOX` (`web/src/App.tsx`) reads them as its height and its `translate`.
+- **Covered** = `visualViewport.height × scale` more than `HEIGHT_SLACK_PX` under `root.clientHeight` — the layout viewport, which the keyboard never shrinks. Never `innerHeight`: iOS's standalone webview shrinks it with the keyboard.
+- **While covered:** `--app-height` = the visible height. At a scale within `ZOOM_EPSILON` of 1, `--app-top`/`--app-left` = `visualViewport.offsetTop`/`offsetLeft` (Safari's keyboard pan, which the shell follows); pinch-zoomed, both are removed. Never `scrollTo` — a reset cancels the pan once per keystroke.
+- **Not covered:** all three removed together, so an offset is never published without a shrunk height. At a scale within `ZOOM_EPSILON` of 1, `scrollTo(0, 0)` only when `scrollY !== 0` (a leftover document scroll), never for a visual-viewport offset; pinch-zoomed, never.
+- Tests: `web/src/app/viewport.test.ts`; `web/e2e/touch-fields.spec.ts` → `softKeyboardShellFlow` (faked `visualViewport` and shrunken `innerHeight`, on-screen rect).
 
 ## `web/src/features/session/promptFocus.ts`
 

@@ -93,7 +93,7 @@ test('…', async ({ page, cc }) => { await page.goto('/'); /* cc.url, cc.dirs, 
 
 ## Layout checks
 
-`web/e2e/touch-fields.spec.ts` (`phone` and `android`; `desktop` skips itself) runs the body in `touch-fields.shared.ts` against its own cc. It asserts the project emulates a coarse pointer, then that `#composer-input` and the adopt dialog's `PathInput` (a `text-sm` caller) compute at least 16px at the device viewport and at 932×430 (past `md`), and that `scrollY` is 0 and `--app-height` unset with no soft keyboard.
+`web/e2e/touch-fields.spec.ts` (`phone` and `android`; `desktop` skips itself) runs the body in `touch-fields.shared.ts` against its own cc. It asserts the project emulates a coarse pointer, then that `#composer-input` and the adopt dialog's `PathInput` (a `text-sm` caller) compute at least 16px at the device viewport and at 932×430 (past `md`), and that `scrollY` is 0 and `--app-height` unset with no soft keyboard. `softKeyboardShellFlow` fakes a soft keyboard before the app boots (an `addInitScript` scripted `visualViewport`, a scriptable `innerHeight` and a counted `scrollTo`), opens it with `innerHeight` shrunk to the visible height, pans and re-pans `offsetTop`, then closes it. It asserts that the shell's on-screen rect (the layout rect minus the pan) is the visible area, that the session header and `#composer-input` are on screen, that `scrollTo` is never called while covered, that the document doesn't overflow, and that all three viewport variables are removed on close.
 
 Real-browser layout of the Settings view, the page shell and the transcript, and how a transcript body scrolls inside its bubble.
 
