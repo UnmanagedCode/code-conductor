@@ -4,7 +4,12 @@ export const TOUCH_QUERY = '(hover: none)';
 /** iOS zooms the page into a focused field whose font is under 16px; a coarse pointer gets 16px. */
 export const TOUCH_FIELD_TEXT = 'pointer-coarse:text-base';
 
-/** A free-text message field: opts out of AutoFill and keeps keyboard correction on. Safari's field heuristics are closed-source; an unhinted field can be classified as a contact field, which brings contact suggestions and loses autocorrect. */
+/**
+ * The traits of a free-text field. Spread only by `ProseInput` / `ProseTextarea` (`web/src/components/ui/prose-field.tsx`).
+ * `autocomplete=off` is the spec-correct declaration, but Safari ignores it for contact AutoFill; the associated label those
+ * components render is the defence against Safari's closed-source classifier reading the field as a contact field.
+ * Whether the "AutoFill Contact" bar is gone is checked only on a device.
+ */
 export const PROSE_FIELD_PROPS = { autoComplete: 'off', autoCorrect: 'on', autoCapitalize: 'sentences', spellCheck: true } as const;
 
 const NON_TEXT_INPUT_TYPES = new Set(['button', 'checkbox', 'radio', 'submit', 'reset', 'file', 'range', 'color', 'image']);

@@ -15,6 +15,7 @@ import { Composer } from './Composer';
 import { createDraftStore, DRAFT_KEY_PREFIX, DRAFT_SAVE_DEBOUNCE_MS, draftStore, joinDictation, prependTranscribedTag } from './drafts';
 import { focusPromptAfterSelect } from '@/features/session/promptFocus';
 import { settle } from '@/test/settle';
+import { proseExpected, proseFacts } from '@/test/proseField';
 
 const inst = (sessionId: string | null, extra: Partial<Instance> = {}): Instance => ({ id: `i-${sessionId}`, project: 'demo', status: 'idle', sessionId, mode: 'x', ...extra });
 
@@ -74,13 +75,12 @@ describe('placeholder', () => {
 });
 
 describe('iOS field traits', () => {
-  it('the message box is a prose field with the touch font', () => {
-    // Invariant: the composer opts out of contact AutoFill with correction on (iOS reads an unhinted field as a contact), and takes 16px on a coarse pointer so iOS does not zoom on focus.
-    const box = mount(inst('s1', { project: 'p', title: 't' })).box();
-    expect(box.getAttribute('autocomplete')).toBe('off');
-    expect(box.getAttribute('autocorrect')).toBe('on');
-    expect(box.getAttribute('autocapitalize')).toBe('sentences');
-    expect(box.getAttribute('spellcheck')).toBe('true');
+  it('the message box is a labelled prose field with the touch font and its pinned id', () => {
+    // Invariant: the composer is a prose field named only by its associated <label for> (Safari ignores autocomplete=off for contact AutoFill; the label is the defence), keeps the pinned #composer-input id, and takes 16px on a coarse pointer so iOS does not zoom on focus.
+    mount(inst('s1', { project: 'p', title: 't' }));
+    const box = screen.getByRole('textbox', { name: 'Message' });
+    expect(proseFacts(box)).toEqual(proseExpected('Message'));
+    expect(box.id).toBe('composer-input');
     expect(box.classList.contains('pointer-coarse:text-base')).toBe(true);
   });
 });

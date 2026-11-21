@@ -20,6 +20,7 @@ import { fleet as workerFleet, seedWorkerFleet } from '@/test/workerFleet';
 import { ConversationModel, type QuestionNode } from './model';
 import { BUBBLE_BODY_MAX_HEIGHT } from './BubbleBody';
 import { flush, noActions, renderModel } from './renderModel';
+import { proseExpected, proseFacts } from '@/test/proseField';
 import {
   CARD, CARD_RESULT, FRUIT, SIZE, TOPPINGS, TURN_END, banana, expectLocked, expectOpen, input, opt, sendBtn, show, stamped, statusOf,
 } from './questionTestkit';
@@ -550,17 +551,29 @@ describe('answer bubble', () => {
   });
 });
 
-const PROSE = { autocomplete: 'off', autocorrect: 'on', autocapitalize: 'sentences', spellcheck: 'true' };
-
 describe('prose fields in cards', () => {
-  const traits = (el: Element) => Object.fromEntries(Object.keys(PROSE).map((k) => [k, el.getAttribute(k)]));
+  const PLAN_EV = { kind: 'plan_request', toolUseId: 'p1', plan: '# Plan', planPath: '/tmp/plan.md' };
 
-  it('the plan feedback box and the question answer box carry the prose traits', async () => {
-    // Invariant: free-text card fields opt out of contact AutoFill and keep keyboard correction on.
-    const plan = await show([{ kind: 'plan_request', toolUseId: 'p1', plan: '# Plan', planPath: '/tmp/plan.md' }]);
-    expect(traits(plan.root.querySelector('[data-item="plan"] textarea')!)).toEqual(PROSE);
+  it('the plan feedback box and the question answer box are labelled prose fields', async () => {
+    // Invariant: both free-text card fields carry the prose traits, no name attribute, and a neutral name that comes only from their own <label for>.
+    const plan = await show([PLAN_EV]);
+    const planBox = within(plan.root.querySelector('[data-item="plan"]') as HTMLElement).getByRole('textbox', { name: 'Plan feedback' });
+    expect(proseFacts(planBox)).toEqual(proseExpected('Plan feedback'));
     const q = await show([CARD()]);
-    expect(traits(input(q.card()))).toEqual(PROSE);
+    expect(proseFacts(within(q.card()).getByRole('textbox', { name: 'Answer' }))).toEqual(proseExpected('Answer'));
+  });
+
+  it('a plan card and a question card in one transcript get distinct field ids, each labelled only by its own label', async () => {
+    // Invariant: generated field ids do not collide across cards, so each <label for> names only its own control.
+    const both = await show([PLAN_EV, CARD()]);
+    const planBox = within(both.root.querySelector('[data-item="plan"]') as HTMLElement).getByRole('textbox', { name: 'Plan feedback' });
+    const answerBox = within(both.card()).getByRole('textbox', { name: 'Answer' });
+    expect(planBox.id).not.toBe('');
+    expect(answerBox.id).not.toBe('');
+    expect(planBox.id).not.toBe(answerBox.id);
+    const labelsFor = (el: HTMLElement) => [...both.root.querySelectorAll('label')].filter((l) => l.htmlFor === el.id).map((l) => l.textContent);
+    expect(labelsFor(planBox)).toEqual(['Plan feedback']);
+    expect(labelsFor(answerBox)).toEqual(['Answer']);
   });
 });
 

@@ -23,10 +23,10 @@ How the web UI (`web/`) is tested: its Vitest and Playwright suites ([Suites](#s
 | Behaviour | Why unreachable | Covered by |
 |---|---|---|
 | Focus zoom (font under 16px) | Chromium never zooms | `web/e2e/touch-fields.spec.ts` checks the computed font-size on a coarse pointer, at the device size and at 932×430 |
-| Contact AutoFill / QuickType, autocorrect | Safari's closed-source field heuristics | `PROSE_FIELD_PROPS` attribute assertions only; hand check |
+| Contact AutoFill / QuickType, autocorrect | Safari's closed-source field heuristics | `web/src/components/ui/prose-field.test.tsx` (traits, no `name`, the label as sole name source, ids, `ref`, the `bare` branch) plus the per-caller label assertions in the composer, card and session-dialog tests; no suite proves the bar is gone — device hand check |
 | Keyboard pan of the page | no soft keyboard in Playwright | `web/src/app/viewport.test.ts` drives a stubbed `visualViewport`; `touch-fields.spec.ts` checks the follower stays idle |
 
-Hand check on an iPhone (Safari and the installed PWA, portrait and landscape): tapping the composer does not zoom; with the keyboard open the session header stays visible and the composer sits above the keyboard (pinch-zoom while typing is not snapped back); no "AutoFill Contact" appears and a misspelling autocorrects, on the composer, question-card note, plan feedback and **Ask about this session**.
+Hand check on an iPhone (Safari and the installed PWA, portrait and landscape): tapping the composer does not zoom; with the keyboard open the session header stays visible and the composer sits above the keyboard (pinch-zoom while typing is not snapped back); no "AutoFill Contact" appears and a misspelling autocorrects, on all five prose fields — the composer, plan feedback, the question card's answer and note box, **Ask about this session** and the rename title — and a control field (the sidebar filter) shows no bar either. A prose field that still shows the bar is reported, not patched with a `name` hack.
 
 ## Dialog tests
 

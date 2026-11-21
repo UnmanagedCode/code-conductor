@@ -23,6 +23,7 @@ vi.mock('@/ui/feedback', async (importOriginal) => ({
 import { DialogsHost } from './DialogsHost';
 import { closeDialog, dialogStore, openPruneDialog, openRenameDialog, openStatsDialog, openSummaryDialog } from './api';
 import { held, routeFetch, type RoutedCall } from '@/test/routeFetch';
+import { proseExpected, proseFacts } from '@/test/proseField';
 import { applySessionTitle } from '@/app/sessionActions';
 import { refreshInstances } from '@/app/controller';
 import { toast } from '@/ui/feedback';
@@ -367,19 +368,18 @@ describe('session rename', () => {
 });
 
 describe('prose fields in session dialogs', () => {
-  const PROSE = { autocomplete: 'off', autocorrect: 'on', autocapitalize: 'sentences', spellcheck: 'true' };
-  const traits = (el: HTMLElement) => Object.fromEntries(Object.keys(PROSE).map((k) => [k, el.getAttribute(k)]));
-
-  it('the ask box and the rename title box carry the prose traits', async () => {
-    // Invariant: free-text dialog fields opt out of contact AutoFill and keep keyboard correction on.
+  it('the ask box and the rename title box are labelled prose fields with their names unchanged', async () => {
+    // Invariant: free-text dialog fields carry the prose traits, no name attribute, and keep their accessible names, now sourced only from their own <label for>; rename keeps its pinned #rename-title id.
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data: { medium: { summary: 'Recap text.', isStale: false } } } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
     await screen.findByText('Recap text.');
-    expect(traits(screen.getByRole('textbox', { name: 'Question about this session' }))).toEqual(PROSE);
+    expect(proseFacts(screen.getByRole('textbox', { name: 'Question about this session' }))).toEqual(proseExpected('Question about this session'));
     act(() => closeDialog('summary'));
     act(() => openRenameDialog('s1', 'Old title'));
-    expect(traits(await screen.findByRole('textbox', { name: 'Session title' }))).toEqual(PROSE);
+    const renameBox = await screen.findByRole('textbox', { name: 'Session title' });
+    expect(proseFacts(renameBox)).toEqual(proseExpected('Session title'));
+    expect(renameBox.id).toBe('rename-title');
   });
 });
 
