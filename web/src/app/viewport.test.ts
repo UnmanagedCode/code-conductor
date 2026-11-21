@@ -98,6 +98,16 @@ describe('startViewportFollow', () => {
     expect(r.win.scrollTo, 'a pinch-zoom pan is never fought').not.toHaveBeenCalled();
   });
 
+  it('a pinch-zoom that begins while covered takes the translate back off and keeps the height', () => {
+    // Invariant: a pinch-zoom that begins while covered retracts the published translate; the height still follows.
+    const r = rig({ height: 500, offsetTop: 120, offsetLeft: 8 });
+    start(r);
+    expect(r.all(), 'control: covered and unzoomed, all three are set').toEqual(['500px', '120px', '8px']);
+    r.vv.scale = 2; r.vv.height = 250;
+    r.vv.dispatchEvent(new Event('resize'));
+    expect(r.all(), 'zoomed while covered: height kept, no offset').toEqual(['500px', '', '']);
+  });
+
   it('pinch-zoomed and not covered, nothing is set and nothing scrolls', () => {
     // Invariant: a pinch-zoom pan is never fought, and a full-height zoomed view (422 x 2) is not covered.
     const r = rig({ scale: 2, height: 422, offsetTop: 200, scrollY: 50 });
