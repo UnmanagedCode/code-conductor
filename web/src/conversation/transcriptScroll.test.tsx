@@ -1,9 +1,16 @@
 // The transcript's scroll position as the reader meets it: stuck to the bottom
 // while they are there, left alone once they scroll up, the bottom again for a
-// cleared transcript, their place again after a full-page view, and kept while
-// an older page is spliced above. happy-dom lays nothing out, so the scroll root
-// gets a stand-in layout: 100px per rendered item, an 800px view, and a
-// scrollTop that only the view's own writes move (clamped as a browser clamps them).
+// cleared transcript, their place again after a full-page view, kept while
+// an older page is spliced above, and following the reader's intent while output
+// streams: any move up, or a finger on the transcript, stops the view writing.
+// happy-dom lays nothing out, so the scroll root gets a stand-in layout: 100px per
+// rendered item less `collapsedPx` (content above that shrank), an 800px view that
+// `viewPx` can shorten (the soft keyboard opening), and
+// a scrollTop that only the view's own writes move (clamped as a browser clamps them).
+// Its scrollTo lands an instant scroll at once; a smooth one only records its
+// destination, clamped when it starts, until `landSmooth`, and an instant write
+// before then aborts it. happy-dom's own smooth scroll clamps when it lands, which
+// would hide a destination gone stale under a growing transcript.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render } from '@testing-library/react';
 
@@ -21,6 +28,8 @@ import { settle } from '@/test/settle';
 
 const ITEM_PX = 100;
 const VIEW_PX = 800;
+/** The scroll root's height; VIEW_PX until a test opens the soft keyboard. */
+let viewPx = VIEW_PX;
 
 const inst = (id: string): Instance => ({ id, project: 'p', status: 'idle', sessionId: `s-${id}`, mode: 'default' });
 const echo = (text: string): UiEvent => ({ kind: 'user_echo', text });
@@ -29,8 +38,12 @@ const echoes = (tag: string, n: number) => Array.from({ length: n }, (_, i) => e
 // ── Stand-in layout ──────────────────────────────────────────────────────
 const tops = new WeakMap<Element, number>();
 const isRoot = (el: Element) => el.hasAttribute('data-conversation');
-const contentPx = (el: Element) => Math.max(VIEW_PX, ITEM_PX * el.querySelectorAll('[data-item]').length);
-const KEYS = ['scrollTop', 'scrollHeight', 'clientHeight'] as const;
+/** Height lost by content above the reader (a block collapsing), in px. */
+let collapsedPx = 0;
+const contentPx = (el: Element) => Math.max(viewPx, ITEM_PX * el.querySelectorAll('[data-item]').length - collapsedPx);
+/** Where a smooth scroll in flight will land. */
+const smoothTo = new WeakMap<Element, number>();
+const KEYS = ['scrollTop', 'scrollHeight', 'clientHeight', 'scrollTo'] as const;
 const own = new Map<string, PropertyDescriptor | undefined>();
 function inherited(key: string): PropertyDescriptor {
   for (let p: object | null = HTMLElement.prototype; p; p = Object.getPrototypeOf(p)) {
@@ -48,14 +61,27 @@ function layOut() {
   });
   Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
     configurable: true,
-    get(this: HTMLElement) { return isRoot(this) ? VIEW_PX : base.clientHeight.get!.call(this); },
+    get(this: HTMLElement) { return isRoot(this) ? viewPx : base.clientHeight.get!.call(this); },
   });
   Object.defineProperty(HTMLElement.prototype, 'scrollTop', {
     configurable: true,
     get(this: HTMLElement) { return isRoot(this) ? tops.get(this) ?? 0 : base.scrollTop.get!.call(this); },
     set(this: HTMLElement, v: number) {
-      if (isRoot(this)) tops.set(this, Math.max(0, Math.min(v, contentPx(this) - VIEW_PX)));
-      else base.scrollTop.set!.call(this, v);
+      if (!isRoot(this)) return base.scrollTop.set!.call(this, v);
+      smoothTo.delete(this);
+      tops.set(this, Math.max(0, Math.min(v, contentPx(this) - viewPx)));
+    },
+  });
+  Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+    configurable: true,
+    writable: true,
+    value(this: HTMLElement, ...args: unknown[]) {
+      if (!isRoot(this)) return (base.scrollTo.value as (...a: unknown[]) => void).apply(this, args);
+      const [a, b] = args;
+      const to: ScrollToOptions = typeof a === 'object' && a !== null ? a : { top: b as number };
+      if (to.top === undefined) return;
+      if (to.behavior === 'smooth') smoothTo.set(this, Math.min(to.top, contentPx(this) - viewPx));
+      else this.scrollTop = to.top;
     },
   });
 }
@@ -74,12 +100,25 @@ const mount = () => {
 };
 const jump = (c: HTMLElement) => c.querySelector('button[aria-label="Jump to latest"]');
 /** The bottom of `px` of content in the stand-in layout. */
-const bottom = (px: number) => px - VIEW_PX;
+const bottom = (px: number) => px - viewPx;
 /** The reader scrolls to `top`: the position, then the browser's scroll event. */
 const scrollTo = (el: HTMLElement, top: number) => {
   el.scrollTop = top;
   fireEvent.scroll(el);
 };
+/** A smooth scroll in flight lands: the position, then the browser's scroll event. */
+const landSmooth = (el: HTMLElement) => {
+  const to = smoothTo.get(el);
+  if (to === undefined) return;
+  el.scrollTop = to;
+  fireEvent.scroll(el);
+};
+/** A touch event on `el` with `fingers` touches still down; it bubbles to the window. */
+function touch(el: HTMLElement, type: 'touchstart' | 'touchend' | 'touchcancel', fingers: number) {
+  const ev = new Event(type, { bubbles: true });
+  Object.defineProperty(ev, 'touches', { value: Array.from({ length: fingers }, () => ({ clientX: 0, clientY: 0 })) });
+  act(() => { el.dispatchEvent(ev); });
+}
 async function frame(type: string, detail: object) {
   act(() => { bus.dispatchEvent(new CustomEvent(type, { detail })); });
   await flush();
@@ -92,6 +131,8 @@ let paths: string[] = [];
 
 beforeEach(() => {
   layOut();
+  collapsedPx = 0;
+  viewPx = VIEW_PX;
   pages = [];
   paths = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -291,5 +332,232 @@ describe('an older page spliced above', () => {
     const { el } = await scrolledTail(150, []);
     expect(el.scrollHeight).toBe(20 * ITEM_PX);
     expect(el.scrollTop).toBe(150);
+  });
+});
+
+describe("following the reader's intent while output streams", () => {
+  const BASE = 30 * ITEM_PX;
+  /** Off the bottom but inside the affordance band: between ConversationView's AT_BOTTOM_PX and NEAR_BOTTOM_PX. */
+  const IN_BAND_PX = 30;
+  /** A 30-prompt replay at the bottom, with the browser's scroll event for the view's own write landing on its own. */
+  async function following() {
+    const view = mount();
+    await snapshot('i1', echoes('replayed', 30));
+    fireEvent.scroll(view.el);
+    expect(view.el.scrollTop, 'fixture check: at the bottom').toBe(bottom(BASE));
+    return view;
+  }
+
+  it('a reader who nudges up by less than the affordance band stays where they are as output streams, and is offered Jump to latest', async () => {
+    // Invariant: any observed upward move stops following, whatever its distance.
+    const { container, el } = await following();
+    scrollTo(el, bottom(BASE) - IN_BAND_PX);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE) - IN_BAND_PX);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it("a reader's nudge whose scroll event folds into the view's last write still stops following", async () => {
+    // Invariant: every write records its landing position as the baseline the next scroll event compares against.
+    const { container, el } = await following();
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop, 'precondition: the frame kept the reader at the bottom').toBe(bottom(BASE + ITEM_PX));
+    scrollTo(el, bottom(BASE + ITEM_PX) - 3);
+    await live('i1', echo('live 1'));
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX) - 3);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('a frame arriving while a finger rests on the transcript at the bottom moves nothing, and offers Jump to latest', async () => {
+    // Invariant: nothing is written while a finger is down; the affordance re-syncs without moving.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE));
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('a reader who drags up while a finger is down stays where they dragged to, through a frame and after lifting', async () => {
+    // Invariant: a lift after an upward drag does not catch up.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    scrollTo(el, bottom(BASE) - 20);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE) - 20);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE) - 20);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('lifting a finger that held the transcript at the bottom catches up once, with no further frame', async () => {
+    // Invariant: lifting the last finger while still following catches up to the bottom.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop, 'precondition: the frame moved nothing while the finger was down').toBe(bottom(BASE));
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('Jump to latest clicked while output streams lands on the bottom and keeps following', async () => {
+    // Invariant: clicking Jump to latest resumes following, so a smooth scroll overtaken by growth still ends at the bottom.
+    const { container, el } = await following();
+    scrollTo(el, 1200);
+    await live('i1', echo('live 0'));
+    const button = jump(container);
+    expect(button, 'precondition: scrolled up').not.toBeNull();
+    fireEvent.click(button!);
+    await live('i1', echo('live 1'));
+    expect(el.scrollTop).toBe(bottom(BASE + 2 * ITEM_PX));
+    landSmooth(el);
+    await live('i1', echo('live 2'));
+    expect(el.scrollTop).toBe(bottom(BASE + 3 * ITEM_PX));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('a reader coming back down into the affordance band is not followed until they reach the very bottom', async () => {
+    // Invariant: only the bottom (AT_BOTTOM_PX) resumes following; the affordance band (NEAR_BOTTOM_PX) does not.
+    const { container, el } = await following();
+    scrollTo(el, 1200);
+    scrollTo(el, bottom(BASE) - IN_BAND_PX);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE) - IN_BAND_PX);
+    expect(jump(container)).not.toBeNull();
+    scrollTo(el, bottom(BASE + ITEM_PX));
+    await live('i1', echo('live 1'));
+    expect(el.scrollTop).toBe(bottom(BASE + 2 * ITEM_PX));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('a two-finger gesture holds the transcript until the last finger lifts', async () => {
+    // Invariant: the touch gate stays shut until the last touch ends.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 2);
+    touch(el, 'touchend', 1);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE));
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('lifting a finger when no frame was held back moves nothing, even with the transcript short of its bottom', async () => {
+    // Invariant: the lift replays only a write the touch gate held back; it does not close a gap no frame opened.
+    const { el } = await following();
+    // Content grows below without a frame (a card laying out after the view's last write).
+    collapsedPx = -24;
+    expect(el.scrollHeight - VIEW_PX, 'fixture check: the transcript sits short of its bottom').toBe(bottom(BASE) + 24);
+    touch(el, 'touchstart', 1);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE));
+  });
+
+  it('a reader inside the affordance band is not offered Jump to latest, though no longer followed', async () => {
+    // Invariant: Jump to latest shows only beyond NEAR_BOTTOM_PX from the bottom, whatever following says.
+    const { container, el } = await following();
+    scrollTo(el, bottom(BASE) - IN_BAND_PX);
+    expect(jump(container)).toBeNull();
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop, 'not followed: the frame left the reader where they were').toBe(bottom(BASE) - IN_BAND_PX);
+    expect(jump(container), 'out of the band, Jump to latest shows').not.toBeNull();
+  });
+
+  it('a last finger lifting off an element outside the transcript still opens the gate and catches up', async () => {
+    // Invariant: the lift is heard on the window, so a touch ending on Jump to latest (or anywhere else) ends the hold.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    const button = jump(container) as HTMLElement | null;
+    expect(button, 'precondition: the held frame offers Jump to latest').not.toBeNull();
+    expect(el.contains(button), 'fixture check: Jump to latest is outside the scroll root').toBe(false);
+    touch(button!, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('a reader who was followed when a frame was held back, then dragged up before lifting, is not caught up', async () => {
+    // Invariant: the lift replays a held-back write only if the reader is still following when the finger lifts.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    scrollTo(el, bottom(BASE) - 20);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE) - 20);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('a held-back frame a lift did not replay is forgotten: a later touch with nothing held back moves nothing', async () => {
+    // Invariant: every lift ends the hold's record, replayed or not; a later lift replays only what its own touch held back.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    scrollTo(el, bottom(BASE) - 20);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop, 'precondition: the lift after the drag up did not replay the frame').toBe(bottom(BASE) - 20);
+    scrollTo(el, bottom(BASE + ITEM_PX));
+    expect(jump(container), 'precondition: back at the bottom, followed again').toBeNull();
+    // Content grows below without a frame (a card laying out after the view's last write).
+    collapsedPx = -24;
+    touch(el, 'touchstart', 1);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+  });
+
+  it('a reader moving down by less than content grew without a frame is still followed', async () => {
+    // Invariant: growth is never a shrink discount: it does not turn a move down into a move up.
+    const { el } = await following();
+    // Content grows below without a frame, so the last observed height is the shorter one.
+    collapsedPx = -ITEM_PX;
+    scrollTo(el, bottom(BASE) + ITEM_PX / 2);
+    expect(el.scrollTop, 'fixture check: moved down, short of the new bottom').toBe(bottom(BASE) + ITEM_PX / 2);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE + 2 * ITEM_PX));
+  });
+
+  it('a reader moving down by less than the soft keyboard took from the view is still followed', async () => {
+    // Invariant: a shorter view is never a shrink discount: it does not turn a move down into a move up.
+    const { el } = await following();
+    const keyboardPx = ITEM_PX;
+    viewPx = VIEW_PX - keyboardPx;
+    expect(el.scrollTop, 'fixture check: the keyboard leaves the position alone').toBe(bottom(BASE) - keyboardPx);
+    scrollTo(el, bottom(BASE) - keyboardPx / 2);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+  });
+
+  it('unmounting removes the window touch listeners it added', () => {
+    // Invariant: the view leaves no touch listener on the window once it is gone.
+    const added = vi.spyOn(window, 'addEventListener');
+    const removed = vi.spyOn(window, 'removeEventListener');
+    try {
+      const view = mount();
+      const touchTypes = ['touchcancel', 'touchend'];
+      const ours = added.mock.calls.filter(([type]) => touchTypes.includes(type));
+      expect(ours.map(([type]) => type).sort(), 'fixture check: the view listens for both lift events on the window').toEqual(touchTypes);
+      view.unmount();
+      for (const [type, fn] of ours) {
+        expect(removed.mock.calls.some(([t, f]) => t === type && f === fn), `${type} listener removed`).toBe(true);
+      }
+    } finally {
+      added.mockRestore();
+      removed.mockRestore();
+    }
+  });
+
+  it('content above shrinking while a finger is held is not read as the reader moving up', async () => {
+    // Invariant: a position drop caused by content shrinking is not an upward move, even after output grew while held.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop, 'precondition: the frame moved nothing while the finger was down').toBe(bottom(BASE));
+    expect(el.scrollHeight - VIEW_PX, 'fixture check: the frame grew the content').toBe(bottom(BASE + ITEM_PX));
+    collapsedPx = ITEM_PX;
+    // Scroll anchoring: the position drops by what collapsed above it.
+    el.scrollTop = bottom(BASE) - ITEM_PX;
+    fireEvent.scroll(el);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE));
+    expect(jump(container)).toBeNull();
   });
 });

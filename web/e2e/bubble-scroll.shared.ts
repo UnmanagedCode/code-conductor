@@ -13,7 +13,7 @@ type Args = { page: Page; cc: Cc };
 const label = (what: string) => `bubble-scroll-${what}-${test.info().project.name}`;
 const jumpToLatest = (page: Page) => page.getByRole('button', { name: 'Jump to latest' });
 const fromBottom = (transcript: Locator) => transcript.evaluate((s) => s.scrollHeight - s.clientHeight - s.scrollTop);
-/** How near the bottom still counts as stuck to it: ConversationView's own follow threshold. */
+/** How near the bottom still counts as stuck to it: ConversationView's NEAR_BOTTOM_PX, within which Jump to latest stays hidden. */
 const STUCK_PX = 50;
 const scrollTopOf = (el: Locator) => el.evaluate((e) => e.scrollTop);
 
