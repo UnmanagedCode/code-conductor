@@ -1,6 +1,7 @@
 // A plan card that paged in from an older page of the transcript, in a real browser:
 // when its decision can't reach the CLI the card re-opens with the reader's feedback, as a
-// card in the live tail does, and it then sends again. The page's socket runs through the
+// card in the live tail does, and it then sends again. The feedback a refused tail decision
+// kept is still there once the card pages back in after a reselect. The page's socket runs through the
 // test, which refuses the marked prompts the way the server refuses a send it can't deliver.
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Page } from '@playwright/test';
@@ -39,7 +40,7 @@ async function refuseMarkedPrompts(page: Page): Promise<{ refused: string[]; del
 
 export function pagedDecisionFlow(decision: 'Approve' | 'Reject') {
   return async ({ page, cc }: Args): Promise<void> => {
-    // Invariant: a plan card that paged in from an older page re-opens with its feedback when its decision can't reach the CLI, then sends again.
+    // Invariant: a plan card that paged in from an older page re-opens with its feedback when its decision can't reach the CLI, then sends again; the feedback a refused tail decision kept is still there after a reselect pages the card back in.
     const seen = await refuseMarkedPrompts(page);
     const project = `paged-plan-${decision.toLowerCase()}-${test.info().project.name}`;
     await createProject(cc, project);
@@ -66,7 +67,8 @@ export function pagedDecisionFlow(decision: 'Approve' | 'Reject') {
     page.on('response', (r) => { if (r.url().includes(route)) pages.push(r.json() as Promise<LineagePage>); });
     await reselect(page, next, project, inst.sessionId);
     await expect(card, 'the plan card is back').toHaveCount(1);
-    await expect(feedback, 'fixture check: the card is back awaiting a decision').toHaveValue('');
+    await expect(feedback, 'the card is back awaiting a decision').toBeEnabled();
+    await expect(feedback, 'with the feedback its refused decision kept').toHaveValue(`${REFUSED} in the tail`);
     expect((await Promise.all(pages)).some((p) => p.events.some((e) => e.kind === 'plan_request')), 'fixture check: the plan card arrived on a lineage page').toBe(true);
 
     await feedback.fill(`${REFUSED} older`);
