@@ -3,7 +3,8 @@
 // the reader's place again after a full-page view, an older page spliced above
 // without moving what the reader sees, a real multi-segment lineage walk, and a
 // reply streaming under a reader who holds or drags the transcript
-// (dragWhileStreamingFlow, on fixtures/scenario-conversation-stream-scroll.json).
+// (dragWhileStreamingFlow, on fixtures/scenario-conversation-stream-scroll.json), and a view
+// that shortens with no frame (viewShrinkFollowedFlow, viewShrinkScrolledUpFlow).
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -349,4 +350,46 @@ export async function dragWhileStreamingFlow({ page, cc }: Args): Promise<void> 
 
   await release();
   await expect(next.turnEnds(page), 'fixture check: the last release ends the turn').toHaveCount(1);
+}
+
+// ── the view shortening with no frame ────────────────────────────────────
+
+/** Two tall prompts sent in a new project, the transcript at its bottom. */
+async function shrinkFixture(page: Page, cc: Cc, what: string): Promise<{ transcript: Locator; clientHeight: () => Promise<number> }> {
+  const project = label(what);
+  await createProject(cc, project);
+  await next.open(page);
+  await next.startSessionIn(page, project);
+  const transcript = next.transcript(page);
+  await sendAll(page, next, [tallPrompt('SHRINK-ALPHA'), tallPrompt('SHRINK-BRAVO')]);
+  await expectAtBottom(page, transcript, 'before the view shortens');
+  return { transcript, clientHeight: () => transcript.evaluate((s) => s.clientHeight) };
+}
+
+/** Shortens the page's viewport by 120px, as the soft keyboard or a growing composer shortens the transcript's view. */
+async function shortenView(page: Page, clientHeight: () => Promise<number>): Promise<void> {
+  const before = await clientHeight();
+  const size = page.viewportSize();
+  if (!size) throw new Error('shortenView: the page has no viewport size');
+  await page.setViewportSize({ width: size.width, height: size.height - 120 });
+  await expect.poll(clientHeight, { message: 'fixture check: the transcript view shortened' }).toBeLessThan(before - 100);
+}
+
+export async function viewShrinkScrolledUpFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a reader scrolled up is not moved when the transcript's view shortens.
+  const { transcript, clientHeight } = await shrinkFixture(page, cc, 'shrink-up');
+  await bringTo(transcript, next.userMessages(page).first(), 40);
+  await expect(jumpToLatest(page), 'precondition: scrolled up').toBeVisible();
+  const before = await settledTop(transcript);
+  await shortenView(page, clientHeight);
+  expect(Math.abs(await settledTop(transcript) - before), 'a reader scrolled up stays where they were as the view shortens').toBeLessThanOrEqual(1);
+  await expect(jumpToLatest(page)).toBeVisible();
+}
+
+export async function viewShrinkFollowedFlow({ page, cc }: Args): Promise<void> {
+  // Invariant: a followed transcript keeps its bottom as the view shortens (the soft keyboard, the composer growing).
+  const { transcript, clientHeight } = await shrinkFixture(page, cc, 'shrink-follow');
+  await shortenView(page, clientHeight);
+  await expect.poll(() => fromBottom(transcript), { message: 'a followed transcript keeps its bottom as the view shortens' }).toBeLessThanOrEqual(1);
+  await expect(jumpToLatest(page)).toBeHidden();
 }

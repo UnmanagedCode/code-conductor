@@ -100,6 +100,17 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
     setNearBottom(true);
   };
 
+  /** The follow decision, for a frame and a resize alike: a followed transcript goes to its bottom, a finger on it holds
+   *  the write back for the lift, anything else only records growth and re-syncs Jump to latest. */
+  const keepUp = (el: HTMLElement) => {
+    if (follow.current && !touching.current) return toBottom(el);
+    if (follow.current) heldBack.current = true;
+    // Growth below is recorded as it renders, never the position (a finger's move may not have reported yet), so a
+    // later shrink above is measured against the tallest content since the last observed position.
+    seen.current.height = Math.max(seen.current.height, el.scrollHeight);
+    syncNear(el);
+  };
+
   // Follow the tail while the reader is at the bottom: any move up stops it, and only the very bottom or Jump to
   // latest resumes it. Nothing is written while a finger is down. A cleared transcript (another session, a rewind,
   // a reconnect) starts at the bottom again.
@@ -110,12 +121,7 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       follow.current = true;
     }
     if (!el) return;
-    if (follow.current && !touching.current) return toBottom(el);
-    if (follow.current) heldBack.current = true;
-    // Growth below is recorded as it renders, never the position (a finger's move may not have reported yet), so a
-    // later shrink above is measured against the tallest content since the last observed position.
-    seen.current.height = Math.max(seen.current.height, el.scrollHeight);
-    syncNear(el);
+    keepUp(el);
   }, [rev]);
 
   // Mounting onto the transcript the reader left scrolled up (a full-page view closing) resumes their place.
@@ -151,6 +157,20 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
       window.removeEventListener('touchend', up);
       window.removeEventListener('touchcancel', up);
     };
+  }, []);
+
+  // The view's own height and its content's change with no frame: the composer's rows under the transcript (the turn
+  // indicator, the task and workers panels, the composer growing), the soft keyboard shrinking the shell, a late image.
+  // A resize takes the frame's decision. One that left the transcript at its bottom writes nothing: the frame's own
+  // write already got there, so a frame that also resizes writes once.
+  React.useEffect(() => {
+    const el = scrollRef.current;
+    const list = listRef.current;
+    if (!el || !list) return;
+    const ro = new ResizeObserver(() => { if (fromBottom(el) >= 1) keepUp(el); });
+    ro.observe(el);
+    ro.observe(list);
+    return () => ro.disconnect();
   }, []);
 
   // Register the viewport the lazy pager measures and splices against.

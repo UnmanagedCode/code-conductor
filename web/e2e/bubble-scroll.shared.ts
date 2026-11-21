@@ -1,7 +1,8 @@
 // A plan card's long body in a real browser, on fixtures/scenario-bubble-scroll.json:
 // the body scrolls inside its bubble with the header and Approve in view, an inner scroll
 // leaves the transcript's own scroll alone, a scroll at either end of the body chains on
-// to the transcript, and a short plan reserves no scroll space.
+// to the transcript, and a short plan reserves no scroll space. The long plan's transcript rests at its true
+// bottom once the idle turn-indicator row has shortened the view.
 // The bodies are shared by the per-project spec files; this module declares no tests.
 import type { Locator, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -56,10 +57,11 @@ export async function scrollOver(page: Page, over: Locator, dy: number): Promise
 }
 
 export async function longPlanFlow({ page, cc }: Args): Promise<void> {
-  // Invariant: a long plan's body is bounded to half the viewport and scrolls inside the card; the transcript still ends at its bottom, with the card's header and Approve in view.
+  // Invariant: a long plan's body is bounded to half the viewport and scrolls inside the card; once the idle turn-indicator row has laid out the transcript ends at its true bottom (under 1px), with the card's header and Approve in view.
   const { card, region } = await planRegion(page, cc, 'long', 'PLAN-LONG raise the plan');
   const transcript = next.transcript(page);
-  await expect.poll(() => fromBottom(transcript), { message: 'at the bottom' }).toBeLessThan(STUCK_PX);
+  await expect(page.locator('[data-turn-indicator="idle"]'), "fixture check: the idle turn-indicator row, which lands after the turn's last frame, shows").toBeVisible();
+  await expect.poll(() => fromBottom(transcript), { message: 'at its true bottom after the late layout' }).toBeLessThan(1);
   await expect(jumpToLatest(page)).toBeHidden();
   const m = await region.evaluate((e) => ({ scroll: e.scrollHeight, client: e.clientHeight, half: window.innerHeight / 2 }));
   expect(m.scroll, 'fixture check: the plan overflows its region').toBeGreaterThan(m.client);
