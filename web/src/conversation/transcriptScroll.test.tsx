@@ -11,6 +11,9 @@
 // destination, clamped when it starts, until `landSmooth`, and an instant write
 // before then aborts it. happy-dom's own smooth scroll clamps when it lands, which
 // would hide a destination gone stale under a growing transcript.
+// happy-dom's ResizeObserver never calls back, so a stand-in records each observer and
+// `resized` calls back the ones watching the box that changed (the root for the view,
+// anything inside it for the content), as a real observer would.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render } from '@testing-library/react';
 
@@ -41,6 +44,8 @@ const isRoot = (el: Element) => el.hasAttribute('data-conversation');
 /** Height lost by content above the reader (a block collapsing), in px. */
 let collapsedPx = 0;
 const contentPx = (el: Element) => Math.max(viewPx, ITEM_PX * el.querySelectorAll('[data-item]').length - collapsedPx);
+/** Writes the view made to the scroll root's scrollTop. */
+let rootWrites = 0;
 /** Where a smooth scroll in flight will land. */
 const smoothTo = new WeakMap<Element, number>();
 const KEYS = ['scrollTop', 'scrollHeight', 'clientHeight', 'scrollTo'] as const;
@@ -68,6 +73,7 @@ function layOut() {
     get(this: HTMLElement) { return isRoot(this) ? tops.get(this) ?? 0 : base.scrollTop.get!.call(this); },
     set(this: HTMLElement, v: number) {
       if (!isRoot(this)) return base.scrollTop.set!.call(this, v);
+      rootWrites++;
       smoothTo.delete(this);
       tops.set(this, Math.max(0, Math.min(v, contentPx(this) - viewPx)));
     },
@@ -91,6 +97,30 @@ function unLayOut() {
     if (d) Object.defineProperty(HTMLElement.prototype, k, d);
     else delete (HTMLElement.prototype as unknown as Record<string, unknown>)[k];
   }
+}
+
+// ── Resize observer stand-in ─────────────────────────────────────────────
+interface StandInObserver { cb: ResizeObserverCallback; targets: Set<Element> }
+const observers: StandInObserver[] = [];
+class StandInResizeObserver {
+  private readonly rec: StandInObserver;
+  constructor(cb: ResizeObserverCallback) {
+    this.rec = { cb, targets: new Set() };
+    observers.push(this.rec);
+  }
+  observe(el: Element) { this.rec.targets.add(el); }
+  unobserve(el: Element) { this.rec.targets.delete(el); }
+  disconnect() { this.rec.targets.clear(); }
+}
+/** The browser reports a box's resize: the view's own (`root`) or something inside it. Only observers watching that box are called. */
+function resized(root: HTMLElement, what: 'view' | 'content') {
+  const hit = (t: Element) => (what === 'view' ? t === root : t !== root && root.contains(t));
+  act(() => {
+    for (const o of [...observers]) {
+      const entries = [...o.targets].filter(hit).map((target) => ({ target }) as ResizeObserverEntry);
+      if (entries.length) o.cb(entries, o as unknown as ResizeObserver);
+    }
+  });
 }
 
 // ── Driving the view ─────────────────────────────────────────────────────
@@ -133,6 +163,9 @@ beforeEach(() => {
   layOut();
   collapsedPx = 0;
   viewPx = VIEW_PX;
+  rootWrites = 0;
+  observers.length = 0;
+  vi.stubGlobal('ResizeObserver', StandInResizeObserver);
   pages = [];
   paths = [];
   vi.stubGlobal('fetch', vi.fn(async (url: string) => {
@@ -445,7 +478,7 @@ describe("following the reader's intent while output streams", () => {
   it('lifting a finger when no frame was held back moves nothing, even with the transcript short of its bottom', async () => {
     // Invariant: the lift replays only a write the touch gate held back; it does not close a gap no frame opened.
     const { el } = await following();
-    // Content grows below without a frame (a card laying out after the view's last write).
+    // Content grows below without a frame (not yet reported to the view's observer).
     collapsedPx = -24;
     expect(el.scrollHeight - VIEW_PX, 'fixture check: the transcript sits short of its bottom').toBe(bottom(BASE) + 24);
     touch(el, 'touchstart', 1);
@@ -497,7 +530,7 @@ describe("following the reader's intent while output streams", () => {
     expect(el.scrollTop, 'precondition: the lift after the drag up did not replay the frame').toBe(bottom(BASE) - 20);
     scrollTo(el, bottom(BASE + ITEM_PX));
     expect(jump(container), 'precondition: back at the bottom, followed again').toBeNull();
-    // Content grows below without a frame (a card laying out after the view's last write).
+    // Content grows below without a frame (not yet reported to the view's observer).
     collapsedPx = -24;
     touch(el, 'touchstart', 1);
     touch(el, 'touchend', 0);
@@ -520,7 +553,7 @@ describe("following the reader's intent while output streams", () => {
     const { el } = await following();
     const keyboardPx = ITEM_PX;
     viewPx = VIEW_PX - keyboardPx;
-    expect(el.scrollTop, 'fixture check: the keyboard leaves the position alone').toBe(bottom(BASE) - keyboardPx);
+    expect(el.scrollTop, 'fixture check: before the observer reports it, the keyboard leaves the position alone').toBe(bottom(BASE) - keyboardPx);
     scrollTo(el, bottom(BASE) - keyboardPx / 2);
     await live('i1', echo('live 0'));
     expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
@@ -559,5 +592,101 @@ describe("following the reader's intent while output streams", () => {
     touch(el, 'touchend', 0);
     expect(el.scrollTop).toBe(bottom(BASE));
     expect(jump(container)).toBeNull();
+  });
+});
+
+describe('a resize with no frame', () => {
+  const BASE = 30 * ITEM_PX;
+  async function following() {
+    const view = mount();
+    await snapshot('i1', echoes('replayed', 30));
+    fireEvent.scroll(view.el);
+    expect(view.el.scrollTop, 'fixture check: at the bottom').toBe(bottom(BASE));
+    return view;
+  }
+  const gap = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop;
+
+  it('a followed transcript whose view shortens with no frame (the composer\'s turn indicator, the soft keyboard) is kept at its bottom', async () => {
+    // Invariant: the view arm: a resize of the view takes the follow decision, and a followed reader goes to the bottom.
+    const { container, el } = await following();
+    viewPx = VIEW_PX - 24;
+    expect(gap(el), 'fixture check: the shorter view leaves the transcript short of its bottom').toBe(24);
+    resized(el, 'view');
+    expect(el.scrollTop).toBe(bottom(BASE));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('a followed transcript whose content grows with no frame (a late image) is kept at its bottom', async () => {
+    // Invariant: the content arm: the list growing with no frame also takes the follow decision.
+    const { el } = await following();
+    collapsedPx = -24;
+    expect(gap(el), 'fixture check: the grown content leaves the transcript short of its bottom').toBe(24);
+    resized(el, 'content');
+    expect(el.scrollTop).toBe(bottom(BASE + 24));
+  });
+
+  it('a reader scrolled up is not moved when the view shortens (the soft keyboard, the composer) or the content grows', async () => {
+    // Invariant: neither arm writes once the reader is not followed.
+    const { container, el } = await following();
+    scrollTo(el, 1200);
+    viewPx = VIEW_PX - ITEM_PX;
+    resized(el, 'view');
+    expect(el.scrollTop).toBe(1200);
+    collapsedPx = -24;
+    resized(el, 'content');
+    expect(el.scrollTop).toBe(1200);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('a reader who dragged up under a finger is not moved by a resize, before or after lifting', async () => {
+    // Invariant: a drag up under a finger stops following, and a resize under either arm then writes nothing, through the lift.
+    const { container, el } = await following();
+    touch(el, 'touchstart', 1);
+    scrollTo(el, bottom(BASE) - 20);
+    const dragged = el.scrollTop;
+    viewPx = VIEW_PX - 24;
+    collapsedPx = -24;
+    resized(el, 'view');
+    resized(el, 'content');
+    expect(el.scrollTop).toBe(dragged);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(dragged);
+    expect(jump(container)).not.toBeNull();
+  });
+
+  it('content growing or the view shortening under a resting finger moves nothing until the lift, which catches up once', async () => {
+    // Invariant: a finger on the transcript defers a resize's write, and the lift replays it for a reader still following.
+    const { container, el } = await following();
+    const resting = el.scrollTop;
+    touch(el, 'touchstart', 1);
+    collapsedPx = -24;
+    viewPx = VIEW_PX - 24;
+    resized(el, 'content');
+    resized(el, 'view');
+    expect(el.scrollTop, 'positive control: nothing written while the finger is down').toBe(resting);
+    touch(el, 'touchend', 0);
+    expect(el.scrollTop).toBe(bottom(BASE + 24));
+    expect(jump(container)).toBeNull();
+  });
+
+  it('a frame that also resizes the view and the content writes the bottom once', async () => {
+    // Invariant: a resize that finds the transcript already at its bottom writes nothing, so a frame plus its resize is one write.
+    const { el } = await following();
+    viewPx = VIEW_PX - 24;
+    const w0 = rootWrites;
+    await live('i1', echo('live 0'));
+    expect(el.scrollTop, 'precondition: the frame wrote the bottom').toBe(bottom(BASE + ITEM_PX));
+    resized(el, 'view');
+    resized(el, 'content');
+    expect(rootWrites - w0, 'writes to the scroll root').toBe(1);
+    expect(el.scrollTop).toBe(bottom(BASE + ITEM_PX));
+  });
+
+  it("the view's resize observer is disconnected on unmount", () => {
+    // Invariant: the view leaves no live observer once it is gone.
+    const view = mount();
+    expect(observers.some((o) => o.targets.has(view.el)), 'fixture check: an observer watches the scroll root').toBe(true);
+    view.unmount();
+    expect(observers.every((o) => o.targets.size === 0)).toBe(true);
   });
 });
