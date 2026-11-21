@@ -15,6 +15,21 @@ describe('ProseInput / ProseTextarea', () => {
     for (const label of ['One', 'Two', 'Three']) expect(proseFacts(screen.getByRole('textbox', { name: label }))).toEqual(proseExpected(label));
   });
 
+  it('drops a caller aria-label / aria-labelledby on every branch, so the label stays the sole name source', () => {
+    // Invariant: no caller-supplied aria name override reaches the DOM, whatever gets past the type (a spread or a cast), so the associated <label> alone names the control.
+    const overrides = { 'aria-label': 'override', 'aria-labelledby': 'other' } as {};
+    const branches = [
+      <ProseInput label="One" {...overrides} />,
+      <ProseTextarea label="One" {...overrides} />,
+      <ProseTextarea bare label="One" {...overrides} />,
+    ];
+    for (const branch of branches) {
+      const { container, unmount } = render(<><span id="other">other</span>{branch}</>);
+      expect(proseFacts(container.querySelector('input, textarea') as HTMLElement)).toEqual(proseExpected('One'));
+      unmount();
+    }
+  });
+
   it('honours a caller-supplied id on the control and the label', () => {
     // Invariant: pinned ids (#composer-input, #rename-title) survive the component.
     render(<><ProseInput id="pinned-input" label="One" /><ProseTextarea bare id="pinned-area" label="Two" /></>);
