@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { BarChart3Icon, FileTextIcon, LoaderCircleIcon, PencilIcon, RefreshCwIcon, ScissorsIcon, SparklesIcon, TriangleAlertIcon, CheckIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { ProseInput } from '@/components/ui/prose-field';
 import { Label } from '@/components/ui/label';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
@@ -14,7 +14,6 @@ import { applySessionTitle } from '@/app/sessionActions';
 import { isCallUsageShown, setCallUsageShown, uiStore } from '@/app/ui';
 import { toast } from '@/ui/feedback';
 import { cn } from '@/lib/utils';
-import { PROSE_FIELD_PROPS } from '@/lib/textEntry';
 import { focusContent } from '@/lib/modalFocus';
 import { closeDialog, dialogStore } from './api';
 import { CheckRow } from './SpawnDialog';
@@ -94,7 +93,7 @@ function AskSection({ sessionId }: { sessionId: string }) {
         </div>
       )}
       <form className="flex gap-2" onSubmit={(e) => void ask(e)}>
-        <Input {...PROSE_FIELD_PROPS} aria-label="Question about this session" placeholder="Ask about this session…" value={draft} onChange={(e) => setDraft(e.target.value)} />
+        <ProseInput label="Question about this session" placeholder="Ask about this session…" value={draft} onChange={(e) => setDraft(e.target.value)} />
         <Button type="submit" variant="outline" disabled={!draft.trim() || asking}>Ask</Button>
       </form>
     </section>
@@ -470,7 +469,7 @@ function RenameBody({ sessionId, current }: { sessionId: string; current: string
         <DialogTitle>Rename session</DialogTitle>
         <DialogDescription>Leave it empty to go back to the project name.</DialogDescription>
       </DialogHeader>
-      <Input id="rename-title" {...PROSE_FIELD_PROPS} value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} autoFocus onFocus={(e) => e.currentTarget.select()} placeholder="Session title" aria-label="Session title" />
+      <ProseInput id="rename-title" label="Session title" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={100} autoFocus onFocus={(e) => e.currentTarget.select()} placeholder="Session title" />
       <FormError>{error}</FormError>
       <DialogFooter>
         <Button type="button" variant="ghost" onClick={() => closeDialog('rename')}>Cancel</Button>
