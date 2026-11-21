@@ -4,7 +4,8 @@
 // as the reader left it; a sent plan keeps the feedback it sent, and one whose send failed
 // re-opens with it. A transcript replaced in place (a reconnect's snapshot, another session
 // and back) keeps every card's input; another session's cards start empty. Typing in the middle of a card's text keeps the caret.
-// A card that paged in from an older page re-opens after a failed send the same way.
+// A card that paged in from an older page re-opens after a failed send the same way, and a
+// refused decision's feedback comes back when the card pages in after another session and back.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, fireEvent, render, within } from '@testing-library/react';
 
@@ -396,5 +397,29 @@ describe('a card from an older page', () => {
 
   it('a reconnect\'s snapshot pages the older card in again, awaiting a decision', async () => {
     expect(await lockThenReset(async () => {})).toEqual({ feedback: '', editable: true });
+  });
+
+  it('a decision refused in the live tail keeps its feedback when another session is selected and the card comes back on an older page', async () => {
+    const { el } = mount();
+    await snapshot('i1', OLDER);
+    expect(plans(el), 'fixture check: the card is in the live tail').toHaveLength(1);
+    const card = plans(el)[0];
+    await type(textbox(card), 'tail fails');
+    await click(decideButton(card, 'Reject'));
+    await flush();
+    expect(prompts(), 'fixture check: the decision was sent and refused').toEqual([buildRejectPrompt('tail fails')]);
+    expect({ feedback: textbox(card).value, editable: !textbox(card).disabled }, 'positive control: the card in the tail re-opens with its feedback').toEqual({ feedback: 'tail fails', editable: true });
+    const clears = conversation.clears;
+    act(() => { selectInstance('i2'); });
+    await snapshot('i2', []);
+    act(() => { selectInstance('i1'); });
+    await showPaged('i1');
+    expect(conversation.clears, 'premise: the transcript was rebuilt').toBeGreaterThan(clears);
+    const [older] = olderAndNewer(el);
+    expect({
+      feedback: textbox(older).value,
+      editable: !textbox(older).disabled,
+      decides: !decideButton(older, 'Reject').disabled,
+    }, 'the refused decision\'s feedback, on a card awaiting a decision').toEqual({ feedback: 'tail fails', editable: true, decides: true });
   });
 });
