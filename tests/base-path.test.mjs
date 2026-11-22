@@ -30,11 +30,19 @@ test("parseBasePath: no HTML- or attribute-significant character is ever accepte
 
 test("parseBasePath: a first segment that cc serves at root is refused, deeper segments are not", () => {
   // Invariant: a base never shadows a root mount, so loopback callers' root URLs keep resolving.
-  for (const bad of ['/api', '/api/x', '/mcp', '/ws', '/plugins', '/plugins/cc2', '/pluginBridge.js', '/pluginTheme.css', '/pluginTheme', '/sw.js', '/manifest.webmanifest', '/assets', '/icon-192.png', '/favicon-16.png', '/index.html']) {
+  for (const bad of ['/api', '/api/x', '/mcp', '/ws', '/plugins', '/plugins/', '/plugins/Bad_Id', '/pluginBridge.js', '/pluginTheme.css', '/pluginTheme', '/sw.js', '/manifest.webmanifest', '/assets', '/icon-192.png', '/favicon-16.png', '/index.html']) {
     assert.throws(() => parseBasePath(bad), /CC_BASE_PATH.*(root|serves)/, bad);
   }
   assert.equal(parseBasePath('/apps/api'), '/apps/api');
   assert.equal(parseBasePath('/apps/mcp'), '/apps/mcp');
+});
+
+test('parseBasePath: /plugins/<id> and deeper are accepted, a bare /plugins is refused', () => {
+  // Invariant: cc can be fronted by another cc's plugin mount (the approved criterion); only the bare mount, which no plugin id completes, stays refused.
+  assert.equal(parseBasePath('/plugins/cc2'), '/plugins/cc2');
+  assert.equal(parseBasePath('/plugins/cc2/'), '/plugins/cc2');
+  assert.equal(parseBasePath('/plugins/cc2/x'), '/plugins/cc2/x');
+  assert.throws(() => parseBasePath('/plugins'), /CC_BASE_PATH/);
 });
 
 test('reservedRootSegments covers every root mount server.ts and the plugin theme router declare, and every file in web/public', async () => {

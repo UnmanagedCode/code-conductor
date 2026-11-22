@@ -107,3 +107,17 @@ test('loopback URLs handed to children stay root-based with a base set', async (
 test('an invalid base fails createServer loudly', () => {
   assert.throws(() => createServer({ basePath: 'no-slash' }), /CC_BASE_PATH/);
 });
+
+test('with base /plugins/cc2: the prefixed path reaches the API, another plugin id still reaches the plugin proxy', async () => {
+  // Invariant: only the exact /plugins/cc2/ prefix is stripped; a sibling plugin's mount is not mistaken for the base.
+  const { baseUrl, close } = await bootServer({ basePath: '/plugins/cc2' });
+  try {
+    const api = await get(`${baseUrl}/plugins/cc2/api/health`);
+    assert.equal(api.status, 200);
+    assert.match(api.headers.get('content-type') ?? '', /json/);
+    const other = await get(`${baseUrl}/plugins/other/api/health`);
+    assert.equal(other.status, 404);
+    assert.match((await other.json()).error, /plugin/, "the plugin proxy's own refusal, not the API");
+    assert.equal((await get(`${baseUrl}/api/health`)).status, 200, 'root still answers');
+  } finally { await close(); }
+});

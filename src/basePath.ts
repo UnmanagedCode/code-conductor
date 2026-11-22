@@ -13,6 +13,9 @@ import { fileURLToPath } from 'node:url';
 // attributes (rewritePluginHostUrls), so no quote, angle bracket or ampersand may ever pass.
 const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
 
+// A plugin id (src/plugins/): the form `/plugins/<id>` takes in a base.
+const PLUGIN_ID_RE = /^[a-z][a-z0-9-]*$/;
+
 const WEB_PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'public');
 
 // The first path segments cc itself serves at root: the mounts of server.ts and
@@ -31,7 +34,9 @@ export function parseBasePath(raw?: string | null, reserved: Set<string> = reser
   if (!raw.startsWith('/')) throw new Error(`CC_BASE_PATH must start with '/': ${JSON.stringify(raw)}`);
   const trimmed = raw.endsWith('/') ? raw.slice(0, -1) : raw;
   const segments = trimmed.slice(1).split('/');
-  if (reserved.has(segments[0]!)) {
+  // `/plugins/<id>[/…]` is the one reserved prefix a base may take: cc hosted as a plugin of another cc.
+  const asPlugin = segments[0] === 'plugins' && segments.length >= 2 && PLUGIN_ID_RE.test(segments[1]!);
+  if (reserved.has(segments[0]!) && !asPlugin) {
     throw new Error(`CC_BASE_PATH ${JSON.stringify(raw)} starts with '${segments[0]}', a path cc serves at root`);
   }
   for (const seg of segments) {

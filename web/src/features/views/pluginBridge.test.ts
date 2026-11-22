@@ -59,7 +59,7 @@ describe('pluginBridge.js', () => {
     expect(b.hist.replaced.at(-1)).toBe('/p/q/plugins/hub/b');
   });
 
-  it("picks the inner plugin id when the parent page directory itself contains /plugins/<id>/", () => {
+  it("picks the inner plugin id when cc itself runs under another cc's /plugins/<id>/ base", () => {
     // Invariant: the outer mount's id is not mistaken for the framed plugin's.
     const b = runBridge({ pathname: '/plugins/cc2/plugins/hub/a', parentLocation: { pathname: '/plugins/cc2/', search: '', href: 'http://h/plugins/cc2/' } });
     b.contentLoaded();
