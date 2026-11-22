@@ -50,6 +50,22 @@ describe('pluginBridge.js', () => {
     expect(popped).toBeGreaterThan(0);
   });
 
+  it('derives its mount from the parent page directory when cc is hosted under a prefix', () => {
+    // Invariant: under a prefix the route is relative to <cc base>/plugins/<id>, and navigate goes back under the prefix.
+    const b = runBridge({ pathname: '/p/q/plugins/hub/a', parentLocation: { pathname: '/p/q/', search: '', href: 'http://h/p/q/#plugin/hub/a' } });
+    b.contentLoaded();
+    expect(b.posted.at(-1)[0]).toEqual({ cc: 1, type: 'route', path: '/a?q=1' });
+    for (const f of b.listeners.message) f({ origin: 'http://h', source: b.win.parent, data: { cc: 1, type: 'navigate', path: '/b' } });
+    expect(b.hist.replaced.at(-1)).toBe('/p/q/plugins/hub/b');
+  });
+
+  it("picks the inner plugin id when cc itself runs under another cc's /plugins/<id>/ base", () => {
+    // Invariant: the outer mount's id is not mistaken for the framed plugin's.
+    const b = runBridge({ pathname: '/plugins/cc2/plugins/hub/a', parentLocation: { pathname: '/plugins/cc2/', search: '', href: 'http://h/plugins/cc2/' } });
+    b.contentLoaded();
+    expect(b.posted.at(-1)[0]).toEqual({ cc: 1, type: 'route', path: '/a?q=1' });
+  });
+
   describe('theme', () => {
     it("applies the host's theme at script execution, before DOMContentLoaded", () => {
       // Invariant: the frame's theme equals the host's synchronously at execution, in both directions.

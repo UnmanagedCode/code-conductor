@@ -113,7 +113,7 @@ describe('ensureWebBuild', () => {
     // Invariant: the dialogs stay out of the boot JS. `data-dialog` is the dialogs' e2e hook and occurs only in dialog modules.
     const assets = path.join(distDir, 'assets');
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
-    const entry = html.match(/<script\b[^>]*\btype="module"[^>]*\bsrc="\/assets\/([^"]+\.js)"/)?.[1];
+    const entry = html.match(/<script\b[^>]*\btype="module"[^>]*\bsrc="\.\/assets\/([^"]+\.js)"/)?.[1];
     expect(entry, 'fixture check: index.html loads a module entry').toBeTruthy();
     const closure = staticClosure(entry!, (f) => fs.readFileSync(path.join(assets, f), 'utf8'));
     const hasDialog = (f: string) => fs.readFileSync(path.join(assets, f), 'utf8').includes('data-dialog');
@@ -123,13 +123,16 @@ describe('ensureWebBuild', () => {
     expect(outside.filter(hasDialog).length, 'fixture check: a lazy chunk carries the dialogs').toBeGreaterThan(0);
   });
 
-  it('every URL in index.html is root-absolute: the entry chunk, the manifest and every icon link', () => {
+  it('every URL in index.html is relative and resolves under a hosting prefix: scripts, preloads, styles, the manifest and every icon link', () => {
+    // Invariant: the build carries no root-absolute URL, so the same files serve at / and under /p/q/.
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
-    expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
-    expect(html).toContain('href="/manifest.webmanifest"');
-    const hrefs = iconLinks(html).map((l) => l.href);
-    expect(hrefs.length, 'fixture check: index.html links an icon').toBeGreaterThan(0);
-    expect(hrefs.filter((h) => !/^\/[^/]/.test(h ?? ''))).toEqual([]);
+    const urls = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map((m) => m[1]!);
+    expect(urls.length, 'fixture check: index.html references assets').toBeGreaterThan(0);
+    expect(urls.filter((u) => /^(\/|[a-z]+:)/i.test(u))).toEqual([]);
+    for (const u of urls) expect(new URL(u, 'http://h/p/q/').pathname.startsWith('/p/q/'), u).toBe(true);
+    expect(html).toMatch(/src="\.\/assets\/[^"]+\.js"/);
+    expect(html).toContain('href="./manifest.webmanifest"');
+    expect(iconLinks(html).length, 'fixture check: index.html links an icon').toBeGreaterThan(0);
   });
 
   it('every icon index.html links and the manifest lists ships in the build, at the dimensions it declares', () => {
@@ -137,7 +140,7 @@ describe('ensureWebBuild', () => {
     const html = fs.readFileSync(path.join(distDir, 'index.html'), 'utf8');
     const manifest = JSON.parse(fs.readFileSync(path.join(distDir, 'manifest.webmanifest'), 'utf8'));
     const icons = [
-      ...iconLinks(html).map((l) => ({ file: l.href?.replace(/^\//, ''), sizes: l.sizes })),
+      ...iconLinks(html).map((l) => ({ file: l.href?.replace(/^\.?\//, ''), sizes: l.sizes })),
       ...manifest.icons.map((i: { src: string; sizes?: string }) => ({ file: i.src, sizes: i.sizes ?? null })),
     ];
     expect(icons.length, 'fixture check: icons are referenced').toBeGreaterThan(0);

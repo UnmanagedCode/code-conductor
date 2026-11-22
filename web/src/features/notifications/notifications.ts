@@ -11,6 +11,7 @@
 // `cc-notification-click` message, the page fallback dispatches the same-named
 // window event.
 import { CONDUCTOR_LABEL } from '@shared/conductors';
+import { appUrl } from '@shared/appUrl';
 import { askLabel } from '@shared/needsYou';
 import { createAttentionTracker, type AttentionInstance } from '@shared/attention';
 import { createStore } from '@/state/createStore';
@@ -25,7 +26,7 @@ export const notificationStore = createStore<{ permission: Permission; globalEna
 
 let swRegistration: ServiceWorkerRegistration | null = null;
 
-export const NOTIFICATION_ICON = '/icon-192.png';
+export const NOTIFICATION_ICON = appUrl('/icon-192.png');
 const SUMMARY_TAG = 'cc-summary';
 const SUMMARY_PROJECT_LIMIT = 3;
 
@@ -48,7 +49,7 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
   if (swRegistration) return swRegistration;
   if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return null;
   try {
-    const reg = await navigator.serviceWorker.register('/sw.js');
+    const reg = await navigator.serviceWorker.register(appUrl('/sw.js'), { scope: appUrl('/') });
     await navigator.serviceWorker.ready;
     swRegistration = reg;
     return reg;

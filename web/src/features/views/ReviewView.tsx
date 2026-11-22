@@ -16,7 +16,8 @@ export type DiffSummary = { files?: DiffFileSummary[]; totalAdds?: number; total
 
 /** The summary URL with `path=<file>` added: one file's hunks, fetched lazily. */
 export function fileDiffUrl(summaryUrl: string, path: string) {
-  const u = new URL(summaryUrl, location.href);
+  // Resolved against a fixed origin: the result is the unprefixed app path, which apiResponse prefixes once.
+  const u = new URL(summaryUrl, 'http://app.invalid');
   u.searchParams.set('path', path);
   return u.pathname + u.search;
 }

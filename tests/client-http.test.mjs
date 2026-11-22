@@ -199,3 +199,15 @@ test('apiResponse: an explicit cache option wins over the default', async () => 
   await apiResponse('/x', { cache: 'default' }, async (url, opts) => { seen.push(opts); return { ok: true }; });
   assert.deepEqual(seen, [{ cache: 'default' }]);
 });
+
+// Invariant: a page hosted under a prefix reaches the server under that prefix —
+// apiResponse hands the fetch the prefixed path; with no document it is unchanged.
+test('apiResponse: resolves the path under the page directory when hosted under a prefix', async () => {
+  const calls = [];
+  const fetchImpl = async (url) => { calls.push(url); return { ok: true, status: 200 }; };
+  globalThis.document = { baseURI: 'http://h/p/q/' };
+  try { await apiResponse('/api/x?a=1', undefined, fetchImpl); }
+  finally { delete globalThis.document; }
+  await apiResponse('/api/x', undefined, fetchImpl);
+  assert.deepEqual(calls, ['/p/q/api/x?a=1', '/api/x']);
+});

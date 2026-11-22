@@ -40,6 +40,22 @@ describe('plugin frames', () => {
     expect(h.querySelector('iframe')).toBeNull();
   });
 
+  it('under a hosting prefix the frame loads from the prefixed plugin mount and the REST calls are prefixed', async () => {
+    // Invariant: a cc page at /p/q/ points its plugin iframe at /p/q/plugins/<id>/…, never at the host's root.
+    const fetchMock = vi.fn(async () => ok({ state: 'ready', frontendKeepAlive: false }));
+    vi.stubGlobal('fetch', fetchMock);
+    (window as any).happyDOM.setURL('http://h/p/q/');
+    try {
+      const h = host();
+      await pluginFrames.load({ id: 'hub', subpath: '/x' });
+      expect(h.querySelector('iframe')!.getAttribute('src')).toBe('/p/q/plugins/hub/x');
+      expect((fetchMock.mock.calls as any[][])[0][0]).toBe('/p/q/api/plugins/hub/status');
+      pluginFrames.leave();
+    } finally {
+      (window as any).happyDOM.setURL('http://localhost:3000/');
+    }
+  });
+
   it('a stopped plugin is started first, behind an overlay', async () => {
     let release!: (r: Response) => void;
     const started = new Promise<Response>((r) => { release = r; });

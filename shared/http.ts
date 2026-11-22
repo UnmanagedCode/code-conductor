@@ -3,7 +3,8 @@
 // its errors ({error: string}), so one helper covers the "throw the server's
 // message, fall back to the status" shape.
 //
-// Every client REST call goes through this file; there is no raw fetch
+// Every client REST call goes through this file, and apiResponse resolves its
+// '/api…' path under the hosting prefix (shared/appUrl.ts); there is no raw fetch
 // outside it, so apiResponse's `cache: 'no-store'` default (a caller's own
 // `cache` wins) keeps every /api read out of the browser's HTTP cache. The
 // throw contract:
@@ -20,6 +21,8 @@
 // readApiBody applies apiFetch's body half to a Response one of them holds.
 //
 // `T` names the route's body; it is the caller's claim about the wire.
+
+import { appUrl } from './appUrl.ts';
 
 /** The one message every network failure (server down, restarting, unreachable) surfaces as. */
 export const SERVER_UNREACHABLE_MESSAGE = 'cc server unreachable — it may be restarting';
@@ -49,7 +52,7 @@ export class NetworkError extends Error {
 /** fetch with network failures normalized; the raw Response, no status check. For status-agnostic or streamed readers. */
 export async function apiResponse(url: string, opts?: RequestInit, fetchImpl: typeof fetch = fetch): Promise<Response> {
   try {
-    return await fetchImpl(url, { cache: 'no-store', ...opts });
+    return await fetchImpl(appUrl(url), { cache: 'no-store', ...opts });
   } catch (e) {
     if (fieldOf(e, 'name') === 'AbortError') throw e;
     throw new NetworkError(e);

@@ -1,5 +1,6 @@
-// Conductor plugin bridge — served by the conductor at /pluginBridge.js and
-// included by plugin frontends as a blocking `<script src="/pluginBridge.js">`
+// Conductor plugin bridge — served by the conductor at /pluginBridge.js (under
+// its base path when hosted behind a proxy) and included by plugin frontends as
+// a blocking `<script src="../../pluginBridge.js">` (docs/plugin-ui.md)
 // first in `<head>` (no `defer`, so the theme and session width are applied before first paint).
 // Standalone (not iframed, or served outside a /plugins/<id>/ mount) it is a
 // no-op, so plugins stay independently runnable (a 404 for this script
@@ -39,9 +40,22 @@
 (function () {
   'use strict';
   if (window.self === window.top) return;
-  var m = /^\/plugins\/([a-z][a-z0-9-]*)/.exec(window.location.pathname);
-  if (!m) return;
-  var prefix = '/plugins/' + m[1];
+  // The plugin's mount, `<cc base>/plugins/<id>`. cc's base is the directory of
+  // the parent page (same origin, so readable); that keeps the right id when cc
+  // is itself hosted under another cc's /plugins/<id>/. Without a readable
+  // parent, the first /plugins/<id> in the path.
+  var pathname = window.location.pathname;
+  var prefix = '';
+  try {
+    var mount = new URL('./', window.parent.location.href).pathname + 'plugins/';
+    var inner = pathname.indexOf(mount) === 0 ? /^[a-z][a-z0-9-]*/.exec(pathname.slice(mount.length)) : null;
+    if (inner) prefix = mount + inner[0];
+  } catch (e) { prefix = ''; }
+  if (!prefix) {
+    var m = /^\/plugins\/([a-z][a-z0-9-]*)/.exec(pathname);
+    if (!m) return;
+    prefix = '/plugins/' + m[1];
+  }
   var origin = window.location.origin;
   var replace = history.replaceState.bind(history);
 

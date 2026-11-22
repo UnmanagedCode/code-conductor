@@ -16,7 +16,7 @@ export type BridgeOptions = {
   /** Reading `parent.document` throws a SecurityError, as a cross-origin parent's does. */
   parentThrows?: boolean;
   /** The parent's own `location` (pathname + search), which a link's href is compared with. */
-  parentLocation?: { pathname: string; search: string };
+  parentLocation?: { pathname: string; search: string; href?: string };
   /** The frame document's readyState when the script runs. */
   readyState?: DocumentReadyState;
   /** Prepares the frame's own <html> before the script runs (e.g. a class the page set itself). */
