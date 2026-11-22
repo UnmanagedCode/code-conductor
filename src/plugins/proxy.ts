@@ -39,6 +39,7 @@ function rawHeaderLines(rawHeaders: string[]): string {
 }
 
 function jsonResponse(res: http.ServerResponse, status: number, body: unknown): void {
+  if (res.destroyed || res.writableEnded) return;
   if (res.headersSent) { res.end(); return; }
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
@@ -100,6 +101,11 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
     // gap — fail closed rather than forward to a default/null port.
     if (port == null) return jsonResponse(res, 503, { error: `plugin '${id}' has no running backend` });
 
+    // Set once the buffered HTML branch owns the response: it writes its headers late, so
+    // `headersSent` alone cannot tell the upstream-error path that the response is spoken for.
+    let owned = false;
+    // A deferred writer must not run on a response that was answered or torn down meanwhile.
+    const answerable = () => !res.destroyed && !res.headersSent && !res.writableEnded;
     const up = http.request({
       host: '127.0.0.1',
       port,
@@ -140,6 +146,7 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
         } else {
           const chunks: Buffer[] = [];
           let size = 0;
+          owned = true;
           const onData = (c: Buffer) => {
             chunks.push(c);
             size += c.length;
@@ -148,11 +155,13 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
             upRes.off('data', onData);
             upRes.off('end', onEnd);
             warnOnce(id, 'oversize', `HTML exceeds the ${REWRITE_BODY_CAP_BYTES}-byte rewrite cap`);
+            if (!answerable()) { upRes.resume(); return; }
             res.writeHead(status, headers);
             res.write(Buffer.concat(chunks));
             upRes.pipe(res);
           };
           const onEnd = () => {
+            if (!answerable()) return;
             const body = rewritePluginHostUrls(Buffer.concat(chunks), basePath);
             headers['content-length'] = String(body.length);
             delete headers['transfer-encoding'];
@@ -168,6 +177,8 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
       upRes.pipe(res);
     });
     up.on('error', (e) => {
+      // The buffered branch answers (or tears down) the response itself.
+      if (owned || res.destroyed || res.writableEnded) return;
       pluginHost.reportUpstreamFailure(id);
       jsonResponse(res, 502, { error: `plugin upstream error: ${e.message}` });
     });

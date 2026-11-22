@@ -483,3 +483,48 @@ test('upstream abort mid-body ends the client response (reset), over the cap and
     assert.equal(await outcome(port, '/plugins/fake-plugin/abort-html?declared=100000&sent=65536'), 'reset', 'no base');
   } finally { await noBase.close(); }
 });
+
+test('base path: status 206 alone, or a Content-Range alone, excludes the rewrite', async () => {
+  // Invariant: either signal on its own streams the body untouched, with its original length and headers.
+  const boot = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const child = await childPort(port);
+    for (const [route, status] of [['partial-no-range', 206], ['ranged-ok', 200]]) {
+      const direct = await rawGet(child, `/${route}`);
+      const via = await rawGet(port, `${BASE}/plugins/fake-plugin/${route}`);
+      assert.equal(via.status, status, route);
+      assert.deepEqual(via.body, direct.body, `${route}: byte-identical`);
+      assert.ok(!via.body.toString().includes(BASE), `${route}: no rewrite`);
+      assert.equal(via.headers['content-length'], direct.headers['content-length'], route);
+    }
+  } finally { await boot.close(); }
+});
+
+test('base path: an upstream that over-sends past its Content-Length cannot crash cc', async () => {
+  // Invariant: the buffered branch owns the response, so the upstream-error 502 and the deferred writeHead never both write; cc keeps answering.
+  const boot = await setup({ basePath: BASE });
+  const uncaught = [];
+  const onUncaught = (e) => uncaught.push(e);
+  process.on('uncaughtException', onUncaught);
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    for (let i = 0; i < 4; i++) {
+      const outcome = await new Promise((resolve) => {
+        const chunks = [];
+        const timer = setTimeout(() => resolve({ hang: true }), 8000);
+        http.get({ host: '127.0.0.1', port, path: `${BASE}/plugins/fake-plugin/oversend-html` }, (res) => {
+          res.on('data', (c) => chunks.push(c));
+          res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }); });
+          res.on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
+        }).on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
+      });
+      assert.ok(!outcome.hang, 'never a hang');
+      if (outcome.status === 200) assert.ok(outcome.body.includes(`src="${BASE}/pluginBridge.js"`), 'a full page is the rewritten one');
+      else if (outcome.status !== undefined) assert.equal(outcome.status, 502, 'else a clean 502');
+    }
+    assert.deepEqual(uncaught, [], 'no uncaught exception');
+    const after = await fetch(`${boot.baseUrl}${BASE}/api/health`);
+    assert.equal(after.status, 200, 'cc still answers');
+  } finally { process.off('uncaughtException', onUncaught); await boot.close(); }
+});

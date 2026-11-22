@@ -88,6 +88,29 @@ const server = http.createServer(async (req, res) => {
     setTimeout(() => res.socket.destroy(), 50);
     return;
   }
+  if (url.pathname === '/oversend-html') {
+    // Finishes its declared Content-Length, then sends more bytes than it declared.
+    const body = '<!doctype html><script src="/pluginBridge.js"></script>';
+    res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(Buffer.byteLength(body)) });
+    res.write(body);
+    res.write(Buffer.alloc(80, 0x62));
+    setTimeout(() => res.end(), 20);
+    return;
+  }
+  if (url.pathname === '/partial-no-range') {
+    // 206 with no Content-Range: the status alone must exclude the rewrite.
+    const body = '<script src="/pluginBridge.js"></script>';
+    res.writeHead(206, { 'content-type': 'text/html', 'content-length': String(body.length) });
+    res.end(body);
+    return;
+  }
+  if (url.pathname === '/ranged-ok') {
+    // 200 carrying Content-Range: the header alone must exclude the rewrite.
+    const body = '<script src="/pluginBridge.js"></script>';
+    res.writeHead(200, { 'content-type': 'text/html', 'content-range': `bytes 0-${body.length - 1}/${body.length}`, 'content-length': String(body.length) });
+    res.end(body);
+    return;
+  }
   if (url.pathname === '/partial-html') {
     // A 206 slice of a larger HTML document: its length and Content-Range describe the original bytes.
     const slice = '<script src="/pluginBridge.js"></script>';
