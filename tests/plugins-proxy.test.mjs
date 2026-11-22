@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
+import zlib from 'node:zlib';
 import { WebSocket } from 'ws';
 import { bootServer, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
@@ -10,8 +11,8 @@ import { pidAlive } from '../src/plugins/ports.ts';
 
 // Boot the full server (helpers tmp root) with the fake plugin installed as
 // a project and enabled — every test drives the real /plugins proxy.
-async function setup() {
-  const boot = await bootServer();
+async function setup(opts) {
+  const boot = await bootServer(opts);
   const dir = path.join(boot.projectsRoot, 'fakeplug');
   await fs.cp(FAKE_PLUGIN_DIR, dir, { recursive: true });
   await registerLocalProject('fakeplug', dir);
@@ -286,4 +287,96 @@ test("proxy: cc-made proxy responses carry cc's policy", async (t) => {
   } finally {
     await boot.close();
   }
+});
+
+// ── hosted under a base path (CC_BASE_PATH) ──
+
+const BASE = '/p/q';
+const rawGet = (port, p, headers = {}) => new Promise((resolve, reject) => {
+  http.get({ host: '127.0.0.1', port, path: p, headers }, (res) => {
+    const chunks = [];
+    res.on('data', (c) => chunks.push(c));
+    res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
+  }).on('error', reject);
+});
+
+test('base path: X-Forwarded-Prefix, Location and the bare-id redirect carry the base; upstream gets identity encoding', async () => {
+  // Invariant: a plugin that builds URLs from X-Forwarded-Prefix, or redirects, lands under the hosting prefix.
+  const boot = await setup({ basePath: BASE });
+  try {
+    for (const prefix of ['', BASE]) {
+      const h = await (await fetch(`${boot.baseUrl}${prefix}/plugins/fake-plugin/request-headers`, { headers: { 'accept-encoding': 'gzip' } })).json();
+      assert.equal(h['x-forwarded-prefix'], `${BASE}/plugins/fake-plugin`, `via '${prefix}'`);
+      assert.equal(h['accept-encoding'], 'identity');
+    }
+    const rel = await fetch(`${boot.baseUrl}${BASE}/plugins/fake-plugin/redirect`, { redirect: 'manual' });
+    assert.equal(rel.headers.get('location'), `${BASE}/plugins/fake-plugin/somewhere`);
+    const bare = await fetch(`${boot.baseUrl}${BASE}/plugins/fake-plugin?a=1`, { redirect: 'manual' });
+    assert.equal(bare.status, 301);
+    assert.equal(bare.headers.get('location'), `${BASE}/plugins/fake-plugin/?a=1`);
+  } finally { await boot.close(); }
+});
+
+test('base path: only the bridge and theme host URLs in HTML are re-rooted, with a correct content-length', async () => {
+  // Invariant: a legacy root-absolute plugin page loads its bridge and theme under the base; nothing else is touched.
+  const boot = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const r = await rawGet(port, `${BASE}/plugins/fake-plugin/legacy`);
+    const body = r.body.toString('utf8');
+    assert.match(body, /href="\/p\/q\/pluginTheme\.css"/);
+    assert.match(body, /src="\/p\/q\/pluginBridge\.js"/);
+    assert.match(body, /<p>\/pluginBridge\.js stays text<\/p>/);
+    assert.equal(Number(r.headers['content-length']), r.body.length);
+    const safe = (await rawGet(port, `${BASE}/plugins/fake-plugin/`)).body.toString('utf8');
+    assert.match(safe, /src="\.\.\/\.\.\/pluginBridge\.js"/);
+    const json = await rawGet(port, `${BASE}/plugins/fake-plugin/env`);
+    assert.equal(JSON.parse(json.body.toString('utf8')).pluginId, 'fake-plugin');
+  } finally { await boot.close(); }
+});
+
+test('base path: compressed HTML from a non-compliant child is piped untouched and warned once', async () => {
+  // Invariant: a degradation is visible (a warning), never silent corruption.
+  const boot = await setup({ basePath: BASE });
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => { warns.push(a.join(' ')); };
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    for (let i = 0; i < 2; i++) {
+      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/gzip-html`);
+      assert.equal(r.headers['content-encoding'], 'gzip');
+      assert.match(zlib.gunzipSync(r.body).toString(), /src="\/pluginBridge\.js"/);
+    }
+    assert.equal(warns.filter((w) => w.includes("plugin 'fake-plugin'")).length, 1);
+  } finally { console.warn = orig; await boot.close(); }
+});
+
+test('base path: a plugin WebSocket upgrades under the prefix', async () => {
+  const boot = await setup({ basePath: BASE });
+  try {
+    const ws = new WebSocket(boot.baseUrl.replace('http://', 'ws://') + `${BASE}/plugins/fake-plugin/ws-echo`);
+    const echoed = await new Promise((resolve, reject) => {
+      ws.on('open', () => ws.send('prefixed'));
+      ws.on('message', (d) => resolve(d.toString()));
+      ws.on('error', reject);
+      setTimeout(() => reject(new Error('ws echo timeout')), 15000).unref();
+    });
+    assert.equal(echoed, 'prefixed');
+    ws.close();
+  } finally { await boot.close(); }
+});
+
+test('no base: the proxy forwards exactly as before (prefix, encoding, body)', async () => {
+  // Invariant: with no CC_BASE_PATH nothing about a plugin request or response changes.
+  const boot = await setup();
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const h = JSON.parse((await rawGet(port, '/plugins/fake-plugin/request-headers', { 'accept-encoding': 'gzip' })).body.toString('utf8'));
+    assert.equal(h['x-forwarded-prefix'], '/plugins/fake-plugin');
+    assert.equal(h['accept-encoding'], 'gzip');
+    const legacy = (await rawGet(port, '/plugins/fake-plugin/legacy')).body.toString('utf8');
+    assert.match(legacy, /href="\/pluginTheme\.css"/);
+    assert.match(legacy, /src="\/pluginBridge\.js"/);
+  } finally { await boot.close(); }
 });

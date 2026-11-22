@@ -7,6 +7,7 @@
 // tool invocation with {result} or {error}; non-200 = transport failure).
 import http from 'node:http';
 import crypto from 'node:crypto';
+import zlib from 'node:zlib';
 
 const PORT = Number(process.env.PORT ?? 0); // standalone-runnable: defaults its own (ephemeral) port
 
@@ -27,8 +28,28 @@ const server = http.createServer(async (req, res) => {
   }
   if (url.pathname === '/') {
     res.writeHead(200, { 'content-type': 'text/html' });
-    res.end('<!doctype html><html><head><script src="/pluginBridge.js" defer></script></head>'
+    // Base-safe host URLs: relative, so they resolve under any hosting prefix.
+    res.end('<!doctype html><html><head><link rel="stylesheet" href="../../pluginTheme.css">'
+      + '<script src="../../pluginBridge.js" defer></script></head>'
       + '<body><h1>fake plugin</h1><img src="asset.svg" alt="asset"></body></html>');
+    return;
+  }
+  if (url.pathname === '/legacy') {
+    // Root-absolute host URLs, kept on purpose: the proxy rewrites them under a base path.
+    res.writeHead(200, { 'content-type': 'text/html' });
+    res.end('<!doctype html><html><head><link rel="stylesheet" href="/pluginTheme.css">'
+      + '<script src="/pluginBridge.js" defer></script></head>'
+      + '<body><h1>legacy plugin</h1><p>/pluginBridge.js stays text</p></body></html>');
+    return;
+  }
+  if (url.pathname === '/gzip-html') {
+    res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
+    res.end(zlib.gzipSync('<script src="/pluginBridge.js"></script>'));
+    return;
+  }
+  if (url.pathname === '/request-headers') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify(req.headers));
     return;
   }
   if (url.pathname === '/asset.svg') {

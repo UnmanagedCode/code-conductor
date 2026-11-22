@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { rewritePluginHostUrls } from '../src/plugins/proxy.ts';
 import { parseBasePath, stripBasePath } from '../src/basePath.ts';
 
 test('parseBasePath: unset, empty and "/" all mean root', () => {
@@ -34,4 +35,24 @@ test('stripBasePath: a bare base redirects to the trailing-slash form, query kep
 
 test('stripBasePath: with no base it is the identity', () => {
   assert.deepEqual(stripBasePath('', '/p/q/api'), { url: '/p/q/api' });
+});
+
+test('rewritePluginHostUrls: the bridge and theme attributes are re-rooted in both quote styles', () => {
+  const html = `<script src="/pluginBridge.js"></script><link href='/pluginTheme.css' rel=stylesheet>`;
+  assert.equal(rewritePluginHostUrls(html, '/p/q'),
+    `<script src="/p/q/pluginBridge.js"></script><link href='/p/q/pluginTheme.css' rel=stylesheet>`);
+});
+
+test('rewritePluginHostUrls: other URLs, look-alikes and text content are untouched', () => {
+  const html = `<script src="/pluginBridge.jsx"></script><img src="/a.png"><p>src="/pluginBridge.js" is text? no: /pluginBridge.js</p><script src="../../pluginBridge.js"></script>`;
+  const out = rewritePluginHostUrls(html, '/p/q');
+  assert.ok(out.includes('src="/pluginBridge.jsx"'));
+  assert.ok(out.includes('src="/a.png"'));
+  assert.ok(out.includes('/pluginBridge.js</p>'));
+  assert.ok(out.includes('src="../../pluginBridge.js"'));
+});
+
+test('rewritePluginHostUrls: no base is the identity', () => {
+  const html = '<script src="/pluginBridge.js"></script>';
+  assert.equal(rewritePluginHostUrls(html, ''), html);
 });

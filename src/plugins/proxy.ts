@@ -44,7 +44,19 @@ function jsonResponse(res: http.ServerResponse, status: number, body: unknown): 
   res.end(JSON.stringify(body));
 }
 
-export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLike | null }) {
+// The two host URLs a plugin page may reference root-absolute: its bridge and
+// the host theme. Under a base path they are re-rooted at the base; every other
+// URL, and text outside those two attribute values, is left alone.
+export function rewritePluginHostUrls(html: string, base: string): string {
+  if (base === '') return html;
+  return html.replace(/(\b(?:src|href)\s*=\s*)(["'])\/(pluginBridge\.js|pluginTheme\.css)\2/gi,
+    (_m, attr: string, q: string, file: string) => `${attr}${q}${base}/${file}${q}`);
+}
+
+export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: PluginHostProxyLike | null; basePath?: string }) {
+  // Plugins whose HTML came back compressed under a base: warned once each.
+  const warnedEncoded = new Set<string>();
+
   async function handler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (!pluginHost) return jsonResponse(res, 404, { error: 'plugins are not available' });
     const u = new URL(req.url ?? '', 'http://placeholder');
@@ -55,7 +67,7 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
     // Bare /plugins/<id> → /plugins/<id>/ so the child's relative asset
     // URLs resolve under its prefix.
     if (subpath === undefined) {
-      res.writeHead(301, { location: `/plugins/${id}/${u.search}` });
+      res.writeHead(301, { location: `${basePath}/plugins/${id}/${u.search}` });
       res.end();
       return;
     }
@@ -83,7 +95,11 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
       path: subpath + u.search,
       headers: {
         ...req.headers,
-        'x-forwarded-prefix': `/plugins/${id}`,
+        // Under a base the HTML is rewritten, so ask for it uncompressed (a
+        // loopback hop gains nothing from compression); the outer proxy can
+        // still compress toward the browser.
+        ...(basePath !== '' ? { 'accept-encoding': 'identity' } : {}),
+        'x-forwarded-prefix': `${basePath}/plugins/${id}`,
         'x-forwarded-host': req.headers.host ?? '',
         'x-forwarded-proto': 'http',
         'x-forwarded-for': req.socket.remoteAddress ?? '',
@@ -94,7 +110,29 @@ export function buildPluginProxy({ pluginHost }: { pluginHost: PluginHostProxyLi
       const headers = proxiedPluginHeaders(res, upRes.headers);
       // Root-relative redirects from the child point back into its prefix.
       if (typeof headers.location === 'string' && headers.location.startsWith('/')) {
-        headers.location = `/plugins/${id}${headers.location}`;
+        headers.location = `${basePath}/plugins/${id}${headers.location}`;
+      }
+      const isHtml = /^text\/html\b/i.test(String(upRes.headers['content-type'] ?? ''));
+      if (basePath !== '' && isHtml) {
+        const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
+        if (encoding !== 'identity') {
+          if (!warnedEncoded.has(id)) {
+            warnedEncoded.add(id);
+            console.warn(`plugin '${id}': HTML answered with content-encoding ${encoding} under a base path; host URLs are not rewritten`);
+          }
+        } else {
+          const chunks: Buffer[] = [];
+          upRes.on('data', (c: Buffer) => chunks.push(c));
+          upRes.on('end', () => {
+            const body = Buffer.from(rewritePluginHostUrls(Buffer.concat(chunks).toString('utf8'), basePath));
+            headers['content-length'] = String(body.length);
+            delete headers['transfer-encoding'];
+            res.writeHead(upRes.statusCode || 502, headers);
+            res.end(body);
+          });
+          upRes.on('error', () => res.destroy());
+          return;
+        }
       }
       res.writeHead(upRes.statusCode || 502, headers);
       upRes.pipe(res);
