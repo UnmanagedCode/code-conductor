@@ -287,6 +287,14 @@ test('stream-json, the reader closes mid-run: exit 3 well inside the settle wind
   const { code } = await run.closed;
   assert.ok(Date.now() - t0 < 15_000, `exited after ${Date.now() - t0} ms`);
   assert.equal(code, 3, run.out.stderr);
-  assert.match(run.out.stderr, /stdout closed/);
+  // The mid-run diagnostic (onStdoutError), distinct from finish's
+  // undelivered-result line, which also says "stdout closed".
+  const midRun = run.out.stderr.search(/headless: stdout closed \([^)]+\); ending the run\n/);
+  assert.ok(midRun >= 0, run.out.stderr);
+  // onStdoutError logs before run.fail; finish (and its delivery-failure line)
+  // only follows the run's async end. The later line is checked for order only:
+  // the process exits right after writing it.
+  const undelivered = run.out.stderr.indexOf('headless: the result was not delivered');
+  if (undelivered >= 0) assert.ok(midRun < undelivered, run.out.stderr);
   assert.doesNotMatch(run.out.stderr, /unexpected failure/);
 });
