@@ -427,6 +427,19 @@ describe('the root mount', () => {
     }
   });
 
+  it('the notification icon is resolved under the hosting prefix when the module loads there', async () => {
+    // Invariant: a cc hosted at /p/q/ shows its own icon, not one fetched from the host's root.
+    vi.resetModules();
+    (window as any).happyDOM.setURL('http://h/p/q/');
+    try {
+      const mod = await import('./notifications');
+      expect(mod.NOTIFICATION_ICON).toBe('/p/q/icon-192.png');
+    } finally {
+      (window as any).happyDOM.setURL('http://localhost:3000/');
+      vi.resetModules();
+    }
+  });
+
   it('a notification carries the icon served at the root', () => {
     __setSwRegistrationForTests(null);
     const created: { opts: NotificationOptions }[] = [];

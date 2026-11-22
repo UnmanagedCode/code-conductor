@@ -5,15 +5,36 @@ import type { NextFunction, Request, RequestHandler, Response } from 'express';
 // prefix is stripped from the request URL before routing, so every mount stays
 // at root and loopback callers (hook URLs, CONDUCTOR_URL, /mcp) keep working.
 
-// RFC 3986 pchar minus '%': a literal segment character.
-const SEGMENT_RE = /^[A-Za-z0-9\-._~!$&'()*+,;=:@]+$/;
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// RFC 3986 unreserved characters only: a base is spliced into rewritten HTML
+// attributes (rewritePluginHostUrls), so no quote, angle bracket or ampersand may ever pass.
+const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
+
+const WEB_PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'web', 'public');
+
+// The first path segments cc itself serves at root: the mounts of server.ts and
+// pluginThemeRouter, the upgrade dispatcher's /ws, the web build's asset dir
+// and index, and every file of web/public (copied to the build root).
+// tests/base-path.test.mjs checks the mounts against the source.
+const ROOT_MOUNTS = ['api', 'mcp', 'ws', 'plugins', 'pluginBridge.js', 'pluginTheme.css', 'pluginTheme', 'assets', 'index.html'];
+
+export function reservedRootSegments(publicDir: string = WEB_PUBLIC): Set<string> {
+  return new Set([...ROOT_MOUNTS, ...fs.readdirSync(publicDir)]);
+}
 
 // '' = root. Throws on a value that cannot be a path prefix.
-export function parseBasePath(raw?: string | null): string {
+export function parseBasePath(raw?: string | null, reserved: Set<string> = reservedRootSegments()): string {
   if (raw === undefined || raw === null || raw === '' || raw === '/') return '';
   if (!raw.startsWith('/')) throw new Error(`CC_BASE_PATH must start with '/': ${JSON.stringify(raw)}`);
   const trimmed = raw.endsWith('/') ? raw.slice(0, -1) : raw;
-  for (const seg of trimmed.slice(1).split('/')) {
+  const segments = trimmed.slice(1).split('/');
+  if (reserved.has(segments[0]!)) {
+    throw new Error(`CC_BASE_PATH ${JSON.stringify(raw)} starts with '${segments[0]}', a path cc serves at root`);
+  }
+  for (const seg of segments) {
     if (seg === '' || seg === '.' || seg === '..' || !SEGMENT_RE.test(seg)) {
       throw new Error(`CC_BASE_PATH has an invalid segment ${JSON.stringify(seg)}: ${JSON.stringify(raw)}`);
     }

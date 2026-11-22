@@ -8,6 +8,7 @@ import { WebSocket } from 'ws';
 import { bootServer, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
+import { REWRITE_BODY_CAP_BYTES } from '../src/plugins/proxy.ts';
 
 // Boot the full server (helpers tmp root) with the fake plugin installed as
 // a project and enabled — every test drives the real /plugins proxy.
@@ -292,12 +293,12 @@ test("proxy: cc-made proxy responses carry cc's policy", async (t) => {
 // ── hosted under a base path (CC_BASE_PATH) ──
 
 const BASE = '/p/q';
-const rawGet = (port, p, headers = {}) => new Promise((resolve, reject) => {
-  http.get({ host: '127.0.0.1', port, path: p, headers }, (res) => {
+const rawGet = (port, p, headers = {}, method = 'GET') => new Promise((resolve, reject) => {
+  http.request({ host: '127.0.0.1', port, path: p, headers, method }, (res) => {
     const chunks = [];
     res.on('data', (c) => chunks.push(c));
     res.on('end', () => resolve({ status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks) }));
-  }).on('error', reject);
+  }).on('error', reject).end();
 });
 
 test('base path: X-Forwarded-Prefix, Location and the bare-id redirect carry the base; upstream gets identity encoding', async () => {
@@ -379,4 +380,67 @@ test('no base: the proxy forwards exactly as before (prefix, encoding, body)', a
     assert.match(legacy, /href="\/pluginTheme\.css"/);
     assert.match(legacy, /src="\/pluginBridge\.js"/);
   } finally { await boot.close(); }
+});
+
+// The fake plugin's own port, to read what the child sent before the proxy touched it.
+const childPort = async (ccPort) => (await (await fetch(`http://127.0.0.1:${ccPort}/plugins/fake-plugin/env`)).json()).port;
+
+test('base path: a non-UTF-8 page comes through byte-identical except the two rewritten values', async () => {
+  // Invariant: the rewrite never decodes the body, so bytes >= 0x80 that are not UTF-8 survive.
+  const boot = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const plain = (await rawGet(await childPort(port), '/latin1')).body;
+    const viaBase = await rawGet(port, `${BASE}/plugins/fake-plugin/latin1`);
+    const expected = Buffer.from(plain.toString('latin1')
+      .replace('src="/pluginBridge.js"', `src="${BASE}/pluginBridge.js"`)
+      .replace('href="/pluginTheme.css"', `href="${BASE}/pluginTheme.css"`), 'latin1');
+    assert.notDeepEqual(viaBase.body, plain, 'fixture check: the page was rewritten');
+    assert.deepEqual(viaBase.body, expected);
+    assert.equal(Number(viaBase.headers['content-length']), expected.length);
+    assert.match(viaBase.headers['content-type'], /windows-1252/);
+  } finally { await boot.close(); }
+});
+
+test('base path: HEAD and body-less answers keep the upstream headers and are not rewritten', async () => {
+  // Invariant: a response with no body is neither buffered nor given a recomputed content-length.
+  const boot = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const direct = await rawGet(await childPort(port), '/sized-html', {}, 'HEAD');
+    const head = await rawGet(port, `${BASE}/plugins/fake-plugin/sized-html`, {}, 'HEAD');
+    assert.equal(head.status, 200);
+    assert.ok(Number(direct.headers['content-length']) > 0, 'fixture check: upstream names a length');
+    assert.equal(head.headers['content-length'], direct.headers['content-length']);
+    assert.equal(head.body.length, 0);
+    for (const status of [204, 304]) {
+      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/empty-html?status=${status}`);
+      assert.equal(r.status, status);
+      assert.equal(r.headers.etag, '"x"');
+      assert.equal(r.headers['content-length'], undefined, `${status} carries no recomputed length`);
+      assert.equal(r.body.length, 0);
+    }
+  } finally { await boot.close(); }
+});
+
+test('base path: HTML over the buffering cap streams untouched with one warning, declared length or chunked', async () => {
+  // Invariant: the proxy never buffers more than the cap; the over-cap page is intact and the degradation is logged once.
+  const boot = await setup({ basePath: BASE });
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => { warns.push(a.join(' ')); };
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const bytes = REWRITE_BODY_CAP_BYTES + 1024;
+    for (const chunked of ['0', '1']) {
+      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/big-html?bytes=${bytes}&chunked=${chunked}`);
+      const text = r.body.toString('latin1');
+      assert.equal(r.body.length, bytes, `chunked=${chunked}: whole body arrives`);
+      assert.ok(text.startsWith('<script src="/pluginBridge.js">') && text.endsWith('<script src="/pluginBridge.js"></script>'), `chunked=${chunked}: untouched`);
+      if (chunked === '0') assert.equal(Number(r.headers['content-length']), bytes);
+    }
+    const small = await rawGet(port, `${BASE}/plugins/fake-plugin/big-html?bytes=2048&chunked=1`);
+    assert.match(small.body.toString('latin1'), /^<script src="\/p\/q\/pluginBridge\.js">/, 'under the cap is rewritten');
+    assert.equal(warns.filter((w) => w.includes("plugin 'fake-plugin'") && w.includes('cap')).length, 1);
+  } finally { console.warn = orig; await boot.close(); }
 });

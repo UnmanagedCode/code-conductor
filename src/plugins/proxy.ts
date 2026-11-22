@@ -45,17 +45,29 @@ function jsonResponse(res: http.ServerResponse, status: number, body: unknown): 
 }
 
 // The two host URLs a plugin page may reference root-absolute: its bridge and
-// the host theme. Under a base path they are re-rooted at the base; every other
-// URL, and text outside those two attribute values, is left alone.
-export function rewritePluginHostUrls(html: string, base: string): string {
+// the host theme. Under a base path, every byte sequence shaped like
+// `src="/pluginBridge.js"` or `href='/pluginTheme.css'` (either quote) is
+// re-rooted at the base. The match is by bytes, not markup: the same sequence in
+// text or a script string is rewritten too, and nothing else is touched. Both
+// targets are ASCII, so the body is read as latin1 (one char per byte) and every
+// other byte, whatever the page's charset, comes through identical.
+export function rewritePluginHostUrls(html: Buffer, base: string): Buffer {
   if (base === '') return html;
-  return html.replace(/(\b(?:src|href)\s*=\s*)(["'])\/(pluginBridge\.js|pluginTheme\.css)\2/gi,
-    (_m, attr: string, q: string, file: string) => `${attr}${q}${base}/${file}${q}`);
+  return Buffer.from(html.toString('latin1').replace(/(\b(?:src|href)\s*=\s*)(["'])\/(pluginBridge\.js|pluginTheme\.css)\2/gi,
+    (_m, attr: string, q: string, file: string) => `${attr}${q}${base}/${file}${q}`), 'latin1');
 }
 
+// The most HTML body the proxy buffers to rewrite; beyond it the page streams untouched.
+export const REWRITE_BODY_CAP_BYTES = 4 * 1024 * 1024;
+
 export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: PluginHostProxyLike | null; basePath?: string }) {
-  // Plugins whose HTML came back compressed under a base: warned once each.
-  const warnedEncoded = new Set<string>();
+  // `<plugin id>:<reason>` already warned about: each degradation is logged once per plugin.
+  const warned = new Set<string>();
+  const warnOnce = (id: string, reason: 'encoded' | 'oversize', text: string) => {
+    if (warned.has(`${id}:${reason}`)) return;
+    warned.add(`${id}:${reason}`);
+    console.warn(`plugin '${id}': ${text}; host URLs are not rewritten`);
+  };
 
   async function handler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (!pluginHost) return jsonResponse(res, 404, { error: 'plugins are not available' });
@@ -112,24 +124,40 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
       if (typeof headers.location === 'string' && headers.location.startsWith('/')) {
         headers.location = `${basePath}/plugins/${id}${headers.location}`;
       }
+      const status = upRes.statusCode || 502;
       const isHtml = /^text\/html\b/i.test(String(upRes.headers['content-type'] ?? ''));
-      if (basePath !== '' && isHtml) {
+      const hasBody = req.method !== 'HEAD' && status !== 204 && status !== 304 && status >= 200;
+      if (basePath !== '' && isHtml && hasBody) {
         const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
+        const declared = Number(upRes.headers['content-length']);
         if (encoding !== 'identity') {
-          if (!warnedEncoded.has(id)) {
-            warnedEncoded.add(id);
-            console.warn(`plugin '${id}': HTML answered with content-encoding ${encoding} under a base path; host URLs are not rewritten`);
-          }
+          warnOnce(id, 'encoded', `HTML answered with content-encoding ${encoding} under a base path`);
+        } else if (declared > REWRITE_BODY_CAP_BYTES) {
+          warnOnce(id, 'oversize', `HTML of ${declared} bytes exceeds the ${REWRITE_BODY_CAP_BYTES}-byte rewrite cap`);
         } else {
           const chunks: Buffer[] = [];
-          upRes.on('data', (c: Buffer) => chunks.push(c));
-          upRes.on('end', () => {
-            const body = Buffer.from(rewritePluginHostUrls(Buffer.concat(chunks).toString('utf8'), basePath));
+          let size = 0;
+          const onData = (c: Buffer) => {
+            chunks.push(c);
+            size += c.length;
+            if (size <= REWRITE_BODY_CAP_BYTES) return;
+            // Over the cap with no declared length: stop buffering, send what is held, stream the rest.
+            upRes.off('data', onData);
+            upRes.off('end', onEnd);
+            warnOnce(id, 'oversize', `HTML exceeds the ${REWRITE_BODY_CAP_BYTES}-byte rewrite cap`);
+            res.writeHead(status, headers);
+            res.write(Buffer.concat(chunks));
+            upRes.pipe(res);
+          };
+          const onEnd = () => {
+            const body = rewritePluginHostUrls(Buffer.concat(chunks), basePath);
             headers['content-length'] = String(body.length);
             delete headers['transfer-encoding'];
-            res.writeHead(upRes.statusCode || 502, headers);
+            res.writeHead(status, headers);
             res.end(body);
-          });
+          };
+          upRes.on('data', onData);
+          upRes.on('end', onEnd);
           upRes.on('error', () => res.destroy());
           return;
         }

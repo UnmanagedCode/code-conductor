@@ -39,7 +39,7 @@ Load both in the page's `<head>`:
 - **The token names are the custom properties in `web/src/themeTokens.css`**, which the served sheet carries.
 - **The served sheet is unlayered.** It wins over anything the page declares inside `@layer`, whatever the source order.
 - **No theme toggle of the plugin's own.** A plugin-side toggle stops the page following the host.
-- **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `/pluginTheme/fonts/…` on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
+- **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `pluginTheme/fonts/…`, relative to the sheet, on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
 
 ## Follow the session width
 

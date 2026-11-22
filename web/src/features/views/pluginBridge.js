@@ -41,8 +41,8 @@
   'use strict';
   if (window.self === window.top) return;
   // The plugin's mount, `<cc base>/plugins/<id>`. cc's base is the directory of
-  // the parent page (same origin, so readable); that keeps the right id when cc
-  // is itself hosted under another cc's /plugins/<id>/. Without a readable
+  // the parent page (same origin, so readable); that keeps the right id when the
+  // page directory itself contains a /plugins/<id>/ segment (a host that mounts cc there). Without a readable
   // parent, the first /plugins/<id> in the path.
   var pathname = window.location.pathname;
   var prefix = '';

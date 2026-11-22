@@ -42,6 +42,45 @@ const server = http.createServer(async (req, res) => {
       + '<body><h1>legacy plugin</h1><p>/pluginBridge.js stays text</p></body></html>');
     return;
   }
+  if (url.pathname === '/latin1') {
+    // A non-UTF-8 page: bytes >= 0x80 that are not valid UTF-8 sit around the two host URLs.
+    res.writeHead(200, { 'content-type': 'text/html; charset=windows-1252' });
+    res.end(Buffer.concat([
+      Buffer.from('<!doctype html><meta charset="windows-1252"><p>caf'),
+      Buffer.from([0xe9, 0xff, 0x80, 0xc3]),
+      Buffer.from('</p><script src="/pluginBridge.js"></script><link href="/pluginTheme.css"><p>'),
+      Buffer.from([0xa3, 0xfe]),
+      Buffer.from('</p>'),
+    ]));
+    return;
+  }
+  if (url.pathname === '/sized-html') {
+    // An explicit content-length, which a HEAD answer repeats with no body.
+    const body = '<!doctype html><script src="/pluginBridge.js"></script>';
+    res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(Buffer.byteLength(body)) });
+    res.end(body);
+    return;
+  }
+  if (url.pathname === '/empty-html') {
+    // Body-less answers that still name an HTML content type.
+    res.writeHead(Number(url.searchParams.get('status')), { 'content-type': 'text/html', etag: '"x"' });
+    res.end();
+    return;
+  }
+  if (url.pathname === '/big-html') {
+    // `bytes` of HTML starting and ending with a root-absolute bridge URL; declared length or chunked.
+    const bytes = Number(url.searchParams.get('bytes'));
+    const open = '<script src="/pluginBridge.js"></script>';
+    const close = '<script src="/pluginBridge.js"></script>';
+    const pad = Buffer.alloc(bytes - open.length - close.length, 0x61);
+    const headers = { 'content-type': 'text/html' };
+    if (url.searchParams.get('chunked') !== '1') headers['content-length'] = String(bytes);
+    res.writeHead(200, headers);
+    res.write(open);
+    for (let off = 0; off < pad.length; off += 65536) res.write(pad.subarray(off, off + 65536));
+    res.end(close);
+    return;
+  }
   if (url.pathname === '/gzip-html') {
     res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
     res.end(zlib.gzipSync('<script src="/pluginBridge.js"></script>'));
