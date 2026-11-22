@@ -1,5 +1,6 @@
 import http from 'node:http';
 import net from 'node:net';
+import type { Duplex } from 'node:stream';
 import type { AddressInfo } from 'node:net';
 import type { Frame, Page } from '@playwright/test';
 import { test, expect, type Cc } from './harness/fixtures.ts';
@@ -18,7 +19,7 @@ type Proxy = { url: string; escaped: string[]; close(): Promise<void> };
 async function makeProxy(cc: Cc, mode: 'strip' | 'pass'): Promise<Proxy> {
   const escaped: string[] = [];
   // Upgraded sockets leave the server's own connection tracking, so closing waits on them unless destroyed here.
-  const upgraded = new Set<net.Socket>();
+  const upgraded = new Set<Duplex>();
   const target = (url: string) => (mode === 'strip' ? url.slice(BASE.length) || '/' : url);
   const underBase = (url: string) => url === BASE || url.startsWith(`${BASE}/`) || url.startsWith(`${BASE}?`);
   const server = http.createServer((req, res) => {
