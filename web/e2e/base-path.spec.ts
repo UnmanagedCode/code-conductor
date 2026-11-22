@@ -17,6 +17,8 @@ type Proxy = { url: string; escaped: string[]; close(): Promise<void> };
 /** A host on its own origin: `/p/q/*` goes to cc (stripped or as-is), `/embed` frames cc, anything else 404s and is recorded. */
 async function makeProxy(cc: Cc, mode: 'strip' | 'pass'): Promise<Proxy> {
   const escaped: string[] = [];
+  // Upgraded sockets leave the server's own connection tracking, so closing waits on them unless destroyed here.
+  const upgraded = new Set<net.Socket>();
   const target = (url: string) => (mode === 'strip' ? url.slice(BASE.length) || '/' : url);
   const underBase = (url: string) => url === BASE || url.startsWith(`${BASE}/`) || url.startsWith(`${BASE}?`);
   const server = http.createServer((req, res) => {
@@ -46,13 +48,14 @@ async function makeProxy(cc: Cc, mode: 'strip' | 'pass'): Promise<Proxy> {
       up.pipe(socket);
       socket.pipe(up);
     });
+    upgraded.add(socket);
     up.on('error', () => socket.destroy());
     socket.on('error', () => up.destroy());
-    socket.on('close', () => up.destroy());
+    socket.on('close', () => { upgraded.delete(socket); up.destroy(); });
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { url, escaped, close: () => new Promise<void>((resolve) => { server.closeAllConnections(); server.close(() => resolve()); }) };
+  return { url, escaped, close: () => new Promise<void>((resolve) => { for (const s of upgraded) s.destroy(); server.closeAllConnections(); server.close(() => resolve()); }) };
 }
 
 const pluginFrame = (page: Page): Frame | undefined =>
