@@ -5,7 +5,7 @@ The server entry, the instance and its manager, the idle-wake, overage and renew
 ## `server.ts`
 
 the entry block hands an argv carrying a headless flag to `headlessMain` (see Headless mode) and otherwise boots the server.
-Express + ws boot, `app.disable('x-powered-by')` → `hostSecurityHeaders()` → mounts `/api` → `/mcp` → `/plugins` (reverse proxy) → `GET /pluginBridge.js` (`web/src/features/views/pluginBridge.js`, served from its source, so with no build in place) → `pluginThemeRouter()` (`GET /pluginTheme.css` + `/pluginTheme/fonts/…`, `src/pluginTheme.ts`, also served from sources) → `webHandler()` at the root (the web UI), binds `127.0.0.1:8787`.
+Express + ws boot, `app.disable('x-powered-by')` → `hostSecurityHeaders()` → `basePathMiddleware` (strips `CC_BASE_PATH`, a no-op at root) → mounts `/api` → `/mcp` → `/plugins` (reverse proxy) → `GET /pluginBridge.js` (`web/src/features/views/pluginBridge.js`, served from its source, so with no build in place) → `pluginThemeRouter()` (`GET /pluginTheme.css` + `/pluginTheme/fonts/…`, `src/pluginTheme.ts`, also served from sources) → `webHandler()` at the root (the web UI), binds `127.0.0.1:8787`.
 The API, MCP and plugin mounts come first, so the UI mount cannot shadow them.
 `createServer({webDistDir})` is a test-only seam handing `webHandler` another dist dir (`tests/web-routes.test.mjs` boots on an empty one through `bootServer({ webDistDir })`, `tests/helpers.mjs`); production serves `web/dist`.
 `start({buildWeb, syncDeps, webBuild = ensureWebBuild})` fires `webBuild()` after the server is listening unless `buildWeb` is false (`CC_SKIP_WEB_BUILD`); `webBuild` is injectable so a test can observe the call.
@@ -28,7 +28,7 @@ the cross-site WebSocket hijacking guard: `upgradeOriginAllowed(headers)` (the p
 
 ## `src/pluginTheme.ts`
 
-the host theme for plugin pages: `composePluginTheme()` builds `/pluginTheme.css` per request from the installed Geist fontsource packages' `index.css` (their `url(./files/…)` rewritten to `/pluginTheme/fonts/<pkg>/<file>`, throwing when a package yields none) and `web/src/themeTokens.css`; `pluginThemeRouter()` serves it (a compose failure is logged and answered `503 text/plain` with a fixed body) and the allowlisted `.woff2` files (`FONT_PACKAGES`); both take `tokensFile` and `fontDirs` (URL segment → package directory) test seams. Contract: [plugins/runtime.md](../plugins/runtime.md) → Theme stylesheet.
+the host theme for plugin pages: `composePluginTheme()` builds `/pluginTheme.css` per request from the installed Geist fontsource packages' `index.css` (their `url(./files/…)` rewritten to the sheet-relative `url(pluginTheme/fonts/<pkg>/<file>)`, which resolves to the font route under whatever prefix serves the sheet, throwing when a package yields none) and `web/src/themeTokens.css`; `pluginThemeRouter()` serves it (a compose failure is logged and answered `503 text/plain` with a fixed body) and the allowlisted `.woff2` files (`FONT_PACKAGES`); both take `tokensFile` and `fontDirs` (URL segment → package directory) test seams. Contract: [plugins/runtime.md](../plugins/runtime.md) → Theme stylesheet.
 
 ## `src/instances.ts`
 

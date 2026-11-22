@@ -16,7 +16,7 @@ export const NOT_IN_REPO = {
   // Linux kernel / libc names
   linux: ['CAP_DAC_READ_SEARCH', 'SO_PEERCRED'],
   // Browser DOM APIs
-  dom: ['EventSource', 'insertAdjacentHTML', 'hasFocus', 'audioWorklet', 'addModule'],
+  dom: ['insertAdjacentHTML', 'hasFocus', 'audioWorklet', 'addModule'],
   // React
   react: ['IS_REACT_ACT_ENVIRONMENT'],
   // react-markdown

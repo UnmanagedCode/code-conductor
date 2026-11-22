@@ -48,7 +48,7 @@ export async function makeTmpHome() {
 // `home` boots on an existing tmp home (one makeTmpHome made) instead of a fresh
 // one, and `keepHome` (here or as `close({keepHome})`) leaves the home on disk
 // at close — so two boots in a row can share one store, as a restart does.
-export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch, codeModeTiming, home, keepHome = false } = {}) {
+export async function bootServer({ scenarioPath, useRealClaude = false, realProcess = false, claudeLauncher: claudeLauncherOverride, platform, webDistDir, eventLogLease, relaunch, codeModeTiming, home, keepHome = false, basePath } = {}) {
   // Reset the projects git-facts cache so stale entries from a previous test
   // can't bleed into this one. TTL=0 gives pure-coalescing semantics:
   // concurrent requests coalesce but sequential requests always recompute,
@@ -88,7 +88,7 @@ export async function bootServer({ scenarioPath, useRealClaude = false, realProc
   // subprocess is spawned, but swaps the launcher itself).
   if (claudeLauncherOverride) claudeLauncher = claudeLauncherOverride;
 
-  const { server, wss, instances, pluginHost, pluginLibrary, runningRecorder, pendingContinue } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch, codeModeTiming });
+  const { server, wss, instances, pluginHost, pluginLibrary, runningRecorder, pendingContinue } = createServer({ claudeLauncher, platform, webDistDir, eventLogLease, relaunch, codeModeTiming, basePath });
   await new Promise((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

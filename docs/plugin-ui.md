@@ -21,12 +21,13 @@ Load both in the page's `<head>`:
 
 | URL | Load as | Provides |
 |---|---|---|
-| `/pluginBridge.js` | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme and session-width sync onto `<html>` before first paint; the history contract below; route reporting to cc; optional session awareness (`window.ccBridge`) |
-| `/pluginTheme.css` | Stylesheet `<link>` | cc's palette tokens (`:root` and `.dark` custom properties) and the Geist `@font-face` rules |
+| `/pluginBridge.js` (written `../../pluginBridge.js` from a page at the plugin root) | Blocking classic script (no `defer`/`async`), first in `<head>` | Theme and session-width sync onto `<html>` before first paint; the history contract below; route reporting to cc; optional session awareness (`window.ccBridge`) |
+| `/pluginTheme.css` (written `../../pluginTheme.css` from a page at the plugin root) | Stylesheet `<link>` | cc's palette tokens (`:root` and `.dark` custom properties) and the Geist `@font-face` rules |
 
-- These are the only root-relative URLs a plugin page uses (plus the font files the sheet names).
+- **Write them base-safe.** cc may be hosted under a path prefix (`CC_BASE_PATH`, [rest-settings.md](protocol/rest-settings.md#base-path-and-reverse-proxies)), where `/pluginBridge.js` would resolve to the host's root. From a page at `/plugins/<id>/` the relative form `../../pluginBridge.js` / `../../pluginTheme.css` resolves under any prefix, with one more `../` per nested directory; a page built by the backend can use `<X-Forwarded-Prefix>/../../pluginBridge.js`. The root-absolute form still works: under a base path cc's plugin proxy rewrites exactly the `src`/`href` values `"/pluginBridge.js"` and `"/pluginTheme.css"` in HTML responses ([plugins/runtime.md](plugins/runtime.md) → Reverse proxy), and at root nothing changes.
+- These are the only host URLs a plugin page uses (the font files the sheet names are relative to the sheet).
 - Standalone (not in a frame, or not under `/plugins/<id>/`) the bridge does nothing, and both URLs answer 404 from the plugin's own server.
-- **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL: they are root-relative, so they would resolve to its own server, which answers them 404. It relies on its own fallback theme.
+- **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL: the relative or root-relative URL would resolve to its own server, which answers them 404. It relies on its own fallback theme.
 - Wire detail: [docs/plugins/runtime.md](plugins/runtime.md) → Bridge protocol, Theme stylesheet.
 
 ## Follow the host theme
@@ -38,7 +39,7 @@ Load both in the page's `<head>`:
 - **The token names are the custom properties in `web/src/themeTokens.css`**, which the served sheet carries.
 - **The served sheet is unlayered.** It wins over anything the page declares inside `@layer`, whatever the source order.
 - **No theme toggle of the plugin's own.** A plugin-side toggle stops the page following the host.
-- **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `/pluginTheme/fonts/…` on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
+- **A restrictive CSP must let the host assets through.** Under `default-src 'none'`, the sheet needs `style-src 'self'`, its Geist fonts (served from `pluginTheme/fonts/…`, relative to the sheet, on the same origin) need `font-src 'self'`, and the bridge needs `script-src 'self'`. Without `font-src` the fonts are blocked silently and the page falls back to the system font. A policy example: [Part 2](#part-2--security-strongly-recommended).
 
 ## Follow the session width
 
@@ -146,8 +147,8 @@ What cc runs on Library **Install** and **Update**:
 
 ## Contract checks
 
-- [ ] The page loads `/pluginBridge.js` (blocking, first in `<head>`) and `/pluginTheme.css`.
-- [ ] Every asset, API and WebSocket URL is relative; no root-relative URL other than the two host URLs.
+- [ ] The page loads the bridge (blocking, first in `<head>`) and the theme by the base-safe URLs above.
+- [ ] Every asset, API and WebSocket URL is relative; no root-relative URL (the two host URLs use the `../../` form).
 - [ ] The page follows the sidebar theme toggle live in cc, and the OS theme while cc's theme is "system". It has no toggle of its own.
 - [ ] Content width uses `var(--cc-session-width, <fallback>)` if the page caps its width.
 - [ ] Navigation adds no history entry beyond cc's one: Back from the plugin returns to cc.
@@ -416,8 +417,8 @@ export default defineConfig({
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <script src="/pluginBridge.js" vite-ignore></script>
-    <link rel="stylesheet" href="/pluginTheme.css" vite-ignore />
+    <script src="../../pluginBridge.js" vite-ignore></script>
+    <link rel="stylesheet" href="../../pluginTheme.css" vite-ignore />
     <script src="theme-init.js" vite-ignore></script>
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>My plugin</title>

@@ -30,6 +30,7 @@
 // `ready` and the id-carrying session calls (`openSession` / `sendPrompt`) from
 // any known frame go to the BridgeHandler (pluginSession.ts); `broadcast` posts
 // to every frame, hidden resident ones included.
+import { appUrl } from '@shared/appUrl';
 import { ApiError, apiFetch, apiResponse, readApiBody } from '@shared/http';
 import { createSignal, createStore } from '@/state/createStore';
 import { replaceHash, viewLinkHash } from '@/state/route';
@@ -136,7 +137,7 @@ class PluginFrames {
       if (this.current === target) this.setOverlay(null);
     });
     f.style.visibility = 'hidden';
-    f.src = `/plugins/${target.id}${target.subpath}`;
+    f.src = appUrl(`/plugins/${target.id}${target.subpath}`);
     this.host?.appendChild(f);
     this.shared = f;
     this.sharedTarget = target;
@@ -187,7 +188,7 @@ class PluginFrames {
       if (this.current === record) this.setOverlay(null);
     });
     frame.style.visibility = 'hidden';
-    frame.src = `/plugins/${target.id}${target.subpath}`;
+    frame.src = appUrl(`/plugins/${target.id}${target.subpath}`);
     this.host?.appendChild(frame);
     this.resident.set(target.id, record);
     this.current = record;

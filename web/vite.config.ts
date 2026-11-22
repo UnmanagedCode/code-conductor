@@ -19,6 +19,8 @@ const MARKDOWN_PACKAGES = new RegExp(`[\\\\/]node_modules[\\\\/](${[
 
 export default defineConfig({
   root: here,
+  // Relative URLs, so one build serves at root or under any hosting prefix (CC_BASE_PATH); the client derives its base from the page URL (shared/appUrl.ts).
+  base: './',
   plugins: [react(), tailwindcss()],
   resolve: {
     // The modules shared with the server and the node tests live in ../shared;

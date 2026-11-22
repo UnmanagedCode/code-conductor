@@ -3,6 +3,7 @@
 // Exposes a single `bus` event target whose events mirror server messages
 // plus connection-state ('open' / 'close' / 'reconnecting').
 
+import { appUrl } from './appUrl.ts';
 import type { ServerFrame, AckFrame } from './wsFrames.ts';
 
 // Each bus event name is a frame's `t`; `detail` is the frame. The connection
@@ -24,7 +25,7 @@ const pending = new Map<string, { resolve: (msg: AckFrame) => void; reject: (e: 
 
 export function connect(): void {
   cleanup();
-  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws`;
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${appUrl('/ws')}`;
   ws = new WebSocket(url);
   ws.addEventListener('open', () => bus.dispatchEvent(new CustomEvent('open')));
   ws.addEventListener('close', () => {

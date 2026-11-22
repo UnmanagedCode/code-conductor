@@ -403,10 +403,40 @@ describe('the root mount', () => {
     Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register, ready: Promise.resolve(reg) } });
     try {
       expect(await registerServiceWorker()).toBe(reg);
-      expect(register).toHaveBeenCalledWith('/sw.js');
+      expect(register).toHaveBeenCalledWith('/sw.js', { scope: '/' });
     } finally {
       delete (navigator as any).serviceWorker;
       __setSwRegistrationForTests(null);
+    }
+  });
+
+  it('registers under the hosting prefix with the prefix as scope', async () => {
+    // Invariant: a cc hosted at /p/q/ registers its own worker, scoped to its own directory, not the host's root.
+    __setSwRegistrationForTests(null);
+    const reg = {} as ServiceWorkerRegistration;
+    const register = vi.fn(async () => reg);
+    Object.defineProperty(navigator, 'serviceWorker', { configurable: true, value: { register, ready: Promise.resolve(reg) } });
+    (window as any).happyDOM.setURL('http://h/p/q/');
+    try {
+      await registerServiceWorker();
+      expect(register).toHaveBeenCalledWith('/p/q/sw.js', { scope: '/p/q/' });
+    } finally {
+      (window as any).happyDOM.setURL('http://localhost:3000/');
+      delete (navigator as any).serviceWorker;
+      __setSwRegistrationForTests(null);
+    }
+  });
+
+  it('the notification icon is resolved under the hosting prefix when the module loads there', async () => {
+    // Invariant: a cc hosted at /p/q/ shows its own icon, not one fetched from the host's root.
+    vi.resetModules();
+    (window as any).happyDOM.setURL('http://h/p/q/');
+    try {
+      const mod = await import('./notifications');
+      expect(mod.NOTIFICATION_ICON).toBe('/p/q/icon-192.png');
+    } finally {
+      (window as any).happyDOM.setURL('http://localhost:3000/');
+      vi.resetModules();
     }
   });
 

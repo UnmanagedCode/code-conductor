@@ -31,14 +31,15 @@ type FontDirs = Record<string, string>;
 const installedFontDirs = (): FontDirs =>
   Object.fromEntries(Object.entries(FONT_PACKAGES).map(([seg, pkg]) => [seg, packageDir(pkg)]));
 
-/** One font package's @font-face rules, its `url(./files/X)` references rewritten to the font route. Throws when it rewrote none (a fontsource layout change). */
+/** One font package's @font-face rules, its `url(./files/X)` references rewritten to the font route, relative to the sheet. Throws when it rewrote none (a fontsource layout change). */
 async function fontFaces(segment: string, dir: string): Promise<string> {
   const file = path.join(dir, 'index.css');
   const css = await fs.readFile(file, 'utf8');
   let rewritten = 0;
   const out = css.replace(/url\(\.\/files\/([^)]+)\)/g, (_m, name: string) => {
     rewritten++;
-    return `url(/pluginTheme/fonts/${segment}/${name})`;
+    // Relative to the sheet, so it resolves under any hosting prefix.
+    return `url(pluginTheme/fonts/${segment}/${name})`;
   });
   if (rewritten === 0) throw new Error(`pluginTheme: ${file} has no url(./files/…) to serve`);
   return out;

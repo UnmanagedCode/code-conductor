@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { ArrowDownIcon, LoaderCircleIcon, HistoryIcon } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { appUrl } from '@shared/appUrl';
 import { followViewLink } from '@/components/viewLinks';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
@@ -59,9 +60,11 @@ export function ConversationView({ empty }: { empty?: React.ReactNode }) {
 
   const activeId = inst?.id ?? null;
   // An ended pane has no instance to serve its attachments: they are addressed by session.
-  const attachmentBase = inst?.ended && inst.sessionId
+  const attachmentPath = inst?.ended && inst.sessionId
     ? `/api/sessions/${encodeURIComponent(inst.sessionId)}/attachments/`
     : activeId ? `/api/instances/${encodeURIComponent(activeId)}/attachments/` : null;
+  // Used as an <img>/<a> URL, which bypasses apiResponse: resolve it under the hosting prefix here.
+  const attachmentBase = attachmentPath ? appUrl(attachmentPath) : null;
   const showCallUsage = !!inst?.sessionId && !!callUsage[inst.sessionId];
   const status = inst?.status ?? null;
 

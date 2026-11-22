@@ -148,6 +148,11 @@ test('the served plugin theme, booted with no build', async (t) => {
       // Invariant: the fonts the recipe names are served, and the recipe's @theme inline mapping is the host's.
       const fontUrls = urls(sheet);
       assert.ok(fontUrls.length > 0, 'the sheet references font files');
+      // Invariant: font URLs are sheet-relative, so they land under the sheet's own directory whatever prefix hosts it.
+      for (const u of fontUrls) {
+        assert.equal(new URL(u, 'http://h/p/q/pluginTheme.css').pathname.startsWith('/p/q/pluginTheme/fonts/'), true, u);
+        assert.equal(new URL(u, 'http://h/pluginTheme.css').pathname.startsWith('/pluginTheme/fonts/'), true, u);
+      }
       for (const u of fontUrls) {
         const f = await fetch(new URL(u, baseUrl + '/pluginTheme.css'));
         assert.equal(f.status, 200, u);
