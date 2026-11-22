@@ -28,6 +28,33 @@ test("parseBasePath: no HTML- or attribute-significant character is ever accepte
   assert.equal(parseBasePath('/a.b_c~d-9/Z'), '/a.b_c~d-9/Z');
 });
 
+test('parseBasePath: with no base the reserved set is never built, so nothing touches the filesystem', () => {
+  // Invariant: an unset base boots unchanged even where web/public is absent.
+  const boom = () => { throw new Error('reserved set read'); };
+  for (const v of [undefined, null, '', '/']) assert.equal(parseBasePath(v, boom), '', String(v));
+  assert.throws(() => parseBasePath('/x', boom), /reserved set read/, 'fixture check: a set base does read it');
+});
+
+test('reservedRootSegments: an unreadable web/public degrades to the mounts alone, with a warning', () => {
+  const warns = [];
+  const orig = console.warn;
+  console.warn = (...a) => { warns.push(a.join(' ')); };
+  try {
+    const set = reservedRootSegments('/nonexistent/web/public');
+    assert.ok(set.has('api') && set.has('plugins'));
+    assert.equal(warns.length, 1);
+    assert.match(warns[0], /web\/public/);
+  } finally { console.warn = orig; }
+});
+
+test('parseBasePath: the reserved check ignores case, as Express routing does', () => {
+  // Invariant: /API would hide /API/health (served before), so a case variant of a root name is refused too.
+  for (const bad of ['/API', '/Mcp', '/PLUGINS', '/Plugins/cc2', '/Sw.js', '/ICON-192.PNG', '/Assets']) {
+    assert.throws(() => parseBasePath(bad), /CC_BASE_PATH/, bad);
+  }
+  assert.equal(parseBasePath('/Apps/Api'), '/Apps/Api');
+});
+
 test("parseBasePath: a first segment that cc serves at root is refused, deeper segments are not", () => {
   // Invariant: a base never shadows a root mount, so loopback callers' root URLs keep resolving.
   for (const bad of ['/api', '/api/x', '/mcp', '/ws', '/plugins', '/plugins/', '/plugins/Bad_Id', '/pluginBridge.js', '/pluginTheme.css', '/pluginTheme', '/sw.js', '/manifest.webmanifest', '/assets', '/icon-192.png', '/favicon-16.png', '/index.html']) {
@@ -56,10 +83,10 @@ test('reservedRootSegments covers every root mount server.ts and the plugin them
     for (const m of text.matchAll(re)) mounts.push(first(m[1]));
   }
   assert.ok(mounts.includes('api') && mounts.includes('pluginTheme.css'), 'fixture check: the scan finds the mounts');
-  for (const m of mounts.filter(Boolean)) assert.ok(reserved.has(m), `${m} is a root mount`);
+  for (const m of mounts.filter(Boolean)) assert.ok(reserved.has(m.toLowerCase()), `${m} is a root mount`);
   const pub = await fs.readdir(path.join(root, 'web', 'public'));
   assert.ok(pub.length > 0);
-  for (const f of pub) assert.ok(reserved.has(f), `${f} is a public file`);
+  for (const f of pub) assert.ok(reserved.has(f.toLowerCase()), `${f} is a public file`);
   assert.ok(reserved.has('ws'), '/ws is dispatched by the upgrade handler');
   assert.ok(reserved.has('assets'), "Vite's asset dir");
 });

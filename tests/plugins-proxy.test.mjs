@@ -444,3 +444,42 @@ test('base path: HTML over the buffering cap streams untouched with one warning,
     assert.equal(warns.filter((w) => w.includes("plugin 'fake-plugin'") && w.includes('cap')).length, 1);
   } finally { console.warn = orig; await boot.close(); }
 });
+
+test('base path: a 206 slice (or any Content-Range answer) is streamed untouched', async () => {
+  // Invariant: the rewrite never changes a partial body's length behind a Content-Range that describes the original.
+  const boot = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(boot.baseUrl).port);
+    const direct = await rawGet(await childPort(port), '/partial-html');
+    const via = await rawGet(port, `${BASE}/plugins/fake-plugin/partial-html`);
+    assert.equal(via.status, 206);
+    assert.deepEqual(via.body, direct.body);
+    assert.equal(via.headers['content-length'], direct.headers['content-length']);
+    assert.equal(via.headers['content-range'], direct.headers['content-range']);
+  } finally { await boot.close(); }
+});
+
+test('upstream abort mid-body ends the client response (reset), over the cap and with no base alike', async () => {
+  // Invariant: an upstream that dies mid-body never leaves the client hanging with neither end nor error.
+  const outcome = (port, p) => new Promise((resolve) => {
+    const timer = setTimeout(() => resolve('hang'), 8000);
+    const done = (v) => { clearTimeout(timer); resolve(v); };
+    http.get({ host: '127.0.0.1', port, path: p }, (res) => {
+      res.on('data', () => {});
+      res.on('end', () => done(res.complete ? 'complete' : 'truncated'));
+      res.on('error', () => done('reset'));
+      res.on('close', () => done(res.complete ? 'complete' : 'reset'));
+    }).on('error', () => done('reset'));
+  });
+  const over = REWRITE_BODY_CAP_BYTES + 4096;
+  const withBase = await setup({ basePath: BASE });
+  try {
+    const port = Number(new URL(withBase.baseUrl).port);
+    assert.equal(await outcome(port, `${BASE}/plugins/fake-plugin/abort-html?declared=${over}&sent=65536`), 'reset', 'over-cap declared length');
+  } finally { await withBase.close(); }
+  const noBase = await setup();
+  try {
+    const port = Number(new URL(noBase.baseUrl).port);
+    assert.equal(await outcome(port, '/plugins/fake-plugin/abort-html?declared=100000&sent=65536'), 'reset', 'no base');
+  } finally { await noBase.close(); }
+});

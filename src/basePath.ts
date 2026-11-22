@@ -24,19 +24,25 @@ const WEB_PUBLIC = path.join(path.dirname(fileURLToPath(import.meta.url)), '..',
 // tests/base-path.test.mjs checks the mounts against the source.
 const ROOT_MOUNTS = ['api', 'mcp', 'ws', 'plugins', 'pluginBridge.js', 'pluginTheme.css', 'pluginTheme', 'assets', 'index.html'];
 
+// Lowercase: Express routes case-insensitively, so `/API` reaches the same mount as `/api`.
+// A missing or unreadable web/public degrades to the mounts alone, with a warning.
 export function reservedRootSegments(publicDir: string = WEB_PUBLIC): Set<string> {
-  return new Set([...ROOT_MOUNTS, ...fs.readdirSync(publicDir)]);
+  let files: string[] = [];
+  try { files = fs.readdirSync(publicDir); }
+  catch (e) { console.warn(`CC_BASE_PATH: cannot read ${publicDir} (${(e as Error).message}); reserved names are the mounts only`); }
+  return new Set([...ROOT_MOUNTS, ...files].map((n) => n.toLowerCase()));
 }
 
 // '' = root. Throws on a value that cannot be a path prefix.
-export function parseBasePath(raw?: string | null, reserved: Set<string> = reservedRootSegments()): string {
+// `reservedOf` is read only when a base is set: no base never touches the filesystem.
+export function parseBasePath(raw?: string | null, reservedOf: () => Set<string> = reservedRootSegments): string {
   if (raw === undefined || raw === null || raw === '' || raw === '/') return '';
   if (!raw.startsWith('/')) throw new Error(`CC_BASE_PATH must start with '/': ${JSON.stringify(raw)}`);
   const trimmed = raw.endsWith('/') ? raw.slice(0, -1) : raw;
   const segments = trimmed.slice(1).split('/');
   // `/plugins/<id>[/…]` is the one reserved prefix a base may take: cc hosted as a plugin of another cc.
   const asPlugin = segments[0] === 'plugins' && segments.length >= 2 && PLUGIN_ID_RE.test(segments[1]!);
-  if (reserved.has(segments[0]!) && !asPlugin) {
+  if (reservedOf().has(segments[0]!.toLowerCase()) && !asPlugin) {
     throw new Error(`CC_BASE_PATH ${JSON.stringify(raw)} starts with '${segments[0]}', a path cc serves at root`);
   }
   for (const seg of segments) {

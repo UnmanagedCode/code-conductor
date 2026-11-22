@@ -124,9 +124,12 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
       if (typeof headers.location === 'string' && headers.location.startsWith('/')) {
         headers.location = `${basePath}/plugins/${id}${headers.location}`;
       }
+      // An upstream that aborts mid-body must end the client's response too, whichever branch carries it.
+      upRes.on('error', () => res.destroy());
       const status = upRes.statusCode || 502;
       const isHtml = /^text\/html\b/i.test(String(upRes.headers['content-type'] ?? ''));
-      const hasBody = req.method !== 'HEAD' && status !== 204 && status !== 304 && status >= 200;
+      const hasBody = req.method !== 'HEAD' && status !== 204 && status !== 304 && status !== 206 && status >= 200
+        && upRes.headers['content-range'] === undefined;
       if (basePath !== '' && isHtml && hasBody) {
         const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
         const declared = Number(upRes.headers['content-length']);
@@ -158,7 +161,6 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
           };
           upRes.on('data', onData);
           upRes.on('end', onEnd);
-          upRes.on('error', () => res.destroy());
           return;
         }
       }

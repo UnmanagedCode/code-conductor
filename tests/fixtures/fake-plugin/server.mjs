@@ -81,6 +81,20 @@ const server = http.createServer(async (req, res) => {
     res.end(close);
     return;
   }
+  if (url.pathname === '/abort-html') {
+    // Declares more than it sends, then drops the connection mid-body.
+    res.writeHead(200, { 'content-type': 'text/html', 'content-length': url.searchParams.get('declared') });
+    res.write(Buffer.alloc(Number(url.searchParams.get('sent')), 0x61));
+    setTimeout(() => res.socket.destroy(), 50);
+    return;
+  }
+  if (url.pathname === '/partial-html') {
+    // A 206 slice of a larger HTML document: its length and Content-Range describe the original bytes.
+    const slice = '<script src="/pluginBridge.js"></script>';
+    res.writeHead(206, { 'content-type': 'text/html', 'content-range': `bytes 0-${slice.length - 1}/9999`, 'content-length': String(slice.length) });
+    res.end(slice);
+    return;
+  }
   if (url.pathname === '/gzip-html') {
     res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
     res.end(zlib.gzipSync('<script src="/pluginBridge.js"></script>'));

@@ -65,7 +65,7 @@ export const WALKS_REVIEWED = {
   'tests/plugin-theme.test.mjs': { sites: '968c0fa0 c0c8f1fa 58aa9cb6 c0c8f1fa 694e31cf d69fbcaa 45782442 a10d7e70', node: [], why: TEMP_ONLY('walks a temp decoy npm prefix') },
   'tests/e2e-harness-credentials.test.mjs': { sites: 'd9f3ee8f ef07bcd0 c47911ee 5141e561 fc4789d4 5141e561 b2474d28', node: [], why: TEMP_ONLY('walks a temp credentials dir') },
   'tests/env-registry.test.mjs': { sites: 'e3fe583e 935aff0a f7ce59a4 6ffffa1d 86e269a3', node: [], why: 'reads docs/environment.md, the docker port pins and web/vite.config.ts by name, which the basename row reaches; its production scan walks through scripts/env-reads.mjs' },
-  'src/basePath.ts': { sites: '91d788ab e6b3aeb3', node: ['web/public'], why: 'lists web/public, whose files the reserved-segment list must cover; web/dist is never read' },
+  'src/basePath.ts': { sites: '68fa494c e6b3aeb3', node: ['web/public'], why: 'lists web/public, whose files the reserved-segment list must cover; web/dist is never read' },
   'tests/base-path.test.mjs': { sites: '94455563 996deba4 87782f0b', node: ['web/public'], why: 'lists web/public (the public files the reserved-segment list must cover) and reads server.ts and src/pluginTheme.ts by name, which the basename row reaches' },
   'tests/web-routes.test.mjs': { sites: '7762d58e aafe3cc9', node: [], why: 'reads pluginBridge.js by its full path, which the closure already follows' },
   'tests/readme-logo.test.mjs': { sites: '7db18cb7 3524de89 0d3a62ac ae69bdb1', node: [], why: 'reads README.md and docs/assets/*.svg by name; the logoArt.ts import is the one web/ path whose reach the basename row does not already cover, which the closure already follows' },
