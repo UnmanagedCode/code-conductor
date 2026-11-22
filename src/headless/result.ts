@@ -1,9 +1,13 @@
-// The headless run's one stdout object and its exit codes — the single source
-// the entry (src/headless/entry.ts), the runner and the docs table read
-// (docs/protocol/headless.md → Headless run result).
+// The headless run's result, its exit codes and its output formats — the single
+// source the entry (src/headless/entry.ts), the runner and the docs tables read
+// (docs/protocol/headless.md → Headless run result, Output formats).
 
 import { constants } from 'node:os';
 import { ROOT_LOCK_HELD_EXIT } from '../rootLock.ts';
+
+// `--output-format`'s values; `json` is the default.
+export const OUTPUT_FORMATS = ['text', 'json', 'stream-json'] as const;
+export type OutputFormat = typeof OUTPUT_FORMATS[number];
 
 export type HeadlessReason = 'completed' | 'conductor_error' | 'signal' | 'usage_error' | 'root_held' | 'boot_failed';
 
@@ -40,4 +44,19 @@ export function bareResult(reason: Exclude<HeadlessReason, 'completed'>, error: 
 export function formatResult(r: HeadlessResult): string {
   const { reason, exitCode, sessionId, text, costUsd, durationMs, error } = r;
   return `${JSON.stringify({ reason, exitCode, sessionId, text, costUsd, durationMs, error })}\n`;
+}
+
+// The result as `format` prints it: stdout's bytes, plus a stderr line where the
+// format has no room for the error. `stream-json`'s is the stream's last line,
+// marked `cc_result` so it never reads as a CLI's per-turn `result`.
+export function renderResult(r: HeadlessResult, format: OutputFormat): { stdout: string; stderr: string | null } {
+  if (format === 'json') return { stdout: formatResult(r), stderr: null };
+  if (format === 'stream-json') {
+    const { reason, exitCode, sessionId, text, costUsd, durationMs, error } = r;
+    return { stdout: `${JSON.stringify({ type: 'cc_result', reason, exitCode, sessionId, text, costUsd, durationMs, error })}\n`, stderr: null };
+  }
+  return {
+    stdout: r.text === null ? '' : `${r.text}\n`,
+    stderr: r.error === null ? null : `headless: ${r.reason}: ${r.error}\n`,
+  };
 }

@@ -372,6 +372,11 @@ function rootSessionOf(caller: Instance | undefined): string | null {
   return caller.conducted ? caller.rootSessionId : caller.sessionId;
 }
 
+// Does `inst` carry `root`'s durable run attribution (rootSessionOf, above)?
+function attributedTo(root: InstanceLike, inst: InstanceLike): boolean {
+  return inst.conducted && !!root.sessionId && inst.rootSessionId === root.sessionId;
+}
+
 // An instance with a process attached, or inside a window where one is coming
 // back (a prune's kill→relaunch under rotationPending, a rewind / prune / model
 // switch / respawn under `_relaunching`). The single PER-INSTANCE form of "is
@@ -2815,6 +2820,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     // stdout drains, so a line can still arrive after _handleExit ran.
     outRl.on('line', (line) => {
       this._debugLog('stdout', line);
+      // The raw line, before its parse, so a relayed line precedes anything the
+      // parse triggers; late lines past `ended` too. Only while listened to.
+      if (this.listenerCount('stdout_line') > 0) this.emit('stdout_line', line);
       this._handleStdoutLine(line, ended);
     });
 
@@ -4751,22 +4759,36 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     const facts = root.summary();
     if ((facts.liveTurnEnds ?? 0) < 1 || facts.awaitingUserSource === 'tool') return false;
     const jobWaiting = this._jobWaiters();
-    const seeds = [rootId];
-    for (const inst of this.byId.values()) {
-      if (inst.conducted && root.sessionId && inst.rootSessionId === root.sessionId) seeds.push(inst.id);
-    }
-    const tree = new Set<string>();
-    for (const seed of seeds) {
-      tree.add(seed);
-      for (const id of this._idleHub.ownedTreeOf(seed)) tree.add(id);
-    }
-    for (const id of tree) {
+    for (const id of this.runTreeIds(rootId)) {
       const x = this.byId.get(id);
       if (!x || (isDeadStatus(x.status) && !x.relaunching)) continue;
       if (x.status !== 'idle' || this.isIdleCaller(id) || this._idleHub.targetDefers(x) || jobWaiting.has(id)) return false;
     }
     return true;
   }
+  // The run tree isTreeQuiescent judges, as instance ids: the root, every live
+  // session attributed to it, and everything those own transitively.
+  runTreeIds(rootId: string): Set<string> {
+    const root = this.byId.get(rootId);
+    const seeds = [rootId];
+    if (root) for (const inst of this.byId.values()) if (attributedTo(root, inst)) seeds.push(inst.id);
+    const tree = new Set<string>();
+    for (const seed of seeds) {
+      tree.add(seed);
+      for (const id of this._idleHub.ownedTreeOf(seed)) tree.add(id);
+    }
+    return tree;
+  }
+
+  // Is `inst` in the root's run tree? Attribution is read off the instance
+  // object, so a session whose section lead has left byId still answers yes.
+  inRunTree(rootId: string, inst: InstanceLike): boolean {
+    if (inst.id === rootId) return true;
+    const root = this.byId.get(rootId);
+    if (root && attributedTo(root, inst)) return true;
+    return this.runTreeIds(rootId).has(inst.id);
+  }
+
 
   // list() minus the hidden pristine conductors: what every list PAYLOAD serves
   // (GET /api/instances, list_sessions, describe_session). Lifecycle code keeps
@@ -5850,6 +5872,11 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     inst.on('event', (ev: UiEvent, replayed?: boolean, pullOnly?: boolean) =>
       this.emit('event', { id, ev, replayed: replayed === true, pullOnly: pullOnly === true }));
+    // Raw CLI stdout for the headless stream (src/headless/stream.ts); no payload without a listener.
+    inst.on('stdout_line', (line: string) => {
+      if (this.listenerCount('stdout_line') === 0) return;
+      this.emit('stdout_line', { instance: inst, line });
+    });
     // The Instance signals (rather than self-handles) an overage trip — central
     // routing lives on the manager where the idle-wake graph is reachable.
     inst.on('overage', (info: { resetsAt: number | null }) => this._handleOverageTrip(inst, info));

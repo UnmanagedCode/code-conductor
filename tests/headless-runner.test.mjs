@@ -12,6 +12,7 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './poll.mjs';
@@ -26,6 +27,7 @@ const { HEADLESS_FRAGMENT, HEADLESS_QUESTION_ANSWER } = await import('../src/hea
 const { newConductorSpawnBody } = await import('../shared/newConductor.ts');
 const { buildApprovePrompt } = await import('../shared/planApproval.ts');
 const { CONDUCT_PROJECT_NAME } = await import('../src/conduct.ts');
+const { createHeadlessStream } = await import('../src/headless/stream.ts');
 
 const fx = (n) => path.join(path.dirname(fileURLToPath(import.meta.url)), 'fixtures', n);
 const ROOT_GATED = fx('scenario-headless-root-gated.json');
@@ -65,7 +67,7 @@ const stdinTexts = async (p) => (await userStdinLines(p)).map(textOf);
 
 // Start a run; the root's launch reads `scenario` and records its stdin.
 // `root()` waits for the conduct-project instance the runner spawned.
-async function start({ scenario, mode = 'code', prompt = 'do the thing', signals = new EventEmitter(), clock } = {}) {
+async function start({ scenario, mode = 'code', prompt = 'do the thing', signals = new EventEmitter(), clock, onRoot } = {}) {
   let handle;
   const rootLog = path.join(home, 'root-stdin.jsonl');
   const created = [];
@@ -74,7 +76,7 @@ async function start({ scenario, mode = 'code', prompt = 'do the thing', signals
   let run;
   let settled = false;
   await withLaunchEnv(scenario, rootLog, async () => {
-    run = runHeadless({ instances: server.instances, prompt, mode, signals, expose: (h) => { handle = h; }, ...(clock ? { clock } : {}) });
+    run = runHeadless({ instances: server.instances, prompt, mode, signals, expose: (h) => { handle = h; }, ...(clock ? { clock } : {}), ...(onRoot ? { onRoot } : {}) });
     await waitFor(() => [...server.instances.byId.values()].some((i) => i.project === CONDUCT_PROJECT_NAME && i.proc));
   });
   delete server.instances.create;
@@ -393,4 +395,87 @@ test('the run handle reports no facts before the spawn, the root\'s once it exis
   assert.equal(typeof facts.durationMs, 'number');
   signals.emit('SIGINT', 'SIGINT');
   await run;
+});
+
+// Invariant: the stream learns the root before the run produces output — onRoot
+// runs once, with the root, before its first prompt reaches the CLI's stdin.
+test('onRoot is handed the root once, before its first prompt is on stdin', async () => {
+  const calls = [];
+  const rootLog = path.join(home, 'root-stdin.jsonl');
+  const r = await start({
+    scenario: BASIC,
+    onRoot: (root) => {
+      const sent = fs.existsSync(rootLog) ? fs.readFileSync(rootLog, 'utf8') : '';
+      calls.push({ root, promptSent: sent.includes('[Headless run]') });
+    },
+  });
+  const result = await r.run;
+  assert.equal(result.reason, 'completed');
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].root, r.root);
+  assert.equal(calls[0].promptSent, false);
+  assert.equal((await stdinTexts(rootLog)).length, 1, 'premise: the prompt did go out afterwards');
+});
+
+// Invariant: the cap, stream-failure and closed-stdout paths end the run, as a
+// conductor_error naming the given error.
+test('handle.fail ends the run as a conductor_error with that error', async () => {
+  const r = await start({ scenario: ROOT_GATED });
+  await waitFor(() => r.root.status === 'turn');
+  r.handle.fail('x');
+  const result = await r.run;
+  assert.equal(result.reason, 'conductor_error');
+  assert.equal(result.exitCode, 3);
+  assert.equal(result.error, 'x');
+  assert.equal(result.sessionId, r.root.sessionId);
+});
+
+// Invariant: --include-workers membership is the run tree isTreeQuiescent
+// judges — a worker the root spawned mid-run, and a grandchild whose section
+// lead has already left byId — each line labelled from the instance.
+test('--include-workers streams the root\'s worker and a removed lead\'s grandchild, labelled', async (t) => {
+  const out = [];
+  const sink = { write: (c) => { out.push(c); }, buffered: () => 0 };
+  const stream = createHeadlessStream({ instances: server.instances, includeWorkers: true, sink, onFail: (m) => { throw new Error(m); } });
+  t.after(() => stream.close());
+  const r = await start({ scenario: ROOT_GATED, onRoot: (root) => stream.setRoot(root) });
+  await waitFor(() => r.root.status === 'turn');
+  const lines = () => out.map((c) => JSON.parse(c));
+
+  const worker = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'worker-stdin.jsonl'));
+  worker.proc.stdout.write('{"probe":"worker-json"}\nworker raw text\n');
+  await waitFor(() => lines().some((l) => l.line === 'worker raw text'));
+  const fromWorker = lines().filter((l) => l.cc_session_id === worker.sessionId);
+  const json = fromWorker.find((l) => l.probe === 'worker-json');
+  const raw = fromWorker.find((l) => l.type === 'cc_raw' && l.line === 'worker raw text');
+  for (const l of [json, raw]) {
+    assert.ok(l, JSON.stringify(fromWorker));
+    assert.deepEqual(
+      { role: l.cc_role, parent: l.cc_parent_session_id, root: l.cc_root_session_id, project: l.cc_project },
+      { role: 'worker', parent: r.root.sessionId, root: r.root.sessionId, project: 'demo' },
+    );
+  }
+  assert.ok(lines().some((l) => l.cc_session_id === r.root.sessionId && l.cc_role === 'conductor'), 'the root\'s own lines stream too');
+
+  const lead = await spawnWorker(r.root, WORKER_GATED, path.join(home, 'lead-stdin.jsonl'), { project: CONDUCT_PROJECT_NAME, playbook: 'section-lead', stage: 'section-lead' });
+  const grandchild = await spawnWorker(lead, WORKER_GATED, path.join(home, 'grandchild-stdin.jsonl'), { project: 'demo2' });
+  const leadSessionId = lead.sessionId;
+  await server.instances.remove(lead.id);
+  assert.equal(server.instances.get(lead.id), undefined, 'fixture check: the lead left byId');
+  // A second stream that has never seen the grandchild, so its admission is
+  // decided after the lead left, not latched from earlier lines.
+  const late = [];
+  const fresh = createHeadlessStream({ instances: server.instances, includeWorkers: true, sink: { write: (c) => { late.push(JSON.parse(c)); }, buffered: () => 0 }, onFail: (m) => { throw new Error(m); } });
+  t.after(() => fresh.close());
+  fresh.setRoot(r.root);
+  grandchild.proc.stdout.write('{"probe":"grandchild"}\n');
+  await waitFor(() => lines().some((l) => l.probe === 'grandchild') && late.some((l) => l.probe === 'grandchild'));
+  for (const l of [lines().find((x) => x.probe === 'grandchild'), late.find((x) => x.probe === 'grandchild')]) {
+    assert.deepEqual(
+      { session: l.cc_session_id, parent: l.cc_parent_session_id, root: l.cc_root_session_id, role: l.cc_role, project: l.cc_project },
+      { session: grandchild.sessionId, parent: leadSessionId, root: r.root.sessionId, role: 'worker', project: 'demo2' },
+    );
+  }
+  r.signals.emit('SIGINT', 'SIGINT');
+  await r.run;
 });

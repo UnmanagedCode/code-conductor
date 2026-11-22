@@ -1,7 +1,9 @@
 // A headless run end to end: a real `node server.ts --prompt …` on a fresh
 // projects root with the fake CLI. Stdout carries exactly the one result
-// object; every log line, the listening banner included, goes to stderr; the
-// restart route refuses while the run is live; SIGINT mid-turn exits 130.
+// object (or, per --output-format, the text or the stream-json lines); every
+// log line, the listening banner included, goes to stderr; the restart route
+// refuses while the run is live; SIGINT mid-turn exits 130; a stream reader
+// that goes away ends the run.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -27,7 +29,7 @@ async function freshHome(t) {
   return home;
 }
 
-function headless(t, home, scenario, args) {
+function headless(t, home, scenario, args, { env = {} } = {}) {
   const child = spawn(process.execPath, [SERVER_TS, ...args], {
     cwd: home,
     env: {
@@ -41,6 +43,7 @@ function headless(t, home, scenario, args) {
       FAKE_CLAUDE_SCENARIO: scenario,
       FAKE_CLAUDE_TRANSCRIPT: path.join(home, 'root-stdin.jsonl'),
       ORCH_IDLE_DRAIN_SETTLE_MS: '100',
+      ...env,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -163,4 +166,127 @@ test('a cost read that fails on a signal: still one signal object, exit 130', as
   assert.equal(res.reason, 'signal');
   assert.equal(res.costUsd, null);
   assert.equal(out.stderr.match(/reading the run's cost failed/g)?.length, 1, 'the failed read is logged once');
+});
+
+// The root's open turn ended through MCP send_prompt with no caller: the user's own send.
+async function sendPrompt(base, sessionId, text) {
+  const res = await fetch(`${base}/mcp?format=text`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_prompt', arguments: { sessionId, text } } }),
+  });
+  assert.equal(res.status, 200);
+}
+
+const streamLines = (stdout) => {
+  assert.ok(stdout.endsWith('\n'), JSON.stringify(stdout.slice(-200)));
+  return stdout.slice(0, -1).split('\n').map((l) => JSON.parse(l));
+};
+
+// Invariant: the default output is unchanged — an explicit json run prints the
+// same one object, in the same key order, as the default.
+test('--output-format json prints the default\'s object, same key order', async (t) => {
+  const keys = [];
+  for (const extra of [[], ['--output-format', 'json']]) {
+    const home = await freshHome(t);
+    const run = headless(t, home, fx('scenario-basic.json'), ['--prompt', 'say hi', ...extra]);
+    const { code } = await run.closed;
+    assert.equal(code, 0, run.out.stderr);
+    const res = onlyJson(run.out.stdout);
+    assert.equal(res.reason, 'completed');
+    keys.push(Object.keys(res));
+  }
+  assert.deepEqual(keys[1], keys[0]);
+  assert.deepEqual(keys[0], ['reason', 'exitCode', 'sessionId', 'text', 'costUsd', 'durationMs', 'error']);
+});
+
+// Invariant (spec 3 framing, final-line ordering): stream-json is the root
+// CLI's lines, then exactly one final cc_result line; no banner on stdout.
+test('stream-json: the root CLI\'s lines, then one cc_result line last', async (t) => {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-basic.json'), ['--prompt', 'say hi', '--output-format', 'stream-json']);
+  const { code } = await run.closed;
+  assert.equal(code, 0, run.out.stderr);
+  assert.doesNotMatch(run.out.stdout, /listening on/);
+  const lines = streamLines(run.out.stdout);
+  const last = lines.at(-1);
+  assert.deepEqual({ type: last.type, reason: last.reason, text: last.text }, { type: 'cc_result', reason: 'completed', text: 'Hello, world!' });
+  assert.equal(typeof last.sessionId, 'string');
+  const before = lines.slice(0, -1);
+  assert.ok(!before.some((l) => l.type === 'cc_result'), 'cc_result only once, last');
+  assert.ok(before.some((l) => l.type === 'system' && l.subtype === 'init'), 'a system/init precedes it');
+  assert.ok(before.some((l) => l.type === 'result'), 'a CLI result line precedes it');
+  assert.ok(!before.some((l) => 'cc_session_id' in l), 'root-only lines carry no labels');
+});
+
+// Invariant: with --include-workers every streamed line carries the six labels;
+// a lone root is the conductor with no parent, named by cc_result's sessionId.
+test('stream-json --include-workers: every CLI line labelled as the root conductor', async (t) => {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-basic.json'), ['--prompt', 'say hi', '--output-format', 'stream-json', '--include-workers']);
+  const { code } = await run.closed;
+  assert.equal(code, 0, run.out.stderr);
+  const lines = streamLines(run.out.stdout);
+  const last = lines.at(-1);
+  assert.equal(last.type, 'cc_result');
+  assert.ok(!('cc_session_id' in last), 'cc_result carries no labels');
+  const before = lines.slice(0, -1);
+  assert.ok(before.length > 0);
+  for (const l of before) {
+    for (const k of ['cc_session_id', 'cc_parent_session_id', 'cc_root_session_id', 'cc_role', 'cc_project', 'cc_worktree']) assert.ok(k in l, `${k} in ${JSON.stringify(l)}`);
+    assert.equal(l.cc_role, 'conductor');
+    assert.equal(l.cc_parent_session_id, null);
+    assert.equal(l.cc_session_id, last.sessionId);
+    assert.equal(l.cc_root_session_id, last.sessionId);
+  }
+});
+
+// Invariant: text prints the result text alone.
+test('text: stdout is exactly the result text', async (t) => {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-basic.json'), ['--prompt', 'say hi', '--output-format', 'text']);
+  const { code } = await run.closed;
+  assert.equal(code, 0, run.out.stderr);
+  assert.equal(run.out.stdout, 'Hello, world!\n');
+});
+
+// Invariant: a signal mid-run still ends the stream with its cc_result line.
+test('stream-json, SIGINT mid-turn: exit 130, the last line a signal cc_result', async (t) => {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-headless-root-gated.json'), ['--prompt', 'stay busy', '--output-format', 'stream-json']);
+  const port = Number((await until(() => BANNER.exec(run.out.stderr), 'the listening banner'))[1]);
+  await until(async () => {
+    const rows = await (await fetch(`http://127.0.0.1:${port}/api/instances`)).json();
+    return rows.some((r) => r.project === '.conduct' && r.status === 'turn');
+  }, 'the root mid-turn');
+  run.child.kill('SIGINT');
+  const { code } = await run.closed;
+  assert.equal(code, 130, run.out.stderr);
+  const last = streamLines(run.out.stdout).at(-1);
+  assert.equal(last.type, 'cc_result');
+  assert.equal(last.reason, 'signal');
+});
+
+// Invariant: a stream consumer that goes away ends the run promptly as a
+// conductor_error — no hang, no spending on until completion, and never the
+// catch-all.
+test('stream-json, the reader closes mid-run: exit 3 well inside the settle window, no catch-all', async (t) => {
+  const home = await freshHome(t);
+  const run = headless(t, home, fx('scenario-headless-root-gated.json'), ['--prompt', 'stay busy', '--output-format', 'stream-json'],
+    { env: { ORCH_IDLE_DRAIN_SETTLE_MS: '30000' } });
+  await until(() => run.out.stdout.length > 0, 'the first streamed line');
+  const port = Number((await until(() => BANNER.exec(run.out.stderr), 'the listening banner'))[1]);
+  const base = `http://127.0.0.1:${port}`;
+  const row = await until(async () => {
+    const rows = await (await fetch(`${base}/api/instances`)).json();
+    return rows.find((r) => r.project === '.conduct' && r.status === 'turn');
+  }, 'the root mid-turn');
+  run.child.stdout.destroy();
+  const t0 = Date.now();
+  await sendPrompt(base, row.sessionId, 'wrap up');
+  const { code } = await run.closed;
+  assert.ok(Date.now() - t0 < 15_000, `exited after ${Date.now() - t0} ms`);
+  assert.equal(code, 3, run.out.stderr);
+  assert.match(run.out.stderr, /stdout closed/);
+  assert.doesNotMatch(run.out.stderr, /unexpected failure/);
 });

@@ -28,9 +28,10 @@
 
 - [REST endpoints: settings, voice, auth and costs](protocol/rest-settings.md#rest-endpoints-settings-voice-auth-and-costs)
 
-## [headless.md](protocol/headless.md) — the result object and exit codes of a headless run
+## [headless.md](protocol/headless.md) — the headless run's output: the result, its exit codes and the output formats
 
 - [Headless run result](protocol/headless.md#headless-run-result)
+- [Output formats](protocol/headless.md#output-formats)
 
 ## [mcp.md](protocol/mcp.md) — params, session resolution, renewal and idle wake
 
