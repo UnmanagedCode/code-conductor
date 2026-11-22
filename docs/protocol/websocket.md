@@ -3,6 +3,7 @@
 ## WebSocket protocol
 
 **Handshake: Origin check** (`src/upgradeOrigin.ts`, the first step of `server.ts`'s `server.on('upgrade')` dispatcher, so it covers `/ws`, `/api/terminal`, `/plugins/<id>/…` and unknown paths alike):
+- **Under `CC_BASE_PATH`** the dispatcher strips the base from `req.url` first (a bare base is destroyed), so `<base>/ws` and `/ws` open alike; the Origin/Host rule below is unchanged, so the proxy must forward `Host` ([rest-settings.md → Base path and reverse proxies](rest-settings.md#base-path-and-reverse-proxies)).
 - **`/api/terminal` additionally refuses ANY `Origin`**, a same-origin one included: 403 JSON `{error, code:'ORIGIN_REFUSED'}` from `src/hostTerminal.ts`, so only a non-browser client opens a host terminal ([plugins/runtime.md → Host terminal](../plugins/runtime.md#host-terminal--get-apiterminal-websocket)).
 - **No `Origin` header → admitted.** Browsers always send one on a WebSocket, so its absence means a non-browser client (the test suite's `ws` client, a plugin backend, code-live).
 - **Otherwise admitted only if** all hold (`upgradeOriginAllowed`):

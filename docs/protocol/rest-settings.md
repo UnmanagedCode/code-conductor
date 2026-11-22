@@ -68,13 +68,28 @@
 - **Proxied plugin responses** do not carry cc's policy; see [plugins/runtime.md](../plugins/runtime.md) → Reverse proxy.
 - **Pins:** `tests/security-headers.test.mjs`, `tests/plugins-proxy.test.mjs`, `web/e2e/frame-ancestors.spec.ts`.
 
+### Base path and reverse proxies
+
+`CC_BASE_PATH=/apps/cc-2` (an absolute path prefix, fixed at startup; [environment.md](../environment.md)) hosts cc under a sub-path behind a reverse proxy, so a host page, another app or a plugin can embed it same-origin.
+
+- **Strip if present.** `basePathMiddleware` (`src/basePath.ts`) is the first middleware after `hostSecurityHeaders()`, and `server.ts`'s `upgrade` dispatcher does the same first step: a request URL that equals the base, or starts with `<base>/` or `<base>?`, loses the base before routing. A near-miss (`/apps/cc-2x/…`) is not stripped. Every mount stays at root, so a **pass-through** proxy (`/apps/cc-2/api/x` → cc as is) and a **stripping** proxy (`/apps/cc-2/api/x` → `/api/x`) reach the same handler, and loopback callers (`CONDUCTOR_URL`, hook URLs, `--mcp-config`, a plugin's `CONDUCTOR_MCP_URL`, `CC_RUN_URL`) keep using root URLs unchanged.
+- **Bare base.** `<base>` or `<base>?…` answers `301 Location: <base>/<search>`. The UI must be loaded at `<base>/` with the trailing slash: its URLs are relative and its app base is the page's directory. A stripping proxy must redirect a bare `<base>` itself (nginx's `location /apps/cc-2/ { proxy_pass http://cc/; }` does).
+- **Validation.** `parseBasePath`: unset, empty or `/` is root; otherwise it starts with `/`, one trailing `/` is dropped, and empty, `.` and `..` segments, `//` and any character outside RFC 3986 `pchar` (`?`, `#`, `%` included) are refused. An invalid value fails boot (`failed to start:`, exit 1).
+- **Ambiguity.** A root path that begins with the base is always read as prefixed: with base `/plugins/cc2`, the inner cc cannot also run a plugin with id `cc2`.
+- **Proxy must:** forward `Host` unchanged (the WebSocket [Origin check](websocket.md#websocket-protocol) compares `Origin` with `Host`) and pass `Upgrade`/`Connection` for `/ws` (nginx: `proxy_set_header Host $host; proxy_http_version 1.1; proxy_set_header Upgrade $http_upgrade; proxy_set_header Connection "upgrade";`).
+- **Inbound `X-Forwarded-Prefix` is ignored**: the base is the env value, never the request's.
+- **Plugins.** The plugin proxy sends `X-Forwarded-Prefix: <base>/plugins/<id>`, prefixes the `Location` it rewrites and its bare-id 301, asks the child for `accept-encoding: identity`, and re-roots `"/pluginBridge.js"` / `"/pluginTheme.css"` attribute values in `text/html` responses. See [plugins/runtime.md](../plugins/runtime.md) → Reverse proxy.
+- **Framing headers are unchanged**: same-origin embedding only ([Response headers](#response-headers)).
+- **cc has no authentication.** A proxy that exposes it must supply auth.
+- **Pins:** `tests/base-path.test.mjs`, `tests/base-path-server.test.mjs`, `tests/plugins-proxy.test.mjs`, `tests/client-root-url-guard.test.mjs`, `web/e2e/base-path.spec.ts`.
+
 ### Static routes
 
 Mounted after `/api`, `/mcp` and `/plugins` (`server.ts`), so they never shadow those. No SPA fallback: the UI routes by URL hash.
 
 | Path | Answer |
 |---|---|
-| `/` | The web UI (`web/dist/index.html`, `webHandler()` in `src/webBuild.ts`) and its assets, `sw.js`, `manifest.webmanifest` and icons, all root-absolute. With no build yet: **503** `text/html`, a self-refreshing "Building the interface…" page. After a failed build with no previous `web/dist` to serve: **503** `text/plain` naming the error; the API stays up |
+| `/` | The web UI (`web/dist/index.html`, `webHandler()` in `src/webBuild.ts`) and its assets, `sw.js`, `manifest.webmanifest` and icons, all root-relative to the page, served at `/` and, under `CC_BASE_PATH`, at `<base>/` too. With no build yet: **503** `text/html`, a self-refreshing "Building the interface…" page. After a failed build with no previous `web/dist` to serve: **503** `text/plain` naming the error; the API stays up |
 | `GET /pluginBridge.js` | `web/src/features/views/pluginBridge.js`, an explicit `server.ts` route, served whether or not the web build exists |
 | `GET /pluginTheme.css` | The host theme for plugin pages: the Geist `@font-face` rules, a `/* cc:tokens */` line, then `web/src/themeTokens.css`. **200** `text/css; charset=utf-8`, `Cache-Control: no-cache`, composed per request by `pluginThemeRouter()` (`src/pluginTheme.ts`), served whether or not the web build exists. A failure to compose it: **503** `text/plain` `host theme unavailable` (the detail is in the server log). Contract: [plugins/runtime.md](../plugins/runtime.md) → Theme stylesheet |
 | `GET /pluginTheme/fonts/:pkg/:file` | A font file the sheet names: `:pkg` a key of `FONT_PACKAGES` (`src/pluginTheme.ts`), `:file` matching `^[a-z0-9-]+\.woff2$`; **200** `font/woff2`. Anything else **404** |

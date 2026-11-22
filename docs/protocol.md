@@ -27,6 +27,7 @@
 ## [rest-settings.md](protocol/rest-settings.md) — settings, voice, auth and cost endpoints, response headers and static routes
 
 - [REST endpoints: settings, voice, auth and costs](protocol/rest-settings.md#rest-endpoints-settings-voice-auth-and-costs)
+- [Base path and reverse proxies](protocol/rest-settings.md#base-path-and-reverse-proxies) — `CC_BASE_PATH`, both proxy styles, the proxy contract
 
 ## [headless.md](protocol/headless.md) — the headless run's output: the result, its exit codes and the output formats
 
