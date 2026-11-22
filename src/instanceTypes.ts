@@ -114,6 +114,8 @@ export interface InstanceLike {
   readonly callerInstanceId: string | null;
   // The public sessionId of the conductor that spawned or resumed this session.
   readonly parentSessionId: string | null;
+  // The public sessionId of the run root this conducted session is attributed to (fixed at create).
+  readonly rootSessionId: string | null;
   readonly cwd: string;
   // WHERE THIS SESSION'S TRANSCRIPT LIVES — the cwd plus the machine coordinate
   // that tells two remotes at one absolute path apart. Frozen at create; every
@@ -336,6 +338,9 @@ export interface TurnStarted extends SessionEventBase { actor: Actor }
 export interface TurnEnded extends SessionEventBase { stopReason?: string }
 export interface EnforcementChanged { sessionId: string; project: string; to: string; actor: Actor }
 
+// One raw CLI stdout line, as the manager relays it (`stdout_line`).
+export interface StdoutLine { instance: InstanceLike; line: string }
+
 export interface InstanceManagerLike {
   byId: ReadonlyMap<string, InstanceLike>;
   get(id: string): InstanceLike | undefined;
@@ -370,6 +375,8 @@ export interface InstanceManagerLike {
   emit(event: 'turn_started', arg: TurnStarted): void;
   emit(event: 'turn_ended', arg: TurnEnded): void;
   emit(event: 'enforcement_changed', arg: EnforcementChanged): void;
+  // Every CLI stdout line as {instance, line}; emitted only while the manager has a listener (the headless stream).
+  emit(event: 'stdout_line', arg: StdoutLine): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;
   _maybeReleaseOverageLock(): void;
@@ -401,14 +408,18 @@ export interface InstanceManagerLike {
   on(event: 'turn_started', cb: (arg: TurnStarted) => void): void;
   on(event: 'turn_ended', cb: (arg: TurnEnded) => void): void;
   on(event: 'enforcement_changed', cb: (arg: EnforcementChanged) => void): void;
+  on(event: 'stdout_line', cb: (arg: StdoutLine) => void): void;
   off(event: 'status', cb: (summary: InstanceSummary) => void): void;
   off(event: 'list_changed' | 'subscription_changed', cb: () => void): void;
   off(event: 'turn_started', cb: (arg: TurnStarted) => void): void;
+  off(event: 'stdout_line', cb: (arg: StdoutLine) => void): void;
   // Resume-restart surface (src/resumeRestart.ts).
   conductedSubtreeOf(rootId: string): SubtreeRow[];
   isIdleCaller(instanceId: string): boolean;
   // The headless completion predicate (src/headless/runner.ts).
   isTreeQuiescent(rootId: string): boolean;
+  // Is `inst` in the root's run tree (the tree isTreeQuiescent judges)? The headless stream's membership test.
+  inRunTree(rootId: string, inst: InstanceLike): boolean;
   suspendWakes(): void;
   resumeWakes(): void;
   shutdownForResumeSync(): void;

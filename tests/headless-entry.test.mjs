@@ -1,6 +1,8 @@
 // The headless entry at the process boundary (real `node server.ts`): a usage
 // error exits 2 before anything boots, and a held or unreadable projects-root
-// lock exits 7 — each with exactly one JSON object on stdout.
+// lock exits 7 — each with exactly one JSON object on stdout (or, per
+// --output-format, one cc_result line or the text form); a closed stdout still
+// exits with the result's code.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -111,8 +113,8 @@ test('an unreadable top lock record: exit 7, a root_held object naming the recor
 });
 
 const HARNESS = path.join(__dirname, 'headlessEntryHarness.mjs');
-function harness(t, home, kase) {
-  const child = spawn(process.execPath, [HARNESS, kase, '--', '--prompt', 'hello'], {
+function harness(t, home, kase, argv = ['--prompt', 'hello']) {
+  const child = spawn(process.execPath, [HARNESS, kase, '--', ...argv], {
     env: { ...process.env, HOME: home, PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects'), ORCH_IDLE_DRAIN_SETTLE_MS: '20' },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -187,4 +189,99 @@ test('a signal while the prompt is still being read from stdin writes a signal o
   assert.equal(res.reason, 'signal');
   assert.equal(res.exitCode, 130);
   assert.equal(fs.existsSync(lockDirOf(home)), false, 'nothing booted');
+});
+
+// One cc_result line and nothing else.
+function onlyResultLine(stdout) {
+  const res = onlyJson(stdout);
+  assert.equal(res.type, 'cc_result');
+  return res;
+}
+
+// Invariant: early failures produce only the final line, in the requested format.
+test('a usage error under stream-json: exit 2, exactly one cc_result line', async (t) => {
+  const home = await freshHome(t);
+  const r = await run(t, home, ['--output-format', 'stream-json', '--prompt', 'a', '--mode', 'yolo']);
+  assert.equal(r.code, 2, r.stderr);
+  const res = onlyResultLine(r.stdout);
+  assert.equal(res.reason, 'usage_error');
+  assert.match(res.error, /--mode must be one of/);
+  assert.match(r.stderr, /usage: node server\.ts/);
+});
+
+test('a usage error under text: exit 2, empty stdout, the error on stderr', async (t) => {
+  const home = await freshHome(t);
+  const r = await run(t, home, ['--output-format', 'text', '--prompt', '  ']);
+  assert.equal(r.code, 2, r.stderr);
+  assert.equal(r.stdout, '');
+  assert.match(r.stderr, /headless: usage_error: the prompt is empty/);
+});
+
+for (const [name, args] of [
+  ['an unknown format', ['--prompt', 'a', '--output-format', 'xml']],
+  ['--include-workers with json', ['--prompt', 'a', '--output-format', 'json', '--include-workers']],
+]) {
+  test(`a usage error, ${name}: exit 2, one plain json object`, async (t) => {
+    const home = await freshHome(t);
+    const r = await run(t, home, args);
+    assert.equal(r.code, 2, r.stderr);
+    const res = onlyJson(r.stdout);
+    assert.equal(res.reason, 'usage_error');
+    assert.ok(!('type' in res));
+  });
+}
+
+test('a held root under stream-json: exit 7, one root_held cc_result line', async (t) => {
+  const home = await freshHome(t);
+  const holder = spawn(process.execPath, [HOLDER, rootOf(home)], { stdio: ['ignore', 'pipe', 'pipe'] });
+  t.after(() => holder.kill('SIGKILL'));
+  await new Promise((resolve, reject) => {
+    let buf = '';
+    holder.stdout.setEncoding('utf8').on('data', (c) => { buf += c; if (/HELD 1\n/.test(buf)) resolve(); });
+    holder.once('exit', () => reject(new Error(`holder exited: ${buf}`)));
+  });
+  const r = await run(t, home, ['--prompt', 'hello', '--output-format', 'stream-json']);
+  assert.equal(r.code, 7, r.stderr);
+  assert.equal(onlyResultLine(r.stdout).reason, 'root_held');
+});
+
+test('a boot failure under stream-json: exit 1, one boot_failed cc_result line', async (t) => {
+  const home = await freshHome(t);
+  const r = await harness(t, home, 'boot-throws', ['--prompt', 'hello', '--output-format', 'stream-json']);
+  assert.equal(r.code, 1, r.stderr);
+  const res = onlyResultLine(r.stdout);
+  assert.equal(res.reason, 'boot_failed');
+  assert.match(res.error, /boom at boot/);
+});
+
+// Invariant: when the result can't be delivered, the process still exits with
+// the result's code, says so on stderr, and the dead pipe never reaches the
+// catch-all. Deterministic: the child blocks reading its prompt from stdin; the
+// test closes the child's stdout and waits for the close before ending stdin,
+// so the empty-prompt usage result is written into a pipe with no reader.
+test('stdout closed before the result is written: exit 2, the undelivered result named on stderr, no catch-all', async (t) => {
+  const home = await freshHome(t);
+  const child = spawn(process.execPath, [SERVER_TS, '--output-format', 'stream-json', '--prompt-file', '-'], {
+    cwd: home,
+    env: { ...process.env, HOME: home, PORT: '0', HOST: '127.0.0.1', PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects') },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (c) => { stderr += c; });
+  const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
+  const start = Date.now();
+  while (!/reading the prompt from stdin/.test(stderr)) {
+    assert.ok(Date.now() - start < 30_000, `never started reading stdin: ${stderr}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const stdoutClosed = new Promise((resolve) => child.stdout.once('close', resolve));
+  child.stdout.destroy();
+  await stdoutClosed;
+  child.stdin.end('');
+  const code = await closed;
+  assert.equal(code, 2, stderr);
+  assert.match(stderr, /the prompt is empty/, 'premise: the usage result was the one written');
+  assert.match(stderr, /headless: the result was not delivered: stdout closed \(EPIPE\)/);
+  assert.doesNotMatch(stderr, /unexpected failure/);
 });

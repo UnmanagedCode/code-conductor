@@ -1,14 +1,17 @@
 // The headless process: what `node server.ts` does when its argv carries a
-// headless flag (src/headless/args.ts). Logs go to stderr — stdout carries
-// exactly one result object (src/headless/result.ts) — then cc boots as usual
-// minus the web build and the dependency sync, runs one New-conductor session
-// to quiescence (src/headless/runner.ts), writes the result and exits with its
-// code. Nothing is torn down: state is left as a normal cc death leaves it.
+// headless flag (src/headless/args.ts). Logs go to stderr — stdout carries the
+// result in the requested --output-format (src/headless/result.ts), preceded
+// under `stream-json` by the live CLI lines (src/headless/stream.ts) — then cc
+// boots as usual minus the web build and the dependency sync, runs one
+// New-conductor session to quiescence (src/headless/runner.ts), writes the
+// result and exits with its code. Nothing is torn down: state is left as a
+// normal cc death leaves it.
 
 import os from 'node:os';
 import { readHeadlessPrompt, HEADLESS_SYNOPSIS, type HeadlessArgs } from './args.ts';
 import { runHeadless, type RunFacts, type RunHandle } from './runner.ts';
-import { EXIT_CODES, bareResult, formatResult, signalExitCode, type HeadlessResult } from './result.ts';
+import { EXIT_CODES, bareResult, renderResult, signalExitCode, type HeadlessResult } from './result.ts';
+import { createHeadlessStream, type HeadlessStream } from './stream.ts';
 import { RootLockHeldError, RootLockUnreadableError } from '../rootLock.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { errMsg } from '../../shared/basics.ts';
@@ -34,11 +37,20 @@ function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os.Networ
 }
 
 export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>, { start }: HeadlessEntryDeps): Promise<void> {
-  // Before anything can log: every console line goes to stderr, and the one
-  // result object goes out through the real stdout.
+  // Before anything can log: every console line goes to stderr, and the result
+  // (and any streamed line) goes out through the real stdout.
+  const format = args.format;
   const writeOut = process.stdout.write.bind(process.stdout);
   process.stdout.write = process.stderr.write.bind(process.stderr) as typeof process.stdout.write;
   let written = false;
+  let resultExitCode = 0;
+  let exited = false;
+  const exitOnce = (code: number): void => {
+    if (exited) return;
+    exited = true;
+    process.exit(code);
+  };
+  let stream: HeadlessStream | null = null;
   const finish = (r: HeadlessResult): void => {
     if (written) return;
     written = true;
@@ -46,8 +58,38 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     // the result is out, a signal must kill the process again, so none of the
     // entry's may outlive this (the runner removes its own when it delivers).
     for (const s of ['SIGINT', 'SIGTERM'] as const) { process.off(s, recordSignal); process.off(s, onEarlySignal); }
-    writeOut(formatResult(r), () => process.exit(r.exitCode));
+    resultExitCode = r.exitCode;
+    stream?.close();
+    const o = renderResult(r, format);
+    if (o.stderr) process.stderr.write(o.stderr);
+    // Writes are ordered, so every streamed line is flushed before the result,
+    // and the exit waits for the result's own flush. On a closed or destroyed
+    // stdout the callback still fires, with an error, and names it on stderr —
+    // the only trace an undelivered result leaves.
+    writeOut(o.stdout, (err?: Error | null) => {
+      if (err) process.stderr.write(`headless: the result was not delivered: stdout closed (${(err as NodeJS.ErrnoException).code ?? errMsg(err)})\n`);
+      exitOnce(r.exitCode);
+    });
   };
+
+  // Nothing reads stdout any more (EPIPE, or any other write error). Never
+  // throws and never reaches the catch-all: streaming stops, and the run ends
+  // as a conductor_error — or, once the result is being written, the process
+  // exits with that result's code.
+  function onStdoutError(e: NodeJS.ErrnoException): void {
+    const code = e.code ?? errMsg(e);
+    stream?.close();
+    if (written) { exitOnce(resultExitCode); return; }
+    if (run) {
+      console.error(`headless: stdout closed (${code}); ending the run`);
+      run.fail(`stdout closed (${code}): nothing is reading the output`);
+      return;
+    }
+    finish(running
+      ? bareResult('conductor_error', `stdout closed (${code})`, EXIT_CODES.conductor_error)
+      : bareResult('boot_failed', `stdout closed (${code})`, EXIT_CODES.boot_failed));
+  }
+  process.stdout.on('error', onStdoutError);
 
   // How far the run got, for the catch-all below: the first signal seen (the
   // runner handles signals itself once it runs; this only records), and
@@ -117,6 +159,20 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     if (!boot.instances) { finish(bareResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
     for (const s of ['SIGINT', 'SIGTERM'] as const) process.off(s, onEarlySignal);
     running = true;
-    finish(await runHeadless({ instances: boot.instances, prompt: prompt.text, mode: args.mode, expose: (h) => { run = h; } }));
+    if (format === 'stream-json') {
+      stream = createHeadlessStream({
+        instances: boot.instances,
+        includeWorkers: args.includeWorkers,
+        // writableLength is the real stream's getter; only `write` is redirected.
+        sink: { write: (chunk) => writeOut(chunk), buffered: () => process.stdout.writableLength },
+        // `run` is exposed before the spawn; a stream failure follows a write, which follows setRoot.
+        onFail: (message) => run?.fail(message),
+      });
+    }
+    finish(await runHeadless({
+      instances: boot.instances, prompt: prompt.text, mode: args.mode,
+      expose: (h) => { run = h; },
+      onRoot: (root) => stream?.setRoot(root),
+    }));
   }
 }

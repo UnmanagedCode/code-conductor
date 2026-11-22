@@ -34,6 +34,8 @@ export interface RunHeadlessInput {
   signals?: SignalSource;
   // Handed the run's handle synchronously, before the spawn starts.
   expose?: (handle: RunHandle) => void;
+  // Handed the root synchronously once it is spawned, before its first prompt.
+  onRoot?: (root: InstanceLike) => void;
 }
 
 // The root's session facts so far: null until the root is spawned.
@@ -51,6 +53,9 @@ export interface RunHandle {
   // Stop listening (signals, manager events) without resolving: the entry has
   // written a result of its own.
   detach(): void;
+  // End the run as a conductor_error naming `error` (the stream's cap or
+  // failure, a closed stdout); a no-op once the run is ending.
+  fail(error: string): void;
 }
 
 // The root's last top-level assistant text, or null.
@@ -59,7 +64,7 @@ function lastText(root: InstanceLike): string | null {
   return msgs.at(-1)?.text ?? null;
 }
 
-export function runHeadless({ instances, prompt, mode, clock = Date, signals = process, expose }: RunHeadlessInput): Promise<HeadlessResult> {
+export function runHeadless({ instances, prompt, mode, clock = Date, signals = process, expose, onRoot }: RunHeadlessInput): Promise<HeadlessResult> {
   const t0 = clock.now();
   // The root plus its spawned tree, from costs.jsonl (claude-backend turns
   // only). Best-effort: a failed read costs the result its costUsd, nothing
@@ -210,6 +215,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     facts: () => (root ? { sessionId: root.sessionId ?? null, text: lastText(root), durationMs: clock.now() - t0 } : null),
     signalCostRead: () => firstSignalRead,
     detach,
+    fail: (error) => { end('conductor_error', error).catch(failRun); },
   });
 
   void (async () => {
@@ -225,6 +231,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     }
     if (ending) return;
     root = spawned;
+    onRoot?.(spawned);
     instances.on('status', onStatus);
     instances.on('subscription_changed', evaluate);
     if (spawned.status === 'exited' || spawned.status === 'crashed') { rootDied(spawned.status); return; }

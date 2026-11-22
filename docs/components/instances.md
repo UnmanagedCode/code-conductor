@@ -69,6 +69,7 @@ Routed-site inventory in [protocol/subprocess.md](../protocol/subprocess.md).
 `src/instances/steer.ts` holds the bodies of `Instance`'s steer/interrupt/drain controller (`interrupt` … `interruptTurnForStop`) as `this: Instance` functions, plus `MID_TURN_NOTE`, `POST_STOP_STEER_NOTE` and `CLEAN_STOP_GRACE_MS` (re-exported); the state and a same-name delegate per function stay on `Instance`.
 `src/instances/rewind.ts` holds the bodies of `Instance`'s rewind and boundary-fork paths (`rewindToUserMessage` … `_fileOrdinalFor`) as `this: Instance` functions, plus their refusal codes and fork-wait constants (re-exported); `forkAtUserMessage`, `forkAtTip`, `_claimForkSource` and a delegate per function stay on `Instance`.
 `src/instances/restartSwitch.ts` holds the bodies of `Instance`'s model-switch restart and relaunch window (`setModel` … `_lastExitCause`) as `this: Instance` functions, plus `RELAUNCH_FAILED` (re-exported) and `assertBackendLaunchResolvable`; `setEffort`, `_wipeForResume` and a delegate per function stay on `Instance`.
+**Raw stdout tap:** `Instance` emits `stdout_line` for every raw CLI stdout line, before its parse; `InstanceManager`'s relay, attached before the first launch, re-emits it as `{instance, line}` only while the manager has a listener, with `runTreeIds`/`inRunTree` naming the run tree `isTreeQuiescent` judges — [components/headless.md](headless.md#headless-mode) → The stdout tap.
 
 ## `src/idleSubscriptions.ts`
 
