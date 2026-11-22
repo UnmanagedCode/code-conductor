@@ -39,37 +39,12 @@ function rawHeaderLines(rawHeaders: string[]): string {
 }
 
 function jsonResponse(res: http.ServerResponse, status: number, body: unknown): void {
-  if (res.destroyed || res.writableEnded) return;
   if (res.headersSent) { res.end(); return; }
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(JSON.stringify(body));
 }
 
-// The two host URLs a plugin page may reference root-absolute: its bridge and
-// the host theme. Under a base path, every byte sequence shaped like
-// `src="/pluginBridge.js"` or `href='/pluginTheme.css'` (either quote) is
-// re-rooted at the base. The match is by bytes, not markup: the same sequence in
-// text or a script string is rewritten too, and nothing else is touched. Both
-// targets are ASCII, so the body is read as latin1 (one char per byte) and every
-// other byte, whatever the page's charset, comes through identical.
-export function rewritePluginHostUrls(html: Buffer, base: string): Buffer {
-  if (base === '') return html;
-  return Buffer.from(html.toString('latin1').replace(/(\b(?:src|href)\s*=\s*)(["'])\/(pluginBridge\.js|pluginTheme\.css)\2/gi,
-    (_m, attr: string, q: string, file: string) => `${attr}${q}${base}/${file}${q}`), 'latin1');
-}
-
-// The most HTML body the proxy buffers to rewrite; beyond it the page streams untouched.
-export const REWRITE_BODY_CAP_BYTES = 4 * 1024 * 1024;
-
 export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: PluginHostProxyLike | null; basePath?: string }) {
-  // `<plugin id>:<reason>` already warned about: each degradation is logged once per plugin.
-  const warned = new Set<string>();
-  const warnOnce = (id: string, reason: 'encoded' | 'oversize', text: string) => {
-    if (warned.has(`${id}:${reason}`)) return;
-    warned.add(`${id}:${reason}`);
-    console.warn(`plugin '${id}': ${text}; host URLs are not rewritten`);
-  };
-
   async function handler(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
     if (!pluginHost) return jsonResponse(res, 404, { error: 'plugins are not available' });
     const u = new URL(req.url ?? '', 'http://placeholder');
@@ -101,11 +76,8 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
     // gap — fail closed rather than forward to a default/null port.
     if (port == null) return jsonResponse(res, 503, { error: `plugin '${id}' has no running backend` });
 
-    // Set once the buffered HTML branch owns the response: it writes its headers late, so
-    // `headersSent` alone cannot tell the upstream-error path that the response is spoken for.
-    let owned = false;
-    // A deferred writer must not run on a response that was answered or torn down meanwhile.
-    const answerable = () => !res.destroyed && !res.headersSent && !res.writableEnded;
+    // Set once the upstream response started streaming to the client.
+    let streaming: http.IncomingMessage | null = null;
     const up = http.request({
       host: '127.0.0.1',
       port,
@@ -113,10 +85,6 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
       path: subpath + u.search,
       headers: {
         ...req.headers,
-        // Under a base the HTML is rewritten, so ask for it uncompressed (a
-        // loopback hop gains nothing from compression); the outer proxy can
-        // still compress toward the browser.
-        ...(basePath !== '' ? { 'accept-encoding': 'identity' } : {}),
         'x-forwarded-prefix': `${basePath}/plugins/${id}`,
         'x-forwarded-host': req.headers.host ?? '',
         'x-forwarded-proto': 'http',
@@ -130,56 +98,21 @@ export function buildPluginProxy({ pluginHost, basePath = '' }: { pluginHost: Pl
       if (typeof headers.location === 'string' && headers.location.startsWith('/')) {
         headers.location = `${basePath}/plugins/${id}${headers.location}`;
       }
-      // An upstream that aborts mid-body must end the client's response too, whichever branch carries it.
+      // An upstream that aborts mid-body must end the client's response too.
       upRes.on('error', () => res.destroy());
-      const status = upRes.statusCode || 502;
-      const isHtml = /^text\/html\b/i.test(String(upRes.headers['content-type'] ?? ''));
-      const hasBody = req.method !== 'HEAD' && status !== 204 && status !== 304 && status !== 206 && status >= 200
-        && upRes.headers['content-range'] === undefined;
-      if (basePath !== '' && isHtml && hasBody) {
-        const encoding = String(upRes.headers['content-encoding'] ?? 'identity').toLowerCase();
-        const declared = Number(upRes.headers['content-length']);
-        if (encoding !== 'identity') {
-          warnOnce(id, 'encoded', `HTML answered with content-encoding ${encoding} under a base path`);
-        } else if (declared > REWRITE_BODY_CAP_BYTES) {
-          warnOnce(id, 'oversize', `HTML of ${declared} bytes exceeds the ${REWRITE_BODY_CAP_BYTES}-byte rewrite cap`);
-        } else {
-          const chunks: Buffer[] = [];
-          let size = 0;
-          owned = true;
-          const onData = (c: Buffer) => {
-            chunks.push(c);
-            size += c.length;
-            if (size <= REWRITE_BODY_CAP_BYTES) return;
-            // Over the cap with no declared length: stop buffering, send what is held, stream the rest.
-            upRes.off('data', onData);
-            upRes.off('end', onEnd);
-            warnOnce(id, 'oversize', `HTML exceeds the ${REWRITE_BODY_CAP_BYTES}-byte rewrite cap`);
-            if (!answerable()) { upRes.resume(); return; }
-            res.writeHead(status, headers);
-            res.write(Buffer.concat(chunks));
-            upRes.pipe(res);
-          };
-          const onEnd = () => {
-            if (!answerable()) return;
-            const body = rewritePluginHostUrls(Buffer.concat(chunks), basePath);
-            headers['content-length'] = String(body.length);
-            delete headers['transfer-encoding'];
-            res.writeHead(status, headers);
-            res.end(body);
-          };
-          upRes.on('data', onData);
-          upRes.on('end', onEnd);
-          return;
-        }
-      }
+      streaming = upRes;
       res.writeHead(upRes.statusCode || 502, headers);
       upRes.pipe(res);
     });
     up.on('error', (e) => {
-      // The buffered branch answers (or tears down) the response itself.
-      if (owned || res.destroyed || res.writableEnded) return;
       pluginHost.reportUpstreamFailure(id);
+      // Once the body is streaming, ending `res` here would race the pipe's remaining
+      // writes (an upstream over-sending past its Content-Length): cut the pair instead,
+      // unless the body already went out whole.
+      if (streaming) {
+        if (!res.writableEnded) { streaming.unpipe(res); res.destroy(); }
+        return;
+      }
       jsonResponse(res, 502, { error: `plugin upstream error: ${e.message}` });
     });
     req.pipe(up);

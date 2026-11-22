@@ -79,15 +79,13 @@ async function flow(page: Page, cc: Cc, mode: 'strip' | 'pass'): Promise<void> {
     // (d) the MCP surface answers under the prefix.
     expect(await page.evaluate(async (base) => (await fetch(`${base}/mcp/tools`)).status, BASE)).toBe(200);
 
-    // (b) plugin pages: the base-safe one and the root-absolute one the proxy rewrites; both reach the bridge and the theme.
+    // (b) the base-safe plugin page (relative host URLs) reaches the bridge and the theme. The proxy never rewrites a root-absolute page, which would request them at the host root.
     const frame = page.frames().find((f) => f.url() === `${proxy.url}${BASE}/`)!;
-    for (const sub of ['', 'legacy']) {
-      await frame.evaluate((h) => { location.hash = h; }, `#plugin/fake-plugin/${sub}`);
-      await expect.poll(() => pluginFrame(page)?.url() ?? '', { timeout: 20_000 }).toContain(`${BASE}/plugins/fake-plugin/${sub}`);
-      const pf = pluginFrame(page)!;
-      await expect.poll(() => pf.evaluate(() => document.documentElement.getAttribute('data-cc-theme')), 'the bridge applied the theme').not.toBeNull();
-      await expect.poll(() => pf.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--background').trim()), 'the theme sheet applied').not.toBe('');
-    }
+    await frame.evaluate((h) => { location.hash = h; }, '#plugin/fake-plugin/');
+    await expect.poll(() => pluginFrame(page)?.url() ?? '', { timeout: 20_000 }).toContain(`${BASE}/plugins/fake-plugin/`);
+    const pf = pluginFrame(page)!;
+    await expect.poll(() => pf.evaluate(() => document.documentElement.getAttribute('data-cc-theme')), 'the bridge applied the theme').not.toBeNull();
+    await expect.poll(() => pf.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--background').trim()), 'the theme sheet applied').not.toBe('');
 
     // (c) top level: the service worker scopes to the prefix, the manifest and icons resolve under it.
     await page.goto(`${proxy.url}${BASE}/`);

@@ -9,8 +9,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-// RFC 3986 unreserved characters only: a base is spliced into rewritten HTML
-// attributes (rewritePluginHostUrls), so no quote, angle bracket or ampersand may ever pass.
+// RFC 3986 unreserved characters only: a base is spliced into `Location` and
+// `X-Forwarded-Prefix`, which plugins splice into their own HTML and URLs, so no
+// quote, angle bracket or ampersand may ever pass.
 const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
 
 // A plugin id (src/plugins/): the form `/plugins/<id>` takes in a base.

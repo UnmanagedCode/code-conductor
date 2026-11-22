@@ -3,12 +3,10 @@ import assert from 'node:assert/strict';
 import { promises as fs } from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import zlib from 'node:zlib';
 import { WebSocket } from 'ws';
 import { bootServer, waitFor, registerLocalProject } from './helpers.mjs';
 import { FAKE_PLUGIN_DIR } from './plugin-helpers.mjs';
 import { pidAlive } from '../src/plugins/ports.ts';
-import { REWRITE_BODY_CAP_BYTES } from '../src/plugins/proxy.ts';
 
 // Boot the full server (helpers tmp root) with the fake plugin installed as
 // a project and enabled — every test drives the real /plugins proxy.
@@ -301,14 +299,13 @@ const rawGet = (port, p, headers = {}, method = 'GET') => new Promise((resolve, 
   }).on('error', reject).end();
 });
 
-test('base path: X-Forwarded-Prefix, Location and the bare-id redirect carry the base; upstream gets identity encoding', async () => {
+test('base path: X-Forwarded-Prefix, Location and the bare-id redirect carry the base', async () => {
   // Invariant: a plugin that builds URLs from X-Forwarded-Prefix, or redirects, lands under the hosting prefix.
   const boot = await setup({ basePath: BASE });
   try {
     for (const prefix of ['', BASE]) {
       const h = await (await fetch(`${boot.baseUrl}${prefix}/plugins/fake-plugin/request-headers`, { headers: { 'accept-encoding': 'gzip' } })).json();
       assert.equal(h['x-forwarded-prefix'], `${BASE}/plugins/fake-plugin`, `via '${prefix}'`);
-      assert.equal(h['accept-encoding'], 'identity');
     }
     const rel = await fetch(`${boot.baseUrl}${BASE}/plugins/fake-plugin/redirect`, { redirect: 'manual' });
     assert.equal(rel.headers.get('location'), `${BASE}/plugins/fake-plugin/somewhere`);
@@ -318,39 +315,26 @@ test('base path: X-Forwarded-Prefix, Location and the bare-id redirect carry the
   } finally { await boot.close(); }
 });
 
-test('base path: only the bridge and theme host URLs in HTML are re-rooted, with a correct content-length', async () => {
-  // Invariant: a legacy root-absolute plugin page loads its bridge and theme under the base; nothing else is touched.
+test('base path: request headers and bodies are byte-identical to the no-base path', async () => {
+  // Invariant: a base changes nothing the proxy sends or returns beyond X-Forwarded-Prefix, Location and the bare-id redirect; no body is parsed.
   const boot = await setup({ basePath: BASE });
   try {
     const port = Number(new URL(boot.baseUrl).port);
-    const r = await rawGet(port, `${BASE}/plugins/fake-plugin/legacy`);
-    const body = r.body.toString('utf8');
-    assert.match(body, /href="\/p\/q\/pluginTheme\.css"/);
-    assert.match(body, /src="\/p\/q\/pluginBridge\.js"/);
-    assert.match(body, /<p>\/pluginBridge\.js stays text<\/p>/);
-    assert.equal(Number(r.headers['content-length']), r.body.length);
+    const hdrs = { 'accept-encoding': 'gzip, br' };
+    const parse = async (p) => JSON.parse((await rawGet(port, p, hdrs)).body.toString('utf8'));
+    const root = await parse('/plugins/fake-plugin/request-headers');
+    const based = await parse(`${BASE}/plugins/fake-plugin/request-headers`);
+    assert.deepEqual(based, root);
+    assert.equal(based['accept-encoding'], 'gzip, br');
+    const direct = await rawGet(await childPort(port), '/legacy');
+    const via = await rawGet(port, `${BASE}/plugins/fake-plugin/legacy`);
+    assert.ok(direct.body.includes('src="/pluginBridge.js"') && !direct.body.includes(BASE), 'fixture check: root-absolute and base-free');
+    assert.deepEqual(via.body, direct.body);
+    assert.equal(via.headers['content-length'], direct.headers['content-length']);
+    assert.equal(via.headers['transfer-encoding'], direct.headers['transfer-encoding']);
     const safe = (await rawGet(port, `${BASE}/plugins/fake-plugin/`)).body.toString('utf8');
     assert.match(safe, /src="\.\.\/\.\.\/pluginBridge\.js"/);
-    const json = await rawGet(port, `${BASE}/plugins/fake-plugin/env`);
-    assert.equal(JSON.parse(json.body.toString('utf8')).pluginId, 'fake-plugin');
   } finally { await boot.close(); }
-});
-
-test('base path: compressed HTML from a non-compliant child is piped untouched and warned once', async () => {
-  // Invariant: a degradation is visible (a warning), never silent corruption.
-  const boot = await setup({ basePath: BASE });
-  const warns = [];
-  const orig = console.warn;
-  console.warn = (...a) => { warns.push(a.join(' ')); };
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    for (let i = 0; i < 2; i++) {
-      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/gzip-html`);
-      assert.equal(r.headers['content-encoding'], 'gzip');
-      assert.match(zlib.gunzipSync(r.body).toString(), /src="\/pluginBridge\.js"/);
-    }
-    assert.equal(warns.filter((w) => w.includes("plugin 'fake-plugin'")).length, 1);
-  } finally { console.warn = orig; await boot.close(); }
 });
 
 test('base path: a plugin WebSocket upgrades under the prefix', async () => {
@@ -376,90 +360,17 @@ test('no base: the proxy forwards exactly as before (prefix, encoding, body)', a
     const h = JSON.parse((await rawGet(port, '/plugins/fake-plugin/request-headers', { 'accept-encoding': 'gzip' })).body.toString('utf8'));
     assert.equal(h['x-forwarded-prefix'], '/plugins/fake-plugin');
     assert.equal(h['accept-encoding'], 'gzip');
-    const legacy = (await rawGet(port, '/plugins/fake-plugin/legacy')).body.toString('utf8');
-    assert.match(legacy, /href="\/pluginTheme\.css"/);
-    assert.match(legacy, /src="\/pluginBridge\.js"/);
+    const direct = await rawGet(await childPort(port), '/legacy');
+    const legacy = await rawGet(port, '/plugins/fake-plugin/legacy');
+    assert.deepEqual(legacy.body, direct.body);
+    assert.match(legacy.body.toString('utf8'), /src="\/pluginBridge\.js"/);
   } finally { await boot.close(); }
 });
 
 // The fake plugin's own port, to read what the child sent before the proxy touched it.
 const childPort = async (ccPort) => (await (await fetch(`http://127.0.0.1:${ccPort}/plugins/fake-plugin/env`)).json()).port;
 
-test('base path: a non-UTF-8 page comes through byte-identical except the two rewritten values', async () => {
-  // Invariant: the rewrite never decodes the body, so bytes >= 0x80 that are not UTF-8 survive.
-  const boot = await setup({ basePath: BASE });
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    const plain = (await rawGet(await childPort(port), '/latin1')).body;
-    const viaBase = await rawGet(port, `${BASE}/plugins/fake-plugin/latin1`);
-    const expected = Buffer.from(plain.toString('latin1')
-      .replace('src="/pluginBridge.js"', `src="${BASE}/pluginBridge.js"`)
-      .replace('href="/pluginTheme.css"', `href="${BASE}/pluginTheme.css"`), 'latin1');
-    assert.notDeepEqual(viaBase.body, plain, 'fixture check: the page was rewritten');
-    assert.deepEqual(viaBase.body, expected);
-    assert.equal(Number(viaBase.headers['content-length']), expected.length);
-    assert.match(viaBase.headers['content-type'], /windows-1252/);
-  } finally { await boot.close(); }
-});
-
-test('base path: HEAD and body-less answers keep the upstream headers and are not rewritten', async () => {
-  // Invariant: a response with no body is neither buffered nor given a recomputed content-length.
-  const boot = await setup({ basePath: BASE });
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    const direct = await rawGet(await childPort(port), '/sized-html', {}, 'HEAD');
-    const head = await rawGet(port, `${BASE}/plugins/fake-plugin/sized-html`, {}, 'HEAD');
-    assert.equal(head.status, 200);
-    assert.ok(Number(direct.headers['content-length']) > 0, 'fixture check: upstream names a length');
-    assert.equal(head.headers['content-length'], direct.headers['content-length']);
-    assert.equal(head.body.length, 0);
-    for (const status of [204, 304]) {
-      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/empty-html?status=${status}`);
-      assert.equal(r.status, status);
-      assert.equal(r.headers.etag, '"x"');
-      assert.equal(r.headers['content-length'], undefined, `${status} carries no recomputed length`);
-      assert.equal(r.body.length, 0);
-    }
-  } finally { await boot.close(); }
-});
-
-test('base path: HTML over the buffering cap streams untouched with one warning, declared length or chunked', async () => {
-  // Invariant: the proxy never buffers more than the cap; the over-cap page is intact and the degradation is logged once.
-  const boot = await setup({ basePath: BASE });
-  const warns = [];
-  const orig = console.warn;
-  console.warn = (...a) => { warns.push(a.join(' ')); };
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    const bytes = REWRITE_BODY_CAP_BYTES + 1024;
-    for (const chunked of ['0', '1']) {
-      const r = await rawGet(port, `${BASE}/plugins/fake-plugin/big-html?bytes=${bytes}&chunked=${chunked}`);
-      const text = r.body.toString('latin1');
-      assert.equal(r.body.length, bytes, `chunked=${chunked}: whole body arrives`);
-      assert.ok(text.startsWith('<script src="/pluginBridge.js">') && text.endsWith('<script src="/pluginBridge.js"></script>'), `chunked=${chunked}: untouched`);
-      if (chunked === '0') assert.equal(Number(r.headers['content-length']), bytes);
-    }
-    const small = await rawGet(port, `${BASE}/plugins/fake-plugin/big-html?bytes=2048&chunked=1`);
-    assert.match(small.body.toString('latin1'), /^<script src="\/p\/q\/pluginBridge\.js">/, 'under the cap is rewritten');
-    assert.equal(warns.filter((w) => w.includes("plugin 'fake-plugin'") && w.includes('cap')).length, 1);
-  } finally { console.warn = orig; await boot.close(); }
-});
-
-test('base path: a 206 slice (or any Content-Range answer) is streamed untouched', async () => {
-  // Invariant: the rewrite never changes a partial body's length behind a Content-Range that describes the original.
-  const boot = await setup({ basePath: BASE });
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    const direct = await rawGet(await childPort(port), '/partial-html');
-    const via = await rawGet(port, `${BASE}/plugins/fake-plugin/partial-html`);
-    assert.equal(via.status, 206);
-    assert.deepEqual(via.body, direct.body);
-    assert.equal(via.headers['content-length'], direct.headers['content-length']);
-    assert.equal(via.headers['content-range'], direct.headers['content-range']);
-  } finally { await boot.close(); }
-});
-
-test('upstream abort mid-body ends the client response (reset), over the cap and with no base alike', async () => {
+test('upstream abort mid-body ends the client response (reset), with a base and without', async () => {
   // Invariant: an upstream that dies mid-body never leaves the client hanging with neither end nor error.
   const outcome = (port, p) => new Promise((resolve) => {
     const timer = setTimeout(() => resolve('hang'), 8000);
@@ -471,11 +382,10 @@ test('upstream abort mid-body ends the client response (reset), over the cap and
       res.on('close', () => done(res.complete ? 'complete' : 'reset'));
     }).on('error', () => done('reset'));
   });
-  const over = REWRITE_BODY_CAP_BYTES + 4096;
   const withBase = await setup({ basePath: BASE });
   try {
     const port = Number(new URL(withBase.baseUrl).port);
-    assert.equal(await outcome(port, `${BASE}/plugins/fake-plugin/abort-html?declared=${over}&sent=65536`), 'reset', 'over-cap declared length');
+    assert.equal(await outcome(port, `${BASE}/plugins/fake-plugin/abort-html?declared=100000&sent=65536`), 'reset', 'with a base');
   } finally { await withBase.close(); }
   const noBase = await setup();
   try {
@@ -484,47 +394,31 @@ test('upstream abort mid-body ends the client response (reset), over the cap and
   } finally { await noBase.close(); }
 });
 
-test('base path: status 206 alone, or a Content-Range alone, excludes the rewrite', async () => {
-  // Invariant: either signal on its own streams the body untouched, with its original length and headers.
-  const boot = await setup({ basePath: BASE });
-  try {
-    const port = Number(new URL(boot.baseUrl).port);
-    const child = await childPort(port);
-    for (const [route, status] of [['partial-no-range', 206], ['ranged-ok', 200]]) {
-      const direct = await rawGet(child, `/${route}`);
-      const via = await rawGet(port, `${BASE}/plugins/fake-plugin/${route}`);
-      assert.equal(via.status, status, route);
-      assert.deepEqual(via.body, direct.body, `${route}: byte-identical`);
-      assert.ok(!via.body.toString().includes(BASE), `${route}: no rewrite`);
-      assert.equal(via.headers['content-length'], direct.headers['content-length'], route);
-    }
-  } finally { await boot.close(); }
-});
-
-test('base path: an upstream that over-sends past its Content-Length cannot crash cc', async () => {
-  // Invariant: the buffered branch owns the response, so the upstream-error 502 and the deferred writeHead never both write; cc keeps answering.
-  const boot = await setup({ basePath: BASE });
+test('an upstream that over-sends past its Content-Length cannot crash cc, with a base and without', async () => {
+  // Invariant: an upstream error once the body is streaming cuts the pair instead of ending the response while the pipe still writes; cc keeps answering.
   const uncaught = [];
   const onUncaught = (e) => uncaught.push(e);
   process.on('uncaughtException', onUncaught);
   try {
-    const port = Number(new URL(boot.baseUrl).port);
-    for (let i = 0; i < 4; i++) {
-      const outcome = await new Promise((resolve) => {
-        const chunks = [];
-        const timer = setTimeout(() => resolve({ hang: true }), 8000);
-        http.get({ host: '127.0.0.1', port, path: `${BASE}/plugins/fake-plugin/oversend-html` }, (res) => {
-          res.on('data', (c) => chunks.push(c));
-          res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode, body: Buffer.concat(chunks).toString() }); });
-          res.on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
-        }).on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
-      });
-      assert.ok(!outcome.hang, 'never a hang');
-      if (outcome.status === 200) assert.ok(outcome.body.includes(`src="${BASE}/pluginBridge.js"`), 'a full page is the rewritten one');
-      else if (outcome.status !== undefined) assert.equal(outcome.status, 502, 'else a clean 502');
+    for (const [name, opts, prefix] of [['with a base', { basePath: BASE }, BASE], ['no base', undefined, '']]) {
+      const boot = await setup(opts);
+      try {
+        const port = Number(new URL(boot.baseUrl).port);
+        for (let i = 0; i < 4; i++) {
+          const outcome = await new Promise((resolve) => {
+            const timer = setTimeout(() => resolve({ hang: true }), 8000);
+            http.get({ host: '127.0.0.1', port, path: `${prefix}/plugins/fake-plugin/oversend-html` }, (res) => {
+              res.on('data', () => {});
+              res.on('end', () => { clearTimeout(timer); resolve({ status: res.statusCode }); });
+              res.on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
+              res.on('close', () => { clearTimeout(timer); resolve({ reset: true }); });
+            }).on('error', () => { clearTimeout(timer); resolve({ reset: true }); });
+          });
+          assert.ok(!outcome.hang, `${name}: never a hang`);
+        }
+        assert.deepEqual(uncaught, [], `${name}: no uncaught exception`);
+        assert.equal((await fetch(`${boot.baseUrl}${prefix}/api/health`)).status, 200, `${name}: cc still answers`);
+      } finally { await boot.close(); }
     }
-    assert.deepEqual(uncaught, [], 'no uncaught exception');
-    const after = await fetch(`${boot.baseUrl}${BASE}/api/health`);
-    assert.equal(after.status, 200, 'cc still answers');
-  } finally { process.off('uncaughtException', onUncaught); await boot.close(); }
+  } finally { process.off('uncaughtException', onUncaught); }
 });

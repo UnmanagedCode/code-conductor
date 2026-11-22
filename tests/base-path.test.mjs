@@ -1,6 +1,5 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { rewritePluginHostUrls } from '../src/plugins/proxy.ts';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { parseBasePath, stripBasePath, reservedRootSegments } from '../src/basePath.ts';
@@ -108,40 +107,4 @@ test('stripBasePath: a bare base redirects to the trailing-slash form, query kep
 
 test('stripBasePath: with no base it is the identity', () => {
   assert.deepEqual(stripBasePath('', '/p/q/api'), { url: '/p/q/api' });
-});
-
-const buf = (t) => Buffer.from(t, 'latin1');
-
-test('rewritePluginHostUrls: an attribute-shaped bridge or theme URL is re-rooted in both quote styles', () => {
-  const html = buf(`<script src="/pluginBridge.js"></script><link href='/pluginTheme.css' rel=stylesheet>`);
-  assert.equal(rewritePluginHostUrls(html, '/p/q').toString('latin1'),
-    `<script src="/p/q/pluginBridge.js"></script><link href='/p/q/pluginTheme.css' rel=stylesheet>`);
-});
-
-test('rewritePluginHostUrls: each non-matching shape is left byte-identical', () => {
-  // Invariant: only `src|href = quote /pluginBridge.js|/pluginTheme.css quote` is rewritten; a longer name, a relative or other URL, an unquoted or mismatched-quote value, and the bare path in text stay.
-  for (const same of [
-    '<script src="/pluginBridge.jsx"></script>', '<img src="/a.png">', '<script src="../../pluginBridge.js"></script>',
-    '<script src=/pluginBridge.js></script>', `<script src="/pluginBridge.js'></script>`, '<p>/pluginBridge.js</p>',
-    '<script src="/x/pluginBridge.js"></script>', '<link href="/pluginTheme.css.map">',
-  ]) {
-    assert.equal(rewritePluginHostUrls(buf(same), '/p/q').toString('latin1'), same, same);
-  }
-});
-
-test('rewritePluginHostUrls: the match is by bytes, so attribute-shaped text is rewritten too', () => {
-  // Pins the documented limit: the rewrite is not markup-aware.
-  assert.equal(rewritePluginHostUrls(buf('<p>src="/pluginBridge.js"</p>'), '/p/q').toString('latin1'), '<p>src="/p/q/pluginBridge.js"</p>');
-});
-
-test('rewritePluginHostUrls: every byte outside the two values survives, whatever the charset', () => {
-  const all = Buffer.from(Array.from({ length: 256 }, (_, i) => i));
-  const html = Buffer.concat([all, buf('<script src="/pluginBridge.js">'), all]);
-  const out = rewritePluginHostUrls(html, '/p/q');
-  assert.deepEqual(out, Buffer.concat([all, buf('<script src="/p/q/pluginBridge.js">'), all]));
-});
-
-test('rewritePluginHostUrls: no base is the identity', () => {
-  const html = buf('<script src="/pluginBridge.js"></script>');
-  assert.equal(rewritePluginHostUrls(html, ''), html);
 });
