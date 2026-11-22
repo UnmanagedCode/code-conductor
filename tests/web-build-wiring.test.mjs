@@ -38,9 +38,10 @@ test('tests/run.mjs sets CC_SKIP_WEB_BUILD=1 and CC_SKIP_DEPS_SYNC=1 before it s
 });
 
 test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1 / CC_SKIP_DEPS_SYNC=1 turn their step off', () => {
-  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true, recordBootCommit: true });
-  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true, recordBootCommit: true });
-  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false, recordBootCommit: true });
+  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true, recordBootCommit: true, basePath: '' });
+  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true, recordBootCommit: true, basePath: '' });
+  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false, recordBootCommit: true, basePath: '' });
+  assert.equal(entryStartOptions({ CC_BASE_PATH: '/p/q' }).basePath, '/p/q');
   for (const v of ['', '0', 'true', 'yes', ' 1']) {
     assert.equal(entryStartOptions({ CC_SKIP_WEB_BUILD: v }).buildWeb, true, JSON.stringify(v));
     assert.equal(entryStartOptions({ CC_SKIP_DEPS_SYNC: v }).syncDeps, true, JSON.stringify(v));
@@ -50,7 +51,7 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
 test('start() hands its buildWeb and syncDeps, its root lock, its headless flag and whether a restart supervisor launched it, to createServer as the restart route\'s relaunch options, and its restart-status reader', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, restartStatus, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, restartStatus, basePath, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
 });
 
 test('start() takes its supervised flag from takeRestartSupervisor(), before it acquires the root lock', async () => {

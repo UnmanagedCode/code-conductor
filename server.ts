@@ -36,6 +36,7 @@ import { prepareResumeBoot, startResumeLifecycle } from './src/resumeBoot.ts';
 import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from './src/plugins/registry.ts';
 import { createPluginLibrary } from './src/plugins/library.ts';
 import { buildPluginProxy } from './src/plugins/proxy.ts';
+import { basePathMiddleware, parseBasePath, stripBasePath } from './src/basePath.ts';
 import { pluginThemeRouter } from './src/pluginTheme.ts';
 import { setPluginConventionsProvider } from './src/projectConventions.ts';
 import { setPluginConductorConventionsProvider } from './src/conductorConventions.ts';
@@ -69,10 +70,14 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus }: { restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus, basePath }: { basePath?: string; restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
+  // CC_BASE_PATH: strip the hosting prefix before routing (src/basePath.ts); an
+  // invalid value throws here, so start() fails loudly.
+  const base = parseBasePath(basePath);
+  app.use(basePathMiddleware(base));
   const instances = withInstances ? new InstanceManager({ claudeLauncher, platform }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
   // than delete a backend out from under a running/respawnable instance, whose next
@@ -171,7 +176,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
     claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
-  const pluginProxy = buildPluginProxy({ pluginHost });
+  const pluginProxy = buildPluginProxy({ pluginHost, basePath: base });
   app.use('/plugins', pluginProxy.handler);
   // Plugin pages load the bridge and the host theme (/pluginTheme.css + its
   // fonts) from here. Both are served from their sources, not the web build, so
@@ -195,7 +200,10 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   server.on('upgrade', (req, socket, head) => {
     if (!admitOrigin(req, socket)) return;
     let pathname: string | null = null;
-    try { pathname = new URL(req.url ?? '', 'http://placeholder').pathname; }
+    const stripped = stripBasePath(base, req.url ?? '');
+    if ('redirect' in stripped) { socket.destroy(); return; }
+    req.url = stripped.url;
+    try { pathname = new URL(req.url, 'http://placeholder').pathname; }
     catch { socket.destroy(); return; }
     if (pathname === '/ws') {
       wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
@@ -257,13 +265,14 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // never build web/dist or install into the shared node_modules. Only the real
 // entry captures the boot commit (src/bootCommit.ts) and hands it to merge
 // hooks into its own checkout.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean } {
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean; basePath: string } {
   return {
     port: Number(env.PORT ?? DEFAULT_PORT),
     host: env.HOST ?? '127.0.0.1',
     buildWeb: env.CC_SKIP_WEB_BUILD !== '1',
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
     recordBootCommit: true,
+    basePath: env.CC_BASE_PATH ?? '',
   };
 }
 
@@ -271,8 +280,10 @@ const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export async function start({
   port = DEFAULT_PORT, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
-  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false,
+  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false, basePath = '',
 }: {
+  // CC_BASE_PATH, raw: parsed (and refused when invalid) by createServer.
+  basePath?: string;
   port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
   // `checkoutRoot` is the checkout this server runs from; a test points it at a fixture.
   recordBootCommit?: boolean; checkoutRoot?: string;
@@ -286,7 +297,7 @@ export async function start({
   const supervised = takeRestartSupervisor();
   const rootLock = await acquireRootLock({ storeDir: orchStoreRoot(), platform });
   try {
-    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised });
+    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath });
   } catch (e) {
     rootLock.releaseSync();
     throw e;
@@ -294,8 +305,9 @@ export async function start({
 }
 
 async function startHolding(rootLock: RootLock, {
-  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised,
+  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath,
 }: {
+  basePath: string;
   port: number; host: string; platform: Platform; buildWeb: boolean; syncDeps: boolean; webBuild?: () => Promise<unknown>;
   recordBootCommit: boolean; checkoutRoot: string; headless: boolean; supervised: boolean;
 }) {
@@ -355,7 +367,7 @@ async function startHolding(rootLock: RootLock, {
   // sessions it must keep (as does pending-continue.json).
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
+  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, basePath, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
@@ -463,7 +475,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       start: () => start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true }),
     });
   } else start(entryStartOptions(process.env)).then(({ port, host }) => {
-    console.log(`code-conductor listening on http://${host}:${port}`);
+    console.log(`code-conductor listening on http://${host}:${port}${parseBasePath(process.env.CC_BASE_PATH)}`);
   }).catch(e => {
     if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
       console.error(e.message);

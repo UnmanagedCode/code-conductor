@@ -52,6 +52,7 @@ export const ENV_VARS: Readonly<Record<string, EnvVar>> = {
   CLAUDE_PROJECTS_ROOT: { kind: 'knob', default: null, purpose: 'Root local session jsonl is read from.' },
   HOST: { kind: 'knob', default: "'127.0.0.1'", purpose: 'Bind address.' },
   PORT: { kind: 'knob', default: 'DEFAULT_PORT', purpose: 'Listen port.' },
+  CC_BASE_PATH: { kind: 'knob', default: null, purpose: 'URL path prefix cc is hosted under behind a reverse proxy (e.g. /apps/cc-2); unset = root.' },
   CC_SKIP_WEB_BUILD: { kind: 'knob', default: null, purpose: '=1 skips the web build at boot and before a restart.' },
   CC_SKIP_DEPS_SYNC: { kind: 'knob', default: null, purpose: '=1 skips the dependency install before a restart.' },
   CC_ROOT_LOCK_HANDOVER_WAIT_MS: { kind: 'knob', default: '120_000', purpose: 'How long a restarting server waits for its replacement to adopt the root lock.' },
