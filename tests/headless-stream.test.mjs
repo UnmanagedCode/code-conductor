@@ -252,9 +252,10 @@ function parsedTasks(i) {
   return seen;
 }
 
-// Invariant (spec 6): with no manager listener the tap emits nothing; with one,
-// exactly one {instance, line} per line.
-test('tap: silent with no listener; one {instance, line} per line once listened to', async (t) => {
+// Invariant (spec 6): with no manager listener the manager emits no
+// stdout_line (the Instance always relays); with one, exactly one
+// {instance, line} per line.
+test('tap: the manager is silent with no listener; one {instance, line} per line once listened to', async (t) => {
   const ctx = await bootWith(t);
   const i = await spawnPlain(ctx, 'p');
   const emits = [];

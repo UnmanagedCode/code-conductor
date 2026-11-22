@@ -63,9 +63,13 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     const o = renderResult(r, format);
     if (o.stderr) process.stderr.write(o.stderr);
     // Writes are ordered, so every streamed line is flushed before the result,
-    // and the exit waits for the result's own flush. On a destroyed stdout the
-    // callback still fires, with an error.
-    writeOut(o.stdout, () => exitOnce(r.exitCode));
+    // and the exit waits for the result's own flush. On a closed or destroyed
+    // stdout the callback still fires, with an error, and names it on stderr —
+    // the only trace an undelivered result leaves.
+    writeOut(o.stdout, (err?: Error | null) => {
+      if (err) process.stderr.write(`headless: the result was not delivered: stdout closed (${(err as NodeJS.ErrnoException).code ?? errMsg(err)})\n`);
+      exitOnce(r.exitCode);
+    });
   };
 
   // Nothing reads stdout any more (EPIPE, or any other write error). Never

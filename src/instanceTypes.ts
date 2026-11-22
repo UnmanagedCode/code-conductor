@@ -375,7 +375,7 @@ export interface InstanceManagerLike {
   emit(event: 'turn_started', arg: TurnStarted): void;
   emit(event: 'turn_ended', arg: TurnEnded): void;
   emit(event: 'enforcement_changed', arg: EnforcementChanged): void;
-  // Every CLI stdout line, emitted only while a listener exists (the headless stream).
+  // Every CLI stdout line as {instance, line}; emitted only while the manager has a listener (the headless stream).
   emit(event: 'stdout_line', arg: StdoutLine): void;
   _overageResumeMode: boolean;
   _overageResetsAt: number | null;

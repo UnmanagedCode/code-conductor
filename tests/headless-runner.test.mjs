@@ -12,7 +12,6 @@
 import { test, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { sleep } from './poll.mjs';
@@ -398,23 +397,19 @@ test('the run handle reports no facts before the spawn, the root\'s once it exis
 });
 
 // Invariant: the stream learns the root before the run produces output — onRoot
-// runs once, with the root, before its first prompt reaches the CLI's stdin.
-test('onRoot is handed the root once, before its first prompt is on stdin', async () => {
+// runs once, with the root, before its first prompt is sent. The discriminator
+// is synchronous: the root is spawned pristine, and promptOrQueueSteer's first
+// step (_endPristine) clears that flag, so a root still pristine inside onRoot
+// has not been prompted yet.
+test('onRoot is handed the root once, before its first prompt is sent', async () => {
   const calls = [];
-  const rootLog = path.join(home, 'root-stdin.jsonl');
-  const r = await start({
-    scenario: BASIC,
-    onRoot: (root) => {
-      const sent = fs.existsSync(rootLog) ? fs.readFileSync(rootLog, 'utf8') : '';
-      calls.push({ root, promptSent: sent.includes('[Headless run]') });
-    },
-  });
+  const r = await start({ scenario: BASIC, onRoot: (root) => { calls.push({ root, pristine: root.pristine }); } });
   const result = await r.run;
   assert.equal(result.reason, 'completed');
   assert.equal(calls.length, 1);
   assert.equal(calls[0].root, r.root);
-  assert.equal(calls[0].promptSent, false);
-  assert.equal((await stdinTexts(rootLog)).length, 1, 'premise: the prompt did go out afterwards');
+  assert.equal(calls[0].pristine, true, 'not yet prompted when onRoot ran');
+  assert.equal(r.root.pristine, false, 'premise: the prompt cleared the flag afterwards');
 });
 
 // Invariant: the cap, stream-failure and closed-stdout paths end the run, as a

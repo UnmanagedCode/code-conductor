@@ -48,7 +48,7 @@ Exit codes — `EXIT_CODES` and `signalExitCode` (`src/headless/result.ts`):
 
 **`--include-workers`** (only with `stream-json`) streams every session in the run's tree, each line labelled.
 - **Membership:** the tree `InstanceManager.isTreeQuiescent` judges (`runTreeIds`, `inRunTree`): the root, every conducted session attributed to the root at create (`rootSessionId`, so a grandchild whose section lead has left still counts), and everything those own transitively. A session admitted once streams for the rest of the run, even after it leaves the tree. A session found outside is re-checked on its next line after any manager `status` or `subscription_changed` event (a dispatch from a tree member brings one in before its turn's lines).
-- **Labels** — read from the instance when the line arrives, never from the line. All six keys are always present; a missing value is JSON `null`, never an absent key.
+- **Labels** — read from the instance when the line arrives, never from the line. Every key in the table is always present; a missing value is JSON `null`, never an absent key.
 
 | Field | Value |
 |---|---|
@@ -65,5 +65,5 @@ Exit codes — `EXIT_CODES` and `signalExitCode` (`src/headless/result.ts`):
 **Backpressure and a closed stdout**
 - **The CLIs are never paused.** Node buffers what the consumer hasn't read yet; below the cap, a slow consumer does not affect the run.
 - **Past `STREAM_STDOUT_CAP_BYTES`** (`src/headless/stream.ts`) unflushed bytes, streaming stops — no later line is written — and the run ends `conductor_error`, its error naming the lag. The `cc_result` line is still written, but may itself wait in the buffer: the process exits once it is flushed, so a consumer that never reads keeps the process alive until a signal (which, after the result, kills it).
-- **A closed stdout (EPIPE, or any write error):** mid-run, the run ends `conductor_error` (exit 3) with nothing more written; while the result is being written, the process exits with that result's code. No `cc_result` line is delivered either way.
+- **A closed stdout (EPIPE, or any write error):** mid-run, the run ends `conductor_error` (exit 3) with nothing more written; while the result is being written, the process exits with that result's code. No `cc_result` line is delivered either way; stderr says `headless: the result was not delivered: stdout closed (<code>)`.
 - `json` and `text` are unchanged on a live pipe.

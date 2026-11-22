@@ -2821,8 +2821,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     outRl.on('line', (line) => {
       this._debugLog('stdout', line);
       // The raw line, before its parse, so a relayed line precedes anything the
-      // parse triggers; late lines past `ended` too. Only while listened to.
-      if (this.listenerCount('stdout_line') > 0) this.emit('stdout_line', line);
+      // parse triggers; late lines past `ended` too. Always emitted: the
+      // manager's relay (_doCreateResolved) is attached before the first launch.
+      this.emit('stdout_line', line);
       this._handleStdoutLine(line, ended);
     });
 
@@ -5872,7 +5873,8 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
 
     inst.on('event', (ev: UiEvent, replayed?: boolean, pullOnly?: boolean) =>
       this.emit('event', { id, ev, replayed: replayed === true, pullOnly: pullOnly === true }));
-    // Raw CLI stdout for the headless stream (src/headless/stream.ts); no payload without a listener.
+    // Raw CLI stdout for the headless stream (src/headless/stream.ts). Runs for
+    // every line; without a manager listener it builds no payload and emits nothing.
     inst.on('stdout_line', (line: string) => {
       if (this.listenerCount('stdout_line') === 0) return;
       this.emit('stdout_line', { instance: inst, line });

@@ -27,7 +27,7 @@ async function freshHome(t) {
 const rootOf = (home) => path.join(home, 'project');
 const lockDirOf = (home) => path.join(rootOf(home), '.code-conductor', ROOT_LOCK_DIRNAME);
 
-function run(t, home, args, { stdin = '', closeStdout = false } = {}) {
+function run(t, home, args, { stdin = '' } = {}) {
   const child = spawn(process.execPath, [SERVER_TS, ...args], {
     cwd: home,
     env: {
@@ -42,8 +42,7 @@ function run(t, home, args, { stdin = '', closeStdout = false } = {}) {
   });
   child.stdin.end(stdin);
   const out = { stdout: '', stderr: '' };
-  if (closeStdout) child.stdout.destroy();
-  else child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
+  child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
   child.stderr.setEncoding('utf8').on('data', (c) => { out.stderr += c; });
   t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
   return new Promise((resolve) => child.once('close', (code) => resolve({ code, ...out })));
@@ -256,10 +255,33 @@ test('a boot failure under stream-json: exit 1, one boot_failed cc_result line',
 });
 
 // Invariant: when the result can't be delivered, the process still exits with
-// the result's code, and the dead pipe never reaches the catch-all.
-test('stdout closed before the result: still exit 2, no catch-all', async (t) => {
+// the result's code, says so on stderr, and the dead pipe never reaches the
+// catch-all. Deterministic: the child blocks reading its prompt from stdin; the
+// test closes the child's stdout and waits for the close before ending stdin,
+// so the empty-prompt usage result is written into a pipe with no reader.
+test('stdout closed before the result is written: exit 2, the undelivered result named on stderr, no catch-all', async (t) => {
   const home = await freshHome(t);
-  const r = await run(t, home, ['--output-format', 'stream-json', '--prompt', 'a', '--mode', 'yolo'], { closeStdout: true });
-  assert.equal(r.code, 2, r.stderr);
-  assert.doesNotMatch(r.stderr, /unexpected failure/);
+  const child = spawn(process.execPath, [SERVER_TS, '--output-format', 'stream-json', '--prompt-file', '-'], {
+    cwd: home,
+    env: { ...process.env, HOME: home, PORT: '0', HOST: '127.0.0.1', PROJECTS_ROOT: rootOf(home), CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects') },
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  t.after(() => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (c) => { stderr += c; });
+  const closed = new Promise((resolve) => child.once('close', (code) => resolve(code)));
+  const start = Date.now();
+  while (!/reading the prompt from stdin/.test(stderr)) {
+    assert.ok(Date.now() - start < 30_000, `never started reading stdin: ${stderr}`);
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  const stdoutClosed = new Promise((resolve) => child.stdout.once('close', resolve));
+  child.stdout.destroy();
+  await stdoutClosed;
+  child.stdin.end('');
+  const code = await closed;
+  assert.equal(code, 2, stderr);
+  assert.match(stderr, /the prompt is empty/, 'premise: the usage result was the one written');
+  assert.match(stderr, /headless: the result was not delivered: stdout closed \(EPIPE\)/);
+  assert.doesNotMatch(stderr, /unexpected failure/);
 });
