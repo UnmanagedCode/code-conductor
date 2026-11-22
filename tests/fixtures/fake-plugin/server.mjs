@@ -7,7 +7,6 @@
 // tool invocation with {result} or {error}; non-200 = transport failure).
 import http from 'node:http';
 import crypto from 'node:crypto';
-import zlib from 'node:zlib';
 
 const PORT = Number(process.env.PORT ?? 0); // standalone-runnable: defaults its own (ephemeral) port
 
@@ -35,50 +34,11 @@ const server = http.createServer(async (req, res) => {
     return;
   }
   if (url.pathname === '/legacy') {
-    // Root-absolute host URLs, kept on purpose: the proxy rewrites them under a base path.
+    // Root-absolute host URLs: under a base path they pass through untouched, so this page loses the bridge and theme there.
     res.writeHead(200, { 'content-type': 'text/html' });
     res.end('<!doctype html><html><head><link rel="stylesheet" href="/pluginTheme.css">'
       + '<script src="/pluginBridge.js" defer></script></head>'
       + '<body><h1>legacy plugin</h1><p>/pluginBridge.js stays text</p></body></html>');
-    return;
-  }
-  if (url.pathname === '/latin1') {
-    // A non-UTF-8 page: bytes >= 0x80 that are not valid UTF-8 sit around the two host URLs.
-    res.writeHead(200, { 'content-type': 'text/html; charset=windows-1252' });
-    res.end(Buffer.concat([
-      Buffer.from('<!doctype html><meta charset="windows-1252"><p>caf'),
-      Buffer.from([0xe9, 0xff, 0x80, 0xc3]),
-      Buffer.from('</p><script src="/pluginBridge.js"></script><link href="/pluginTheme.css"><p>'),
-      Buffer.from([0xa3, 0xfe]),
-      Buffer.from('</p>'),
-    ]));
-    return;
-  }
-  if (url.pathname === '/sized-html') {
-    // An explicit content-length, which a HEAD answer repeats with no body.
-    const body = '<!doctype html><script src="/pluginBridge.js"></script>';
-    res.writeHead(200, { 'content-type': 'text/html', 'content-length': String(Buffer.byteLength(body)) });
-    res.end(body);
-    return;
-  }
-  if (url.pathname === '/empty-html') {
-    // Body-less answers that still name an HTML content type.
-    res.writeHead(Number(url.searchParams.get('status')), { 'content-type': 'text/html', etag: '"x"' });
-    res.end();
-    return;
-  }
-  if (url.pathname === '/big-html') {
-    // `bytes` of HTML starting and ending with a root-absolute bridge URL; declared length or chunked.
-    const bytes = Number(url.searchParams.get('bytes'));
-    const open = '<script src="/pluginBridge.js"></script>';
-    const close = '<script src="/pluginBridge.js"></script>';
-    const pad = Buffer.alloc(bytes - open.length - close.length, 0x61);
-    const headers = { 'content-type': 'text/html' };
-    if (url.searchParams.get('chunked') !== '1') headers['content-length'] = String(bytes);
-    res.writeHead(200, headers);
-    res.write(open);
-    for (let off = 0; off < pad.length; off += 65536) res.write(pad.subarray(off, off + 65536));
-    res.end(close);
     return;
   }
   if (url.pathname === '/abort-html') {
@@ -95,32 +55,6 @@ const server = http.createServer(async (req, res) => {
     res.write(body);
     res.write(Buffer.alloc(80, 0x62));
     setTimeout(() => res.end(), 20);
-    return;
-  }
-  if (url.pathname === '/partial-no-range') {
-    // 206 with no Content-Range: the status alone must exclude the rewrite.
-    const body = '<script src="/pluginBridge.js"></script>';
-    res.writeHead(206, { 'content-type': 'text/html', 'content-length': String(body.length) });
-    res.end(body);
-    return;
-  }
-  if (url.pathname === '/ranged-ok') {
-    // 200 carrying Content-Range: the header alone must exclude the rewrite.
-    const body = '<script src="/pluginBridge.js"></script>';
-    res.writeHead(200, { 'content-type': 'text/html', 'content-range': `bytes 0-${body.length - 1}/${body.length}`, 'content-length': String(body.length) });
-    res.end(body);
-    return;
-  }
-  if (url.pathname === '/partial-html') {
-    // A 206 slice of a larger HTML document: its length and Content-Range describe the original bytes.
-    const slice = '<script src="/pluginBridge.js"></script>';
-    res.writeHead(206, { 'content-type': 'text/html', 'content-range': `bytes 0-${slice.length - 1}/9999`, 'content-length': String(slice.length) });
-    res.end(slice);
-    return;
-  }
-  if (url.pathname === '/gzip-html') {
-    res.writeHead(200, { 'content-type': 'text/html', 'content-encoding': 'gzip' });
-    res.end(zlib.gzipSync('<script src="/pluginBridge.js"></script>'));
     return;
   }
   if (url.pathname === '/request-headers') {
