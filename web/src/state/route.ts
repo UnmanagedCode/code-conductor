@@ -77,7 +77,7 @@ export function viewLinkHash(href: string): string | null {
   if (!LINKABLE.has(route.view)) return null;
   if (route.view !== 'plugin') return hash;
   if (!route.pluginId) return null;
-  const base = appUrl(`/plugins/${route.pluginId}/`);
+  const base = `${appUrl('/')}plugins/${route.pluginId}/`; // not appUrl(<path>): URL resolution would collapse a `..` id
   try {
     const frame = new URL(base + route.pluginPath, location.origin);
     return frame.origin === location.origin && frame.pathname.startsWith(base) ? hash : null;

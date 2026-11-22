@@ -25,9 +25,8 @@ const pending = new Map<string, { resolve: (msg: AckFrame) => void; reject: (e: 
 
 export function connect(): void {
   cleanup();
-  const url = new URL(appUrl('/ws'), location.href);
-  url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(url.href);
+  const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}${appUrl('/ws')}`;
+  ws = new WebSocket(url);
   ws.addEventListener('open', () => bus.dispatchEvent(new CustomEvent('open')));
   ws.addEventListener('close', () => {
     bus.dispatchEvent(new CustomEvent('close'));

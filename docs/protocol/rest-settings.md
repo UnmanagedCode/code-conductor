@@ -81,7 +81,7 @@
 - **Plugins.** The plugin proxy sends `X-Forwarded-Prefix: <base>/plugins/<id>`, prefixes the `Location` it rewrites and its bare-id 301, asks the child for `accept-encoding: identity`, and re-roots `"/pluginBridge.js"` / `"/pluginTheme.css"` attribute values in `text/html` responses. See [plugins/runtime.md](../plugins/runtime.md) → Reverse proxy.
 - **Framing headers are unchanged**: same-origin embedding only ([Response headers](#response-headers)).
 - **cc has no authentication.** A proxy that exposes it must supply auth.
-- **Pins:** `tests/base-path.test.mjs`, `tests/base-path-server.test.mjs`, `tests/plugins-proxy.test.mjs`, `tests/client-root-url-guard.test.mjs`, `web/e2e/base-path.spec.ts`.
+- **Pins:** `tests/base-path.test.mjs`, `tests/base-path-server.test.mjs`, `tests/plugins-proxy.test.mjs`, `web/src/clientRootUrls.test.ts`, `web/e2e/base-path.spec.ts`.
 
 ### Static routes
 
