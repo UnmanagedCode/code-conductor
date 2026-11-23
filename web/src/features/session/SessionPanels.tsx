@@ -80,18 +80,20 @@ export function SubagentPanel({ inst }: { inst: Instance }) {
   return (
     <Collapsible defaultOpen className="rounded-xl border bg-card/80 shadow-xs backdrop-blur" data-subagent-panel>
       <div className="flex items-center">
-        <CollapsibleTrigger className="group/sp flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm">
+        <CollapsibleTrigger className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left text-sm">
           <BotIcon className="size-4 text-plan" />
           <span className="font-medium">Workers</span>
           <span className="text-xs text-muted-foreground">{workers.length}</span>
-          <ChevronDownIcon className="ml-auto size-3.5 text-muted-foreground transition-transform group-data-[state=closed]/sp:-rotate-90" />
         </CollapsibleTrigger>
         {ended.length > 0 && (
-          <label data-ended-toggle className="flex shrink-0 items-center gap-1.5 pr-3 text-xs text-muted-foreground">
+          <label data-ended-toggle className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
             {ended.length} ended
             <Switch checked={showEnded} onCheckedChange={setShowEndedWorkers} aria-label="Show ended workers" />
           </label>
         )}
+        <CollapsibleTrigger aria-label="Toggle workers panel" className="group/sp flex shrink-0 items-center self-stretch px-3">
+          <ChevronDownIcon className="size-3.5 text-muted-foreground transition-transform group-data-[state=closed]/sp:-rotate-90" />
+        </CollapsibleTrigger>
       </div>
       <CollapsibleContent>
         <ul className="max-h-48 overflow-y-auto border-t py-1 text-sm">
