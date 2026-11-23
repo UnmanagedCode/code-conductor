@@ -3,8 +3,9 @@
 // page first, then each older page on the same route), with the anchor naming it.
 import '@/test/browserHash';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { act, render, screen } from '@testing-library/react';
-import { routeFetch } from '@/test/routeFetch';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { CONDUCT_PROJECT } from '@shared/conductors';
 import type { UiEvent } from '@shared/uiEvent';
 
 vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: vi.fn(), send: vi.fn() }));
@@ -74,3 +75,56 @@ describe('openEndedSession', () => {
   });
 });
 
+
+// The recorded spawn lineage (GET /api/sessions/:sid/spawner) reaches the read-only pane's header.
+const EMPTY_PAGE = { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null };
+const COND = { id: 'i-cond', project: CONDUCT_PROJECT, sessionId: 'cond-1', status: 'idle', mode: 'plan', title: 'Boss', conducted: false };
+
+async function mountPane(routes: Record<string, () => RouteAnswer | Promise<RouteAnswer>>) {
+  vi.resetModules();
+  routeFetch({ 'GET /api/sessions/s-x/lineage-events': () => ({ json: EMPTY_PAGE }), 'GET /api/sessions/s-z/lineage-events': () => ({ json: EMPTY_PAGE }), ...routes });
+  const c = await import('./controller');
+  const { appStore } = await import('@/state/app');
+  appStore.set({ instances: [COND] as any });
+  const { TooltipProvider } = await import('@/components/ui/tooltip');
+  const { SessionView } = await import('@/features/session/SessionView');
+  render(<TooltipProvider><SessionView /></TooltipProvider>);
+  return { c, appStore };
+}
+const backToBoss = () => screen.queryByRole('button', { name: 'Back to Boss' });
+
+describe('openEndedSession spawner lineage', () => {
+  // Invariant: reopening an archived conducted worker adopts its recorded spawner, so the header offers Back to the owner and clicking it selects the owner.
+  it('adopts the recorded spawner onto the ended pane and shows Back to the owner', async () => {
+    const { c, appStore } = await mountPane({
+      'GET /api/sessions/s-x/spawner': () => ({ json: { conducted: true, parentSessionId: 'cond-1', rootSessionId: 'cond-1' } }),
+    });
+    await act(async () => { await c.openEndedSession({ sessionId: 's-x', project: 'p', worktreeName: null, title: 'Old work' }); });
+    expect(appStore.get().ended).toMatchObject({ sessionId: 's-x', conducted: true, parentSessionId: 'cond-1', rootSessionId: 'cond-1' });
+    expect(backToBoss()).not.toBeNull();
+    fireEvent.click(backToBoss()!);
+    expect(appStore.get().activeId).toBe('i-cond');
+  });
+
+  // Invariant: a late spawner answer never writes onto a pane that has moved on.
+  it('drops a spawner answer that arrives after another session was opened', async () => {
+    const h = held<RouteAnswer>();
+    const { c, appStore } = await mountPane({ 'GET /api/sessions/s-x/spawner': () => h.answer });
+    await act(async () => { await c.openEndedSession({ sessionId: 's-x', project: 'p', worktreeName: null }); });
+    await act(async () => { await c.openEndedSession({ sessionId: 's-z', project: 'p', worktreeName: null }); });
+    await act(async () => { h.release({ json: { conducted: true, parentSessionId: 'cond-1', rootSessionId: 'cond-1' } }); });
+    expect(appStore.get().ended).toMatchObject({ sessionId: 's-z' });
+    expect(appStore.get().ended?.conducted).toBeUndefined();
+    expect(backToBoss()).toBeNull();
+  });
+
+  // Invariant: a session that is not conducted gets no owner chip.
+  it('adopts nothing for a session the server reports not conducted', async () => {
+    const { c, appStore } = await mountPane({
+      'GET /api/sessions/s-x/spawner': () => ({ json: { conducted: false, parentSessionId: null, rootSessionId: null } }),
+    });
+    await act(async () => { await c.openEndedSession({ sessionId: 's-x', project: 'p', worktreeName: null }); });
+    expect(appStore.get().ended?.conducted).toBeUndefined();
+    expect(document.querySelector('[data-owner-chip]')).toBeNull();
+  });
+});
