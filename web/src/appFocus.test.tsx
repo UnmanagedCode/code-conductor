@@ -2,6 +2,7 @@
 // Focus mode (a headless run or `--view` replay) renders no sidebar — neither
 // the desktop column nor the drawer — and no control that opens it.
 import '@/test/browserHash';
+import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { setFocus } from '@shared/focus';
@@ -21,6 +22,11 @@ vi.mock('@/app/sessionActions', () => ({
 vi.mock('@/conversation/ConversationView', () => ({ ConversationView: () => <div data-conversation-stub /> }));
 
 const { App } = await import('@/App');
+const { ViewShell } = await import('@/features/views/ViewShell');
+const { PluginView } = await import('@/features/views/PluginView');
+const { SettingsView } = await import('@/features/settings/SettingsView');
+const { SessionView } = await import('@/features/session/SessionView');
+const { TooltipProvider } = await import('@/components/ui/tooltip');
 const { pluginFrames } = await import('@/features/views/plugins');
 
 const sidebars = () => [...document.querySelectorAll('[data-sidebar]')];
@@ -81,4 +87,32 @@ describe('focus mode', () => {
     await settle();
     expect(desktopSidebar()).toHaveLength(0);
   });
+});
+
+// Each surface that carries its own "Open sidebar" button hides it in focus mode,
+// each against a non-focus control so the absence is not vacuous. Components are
+// mounted directly: some are unreachable in a focused client by construction
+// (Settings under view-only), but their own guard is the invariant.
+describe('every Open sidebar button is gone in focus mode', () => {
+  const surfaces: [string, () => React.ReactElement, () => void][] = [
+    ['the session view\'s empty state', () => <SessionView />, () => appStore.set({ activeId: null, instances: [] })],
+    ['a full-page view (ViewShell)', () => <ViewShell title="A view">body</ViewShell>, () => {}],
+    ['Settings', () => <SettingsView />, () => { routeFetch({ 'GET /api/health': () => ({ json: { capabilities: { git: true } } }), 'GET /api/plugins': () => ({ json: { rows: [] } }) }); }],
+    ['the plugin column\'s bar', () => <PluginView />, () => (window as any).happyDOM.setViewport({ width: 400, height: 800 })],
+  ];
+  afterEach(() => { (window as any).happyDOM.setViewport({ width: 1024, height: 768 }); });
+  for (const [name, element, prepare] of surfaces) {
+    it(`${name}: present without focus, absent with it`, async () => {
+      // Invariant: the control shows the button is there; focus mode removes it.
+      prepare();
+      const view = render(<TooltipProvider>{element()}</TooltipProvider>);
+      await settle();
+      expect(openSidebarButtons().length, 'control: the button is rendered without focus').toBeGreaterThan(0);
+      view.unmount();
+      setFocus({ sessionId: 's1' });
+      render(<TooltipProvider>{element()}</TooltipProvider>);
+      await settle();
+      expect(openSidebarButtons()).toHaveLength(0);
+    });
+  }
 });

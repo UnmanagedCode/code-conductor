@@ -54,6 +54,15 @@ test('a marker with no sessionId throws naming the file', async () => {
   });
 });
 
+// Invariant: an empty sessionId is a corrupt marker, never "a run with no session".
+test('a marker whose sessionId is the empty string throws naming the file', async () => {
+  await withStore(async () => {
+    fs.mkdirSync(fs.realpathSync(process.env.PROJECTS_ROOT) + '/.code-conductor', { recursive: true });
+    fs.writeFileSync(headlessLastRunFile(), '{"sessionId":""}');
+    await assert.rejects(readHeadlessRun(), (e) => e.message.includes(headlessLastRunFile()));
+  });
+});
+
 // Invariant: an explicit --session resolves to the public id, whichever form it names.
 test('an explicit public id is shown as itself', async () => {
   assert.deepEqual(await pick(PUBLIC, null), { ok: true, sessionId: PUBLIC });

@@ -188,15 +188,19 @@ describe('Back in focus mode', () => {
     expect(location.hash).toBe('#session=S');
   });
 
-  it('control: without focus, Back onto an unlisted session leaves nothing selected', async () => {
-    // Invariant: the Back-to-ended behaviour belongs to focus mode alone.
-    history.replaceState(null, '', '/#session=S');
-    history.pushState(null, '', '/');
+  it('control: without focus, Back onto an entry naming an unlisted session selects nothing', async () => {
+    // Invariant: the Back-to-ended behaviour belongs to focus mode alone. Back lands on an entry that
+    // carries #session=S (S unlisted), the same shape as the focus arm, so the focus guard is what decides.
     const b = await boot({ health: [{}], instances: [inst('iW', 'W')] });
     await b.open();
+    expect(b.appStore.get().activeId, 'fixture check: nothing opened by itself').toBeNull();
+    history.replaceState(null, '', '/#session=S');
     b.c.selectInstance('iW', { push: true });
+    expect(b.active(), 'fixture check: the worker is selected').toBe('iW');
     history.back();
     await settle();
-    expect(b.appStore.get().activeId).not.toBe('ended:S');
+    expect(b.appStore.get().activeId).toBeNull();
+    expect(b.appStore.get().ended).toBeNull();
+    expect(b.posts()).toBe(0);
   });
 });
