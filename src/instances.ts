@@ -120,7 +120,7 @@ import { firstPromptHead, sessionLabel } from '../shared/promptPreview.ts';
 import { parseRenewSeed } from '../shared/renewSeed.ts';
 import { reconstructTasks } from './taskReconstruct.ts';
 import { buildArchive, currentSegmentScope } from './eventArchive.ts';
-import { IdleSubscriptionHub } from './idleSubscriptions.ts';
+import { IdleSubscriptionHub, PARKED_BACKSTOP_MS } from './idleSubscriptions.ts';
 import { reconcileBackgroundJobs, jobWaiters, type BackgroundJob } from './backgroundJobs.ts';
 import { OverageResumeController } from './overageResume.ts';
 import { UsageOverageMonitor } from './usageOverageMonitor.ts';
@@ -823,6 +823,8 @@ export class Instance extends EventEmitter implements InstanceLike {
   _taskNotificationPending: boolean;
   _queuedPromptPending: boolean;
   _resultSinceTurnStart: boolean;
+  _lastResultAt: number | null;
+  _now: () => number;
   _idleWindowDirty: boolean;
   _turnFirstReqCacheRead: number | null;
   _turnFirstReqCacheCreation: number | null;
@@ -1236,15 +1238,21 @@ export class Instance extends EventEmitter implements InstanceLike {
     // the same turn. A fold leaves no stdout signal, so this is a model, not an
     // observation: SET by prompt() after the send when the write may be queued —
     // into a running turn, or into the idle gap between a `result` and the
-    // opener of a turn the CLI already holds (this flag still set); CLEARED by
-    // any top-level tool_result (a fold), by the next idle→turn transition (the
-    // queued turn started; see _setStatus), and on (re)spawn and exit. Read by
-    // IdleSubscriptionHub: while set, a delivered wake is not yet taken in, so
-    // its caller still awaits it. Known cost of the idle-gap case: a write that
-    // reached the CLI before its dequeue is taken into that same turn and no
-    // further turn comes, so the flag outlives it; the hub's PARKED_BACKSTOP_MS
-    // ends that hold at the next turn end — a finish reported late, never a
-    // false finish.
+    // opener of a turn the CLI already holds (this flag still set, and the last
+    // top-level `result` less than PARKED_BACKSTOP_MS ago: the CLI dequeues a
+    // held turn within one dequeue of that result); CLEARED by any top-level
+    // tool_result (a fold), by the next idle→turn transition (the queued turn
+    // started; see _setStatus), when the post-abort drain severs the turn the
+    // CLI opens for held input (the drain discards it), and on (re)spawn and
+    // exit. Read by IdleSubscriptionHub: while set, a delivered wake is not yet
+    // taken in, so its caller still awaits it.
+    // Stale-flag residual: a gap write that reached the CLI before its dequeue is
+    // taken into the turn being opened — on stdout the same shape as a write
+    // queued behind it — so after that turn's `result` the flag is set with no
+    // opener coming. The hub's PARKED_BACKSTOP_MS releases a wake parked on it,
+    // and a write more than PARKED_BACKSTOP_MS after the last result ignores it
+    // (its turn transition clears it), so the cost is a finish reported late by
+    // at most PARKED_BACKSTOP_MS, never a false finish.
     this._queuedPromptPending = false;
     // True once this process has ended a turn (a top-level `result`) and no turn
     // has started since. It gates the start of a turn the CLI opens on its own
@@ -1261,6 +1269,11 @@ export class Instance extends EventEmitter implements InstanceLike {
     // SET at a top-level turn_end, CLEARED by every idle→turn transition (see
     // _setStatus) and on (re)spawn.
     this._resultSinceTurnStart = false;
+    // When this process's last top-level `result` was processed (`_now()`), null
+    // before the first. Bounds prompt()'s idle-gap read of _queuedPromptPending.
+    this._lastResultAt = null;
+    // The clock _lastResultAt and that read use; a field so a test injects one.
+    this._now = () => Date.now();
     // True when any NON-task-lifecycle event was processed while this
     // instance was idle — i.e. the current idle window is not pure background-
     // task bookkeeping. The load-bearing case: an unprompted re-invocation
@@ -3182,7 +3195,10 @@ export class Instance extends EventEmitter implements InstanceLike {
           }));
         }
         this._setStatus('idle');
-        if (!ev.parentToolUseId) this._resultSinceTurnStart = true;
+        if (!ev.parentToolUseId) {
+          this._resultSinceTurnStart = true;
+          this._lastResultAt = this._now();
+        }
         if (!ev.parentToolUseId) this.emit('turn_ended', { ...(typeof ev.stopReason === 'string' ? { stopReason: ev.stopReason } : {}) });
         this._idleWindowDirty = false; // fresh idle window starts clean
         // This turn's plan-file writes stop corroborating the next turn's
@@ -3685,8 +3701,10 @@ export class Instance extends EventEmitter implements InstanceLike {
     if (!chain) this._renewalNudgeChain = false;
     const wasTurn = this.status === 'turn';
     // The CLI may queue this write: into a running turn, or behind a turn it
-    // holds queued whose opener has not arrived yet (see _queuedPromptPending).
-    const cliMayQueue = wasTurn || this._queuedPromptPending;
+    // holds queued whose opener has not arrived yet — only within one dequeue
+    // window of the last result (see _queuedPromptPending).
+    const cliMayQueue = wasTurn || (this._queuedPromptPending && this._lastResultAt !== null
+      && this._now() - this._lastResultAt < PARKED_BACKSTOP_MS);
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content },

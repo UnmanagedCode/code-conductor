@@ -227,13 +227,18 @@ export class IdleSubscriptionHub {
   // transcript read, so between the consume and the send the conductor is idle
   // with no armed wake — a state indistinguishable from "finished". isCaller()
   // counts these, so `awaitingWake` holds until prompt() has run and the CLI has
-  // the message: the status left idle, or (for a send into a running turn) the
-  // caller's queuedPromptPending cleared — see _parked.
+  // the message: the status left idle, or (for a send the CLI may queue — into a
+  // running turn, or into the idle gap between the caller's `result` and the
+  // opener of a turn its CLI still holds) the caller's queuedPromptPending
+  // cleared — see _parked.
   _inFlight: Map<string, number>;
-  // In-flight wakes whose send went into a RUNNING turn that may queue it past
-  // the turn's end: callerInstanceId → target ids. Each entry stays counted in
-  // `_inFlight` until _releaseParked sees the caller's queuedPromptPending clear
-  // (a fold at a top-level tool_result, the queued turn's start, or exit).
+  // In-flight wakes whose send the CLI may queue — into a RUNNING turn, past
+  // that turn's end, or into the idle gap between a `result` and the opener of a
+  // turn the CLI holds, behind that turn (the caller's queuedPromptPending set
+  // after prompt(); see Instance._queuedPromptPending): callerInstanceId →
+  // target ids. Each entry stays counted in `_inFlight` until _releaseParked sees
+  // the flag clear (a fold at a top-level tool_result, the queued turn's start,
+  // a drain severing the held turn, or exit) or the backstop fires.
   _parked: Map<string, string[]>;
   // The per-caller PARKED_BACKSTOP_MS timers, armed at a parked caller's turn_end.
   // Cancelled on turn start, release, purge and exit. The scheduler is a field so

@@ -35,6 +35,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { posixPlatform } from '../src/platform/posix.ts';
 import { InstanceManager } from '../src/instances.ts';
+import { PARKED_BACKSTOP_MS } from '../src/idleSubscriptions.ts';
 import { load, kind, indexesOf, asHook, nested, makeInstance, wire, feed, countEmits, microtasks } from './cliQueueRig.mjs';
 
 // Invariant (INV-1, opener `system/init`): a prompt written into a running turn
@@ -330,5 +331,71 @@ test('a wake written between a result and the queued turn\'s opener is marked qu
     assert.equal(row().awaitingWake, false, 'the wake\'s turn opened');
   } finally {
     await instances.shutdown().catch(() => {});
+  }
+});
+
+// The consumed gap write: a write into the result → opener gap that the CLI took
+// into the turn it was opening leaves queuedPromptPending set after that turn's
+// result, with no opener coming — on stdout the same shape as a write queued
+// behind the turn. Replays the ups-hook fixture with the Instance clock injected:
+// a first message queued mid-turn, its turn's result (t=0), a second message in
+// the gap (t=100), the next turn's result at RESULT_AT; then a hub wake to the
+// idle conductor at RESULT_AT + `after`.
+const RESULT_AT = 1_000;
+async function wakeAfterConsumedGapWrite(after) {
+  const instances = new InstanceManager({ platform: posixPlatform });
+  const lines = await load('queued-after-end-ups-hook.stdout.jsonl');
+  const results = indexesOf(lines, 'result:success');
+  const conductor = makeInstance('c');
+  const worker = makeInstance('w');
+  let now = 0;
+  conductor._now = () => now;
+  worker.status = 'turn';
+  wire(instances, conductor);
+  instances.byId.set('w', worker);
+  feed(conductor, lines.slice(0, 1));
+  await conductor.prompt('queued message', [], { internal: true, annotateIfMidTurn: false });
+  feed(conductor, lines.slice(1, results[0] + 1));
+  now = 100;
+  await conductor.prompt('gap message', [], { internal: true, annotateIfMidTurn: false });
+  now = RESULT_AT;
+  feed(conductor, lines.slice(results[0] + 1, results[1] + 1));
+  const premise = { status: conductor.status, pending: conductor.queuedPromptPending };
+  instances.noteDispatch('c-sid', 'w-sid');
+  instances._idleHub.onTurnStart('w');
+  instances._idleHub._buildFoldedStub = async () => 'stub';
+  now = RESULT_AT + after;
+  worker.status = 'idle';
+  instances.emit('event', { id: 'w', ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+  await microtasks();
+  return { instances, conductor, premise, parked: instances._idleHub._parked.get('c')?.length ?? 0 };
+}
+
+// Invariant (INV-2's window, outer side): a flag still set at idle more than
+// PARKED_BACKSTOP_MS after the last top-level result stands for no CLI-held
+// input, so an idle wake is not marked queued, does not park, and its turn
+// transition clears the flag.
+test('a wake to an idle instance more than PARKED_BACKSTOP_MS after the last result is not marked queued', async () => {
+  const r = await wakeAfterConsumedGapWrite(PARKED_BACKSTOP_MS + 1);
+  try {
+    assert.deepEqual(r.premise, { status: 'idle', pending: true }, 'premise: the consumed gap write left the flag set');
+    assert.equal(r.parked, 0, 'not parked');
+    assert.equal(r.conductor.queuedPromptPending, false, 'the stale flag is gone');
+  } finally {
+    await r.instances.shutdown().catch(() => {});
+  }
+});
+
+// Invariant (INV-2's window, inner side): within PARKED_BACKSTOP_MS of the last
+// top-level result a set flag may stand for a turn the CLI holds, so an idle wake
+// is still marked queued and parks.
+test('a wake to an idle instance within PARKED_BACKSTOP_MS of the last result is still marked queued', async () => {
+  const r = await wakeAfterConsumedGapWrite(PARKED_BACKSTOP_MS - 1);
+  try {
+    assert.deepEqual(r.premise, { status: 'idle', pending: true });
+    assert.equal(r.parked, 1, 'parked');
+    assert.equal(r.conductor.queuedPromptPending, true);
+  } finally {
+    await r.instances.shutdown().catch(() => {});
   }
 });
