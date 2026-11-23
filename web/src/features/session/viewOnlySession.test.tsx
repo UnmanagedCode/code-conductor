@@ -114,7 +114,7 @@ describe('view-only session view', () => {
         renderView();
         expect(trigger(), `${c.name}, flag off`).not.toBeNull();
         cleanup();
-      } finally { vi.unstubAllGlobals(); }
+      } finally { vi.unstubAllGlobals(); routeFetch({}); }
     }
   });
 
@@ -132,7 +132,7 @@ describe('view-only session view', () => {
         /Summarize session/, /Statistics/, /Show mid-turn statistics/, /Mute notifications/,
       ]) expect(has(menu, re), String(re)).toBe(true);
       r.unmount();
-    } finally { vi.unstubAllGlobals(); }
+    } finally { vi.unstubAllGlobals(); routeFetch({}); }
   });
 
   it('turn indicator: Working shown, no Interrupt', () => {
