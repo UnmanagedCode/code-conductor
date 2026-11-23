@@ -1249,10 +1249,14 @@ export class Instance extends EventEmitter implements InstanceLike {
     // Stale-flag residual: a gap write that reached the CLI before its dequeue is
     // taken into the turn being opened — on stdout the same shape as a write
     // queued behind it — so after that turn's `result` the flag is set with no
-    // opener coming. The hub's PARKED_BACKSTOP_MS releases a wake parked on it,
-    // and a write more than PARKED_BACKSTOP_MS after the last result ignores it
-    // (its turn transition clears it), so the cost is a finish reported late by
-    // at most PARKED_BACKSTOP_MS, never a false finish.
+    // opener coming. It persists until a PARKED_BACKSTOP_MS gap after the last
+    // result (the next write then ignores it and its turn transition clears it),
+    // a top-level tool_result, an opener, a drain sever or an exit; every result
+    // refreshes _lastResultAt, so on a busy instance it can span several wakes.
+    // The hub's PARKED_BACKSTOP_MS backstop releases each wake parked on it, so
+    // each finish is reported late by at most PARKED_BACKSTOP_MS. It is never a
+    // false finish provided the CLI opens a held turn within PARKED_BACKSTOP_MS
+    // of the `result` — the premise the backstop rests on.
     this._queuedPromptPending = false;
     // True once this process has ended a turn (a top-level `result`) and no turn
     // has started since. It gates the start of a turn the CLI opens on its own
@@ -2502,6 +2506,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._taskNotificationPending = false;
     this._queuedPromptPending = false;
     this._resultSinceTurnStart = false;
+    this._lastResultAt = null;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
     // state (_prevTurnPrefix, _prefixBaselineInvalid) is NOT reset here: a
