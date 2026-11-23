@@ -4,6 +4,7 @@
 // plus connection-state ('open' / 'close' / 'reconnecting').
 
 import { appUrl } from './appUrl.ts';
+import { frameAllowed, isViewOnly, refuse } from './viewOnly.ts';
 import type { ServerFrame, AckFrame } from './wsFrames.ts';
 
 // Each bus event name is a frame's `t`; `detail` is the frame. The connection
@@ -67,12 +68,21 @@ function scheduleReconnect(): void {
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1000);
 }
 
+// In view-only mode (shared/viewOnly.ts) a frame outside VIEW_ONLY_FRAMES_ALLOW is
+// not written: a non-ack send returns, an ack send rejects with ViewOnlyError.
+//
 // With {ack: true} the send resolves on the server's ok ack and rejects on
 // its error ack, on a closed socket, or after 10s; without it, it returns
 // nothing.
 export function send(t: string, payload: Record<string, unknown>, opts: { ack: true }): Promise<AckFrame>;
 export function send(t: string, payload?: Record<string, unknown>, opts?: { ack?: false }): void;
 export function send(t: string, payload: Record<string, unknown> = {}, { ack = false }: { ack?: boolean } = {}): Promise<AckFrame> | void {
+  // View-only: first, ahead of the connection check, so nothing is ever written.
+  if (isViewOnly() && !frameAllowed(t)) {
+    const e = refuse(`${t} frame`);
+    if (ack) return Promise.reject(e);
+    return;
+  }
   if (!ws || ws.readyState !== WebSocket.OPEN) {
     if (ack) return Promise.reject(new Error('not connected'));
     return;

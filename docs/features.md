@@ -46,3 +46,12 @@
 ## [plugins.md](features/plugins.md) — plugins as the user sees them
 
 - [Plugins](features/plugins.md#plugins)
+
+## [view-only.md](features/view-only.md) — `CC_VIEW_ONLY` spectator mode
+
+- [View-only mode](features/view-only.md#view-only-mode)
+- [Turning it on](features/view-only.md#turning-it-on)
+- [What the UI removes](features/view-only.md#what-the-ui-removes)
+- [The backstop](features/view-only.md#the-backstop)
+- [Refusal toast](features/view-only.md#refusal-toast)
+- [Plugins](features/view-only.md#plugins)

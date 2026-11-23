@@ -4,6 +4,7 @@
 // attribution lives in PluginFrames; this module owns what the messages mean.
 import { ApiError, apiFetch } from '@shared/http';
 import { isLiveStatus } from '@shared/conductors';
+import { ViewOnlyError } from '@shared/viewOnly';
 import { selectInstance } from '@/app/controller';
 import { activeInstance, appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
@@ -67,8 +68,8 @@ async function handleCall(d: { type: string; id: string; sessionId?: unknown; te
   try {
     await sendPrompt(found.inst, { text: (d.text as string).trim() }, { ack: true });
     return { ok: true };
-  } catch {
-    return { ok: false, code: 'SEND_FAILED' };
+  } catch (e) {
+    return { ok: false, code: e instanceof ViewOnlyError ? 'VIEW_ONLY' : 'SEND_FAILED' };
   }
 }
 

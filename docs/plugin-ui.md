@@ -775,3 +775,7 @@ For a plugin that follows this setup, beside the contract checks:
 - [ ] `npm run dev` serves the UI with the API proxied to the backend. Open it at `http://localhost:<port>`: Vite binds `localhost`, which can resolve to `::1` only, so `127.0.0.1` may refuse.
 - [ ] `git clone` → `npm install`, with no other step → `frontend/dist` is built, and `git status` is clean afterwards (a symlinked `node_modules` included: `.gitignore` has `node_modules` without a slash).
 - [ ] The Library entry's hooks are `npm install` for `postClone` and `postPull`.
+
+## View-only hosts
+
+Under `CC_VIEW_ONLY=1` cc's own client hides its mutating controls and refuses mutating calls, but a plugin page is same-origin and its own `fetch` / WebSocket requests (to its backend and to cc's `/api` and `/ws`) bypass that gate. A plugin that wants to hide its own mutating controls reads `capabilities.viewOnly` from cc's `GET /api/health`. Only `ccBridge.sendPrompt` is refused by the host (result code `VIEW_ONLY`). [features/view-only.md](features/view-only.md).

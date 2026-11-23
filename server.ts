@@ -70,7 +70,7 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus, basePath }: { basePath?: string; restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus, basePath, viewOnly = false }: { viewOnly?: boolean; basePath?: string; restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -173,7 +173,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   });
   app.use('/api', buildRoutes({
     instances, serverCtx, relaunch, recorder: runningRecorder, pending: pendingContinue, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
-    claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus,
+    claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus, viewOnly,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
   const pluginProxy = buildPluginProxy({ pluginHost, basePath: base });
@@ -265,7 +265,7 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // never build web/dist or install into the shared node_modules. Only the real
 // entry captures the boot commit (src/bootCommit.ts) and hands it to merge
 // hooks into its own checkout.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean; basePath: string } {
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean; basePath: string; viewOnly: boolean } {
   return {
     port: Number(env.PORT ?? DEFAULT_PORT),
     host: env.HOST ?? '127.0.0.1',
@@ -273,6 +273,7 @@ export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host:
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
     recordBootCommit: true,
     basePath: env.CC_BASE_PATH ?? '',
+    viewOnly: env.CC_VIEW_ONLY === '1',
   };
 }
 
@@ -280,8 +281,10 @@ const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export async function start({
   port = DEFAULT_PORT, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
-  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false, basePath = '',
+  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false, basePath = '', viewOnly = false,
 }: {
+  // CC_VIEW_ONLY=1: GET /api/health reports capabilities.viewOnly.
+  viewOnly?: boolean;
   // CC_BASE_PATH, raw: parsed (and refused when invalid) by createServer.
   basePath?: string;
   port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
@@ -297,7 +300,7 @@ export async function start({
   const supervised = takeRestartSupervisor();
   const rootLock = await acquireRootLock({ storeDir: orchStoreRoot(), platform });
   try {
-    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath });
+    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath, viewOnly });
   } catch (e) {
     rootLock.releaseSync();
     throw e;
@@ -305,9 +308,9 @@ export async function start({
 }
 
 async function startHolding(rootLock: RootLock, {
-  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath,
+  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, supervised, basePath, viewOnly,
 }: {
-  basePath: string;
+  basePath: string; viewOnly: boolean;
   port: number; host: string; platform: Platform; buildWeb: boolean; syncDeps: boolean; webBuild?: () => Promise<unknown>;
   recordBootCommit: boolean; checkoutRoot: string; headless: boolean; supervised: boolean;
 }) {
@@ -367,7 +370,7 @@ async function startHolding(rootLock: RootLock, {
   // sessions it must keep (as does pending-continue.json).
   try { await cleanupSessionsWithoutTranscripts({ log: console }); }
   catch (e) { console.warn('session cleanup failed:', e); }
-  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, basePath, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
+  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, basePath, viewOnly, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)

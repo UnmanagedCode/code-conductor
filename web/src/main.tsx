@@ -14,6 +14,8 @@ import { startPluginSessionWidth } from '@/features/views/pluginSessionWidth';
 import { startPluginLinkHost } from '@/features/views/pluginLinkHost';
 import { startResumeNotices } from '@/features/resume';
 import { startViewportFollow } from '@/app/viewport';
+import { startViewOnlyNotice } from '@/app/viewOnlyNotice';
+import { loadCapabilities } from '@shared/capabilities';
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
@@ -21,6 +23,8 @@ createRoot(document.getElementById('root')!).render(
   </StrictMode>,
 );
 
+startViewOnlyNotice();
+void loadCapabilities();
 startController();
 void loadModels();
 probeVoice();

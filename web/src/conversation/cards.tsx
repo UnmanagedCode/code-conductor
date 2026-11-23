@@ -9,6 +9,7 @@ import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { send } from '@shared/ws';
 import { appStore, activeInstance } from '@/state/app';
 import { useStore } from '@/state/createStore';
+import { useViewOnly } from '@/state/viewOnly';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
 import { BubbleBody } from './BubbleBody';
 
@@ -27,6 +28,7 @@ const useEnded = () => useStore(appStore, (s) => !!activeInstance(s)?.ended);
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {
   const plan: string = typeof node.ev.plan === 'string' ? node.ev.plan : '';
   const ended = useEnded();
+  const viewOnly = useViewOnly();
   const locked = node.autoApproved || !!node.submitted || ended;
   const status = node.autoApproved ? 'Auto-approved'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`
@@ -67,7 +69,7 @@ export function PlanCard({ node, model }: { node: PlanNode; model: ConversationM
           ? <Markdown text={plan} className="whitespace-pre-wrap" />
           : <p className="text-sm text-muted-foreground italic">The plan wasn't sent inline. See the assistant output above.</p>}
       </BubbleBody>
-      {!node.autoApproved && (
+      {!node.autoApproved && !viewOnly && (
         <div className="space-y-3 border-t px-4 py-3">
           <ProseTextarea
             label="Plan feedback"
@@ -105,6 +107,7 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
   const answeredCount = node.answers.filter((a) => a.kind !== 'none').length;
   const noteMode = answer.kind === 'option' || answer.kind === 'multi';
   const ended = useEnded();
+  const viewOnly = useViewOnly();
   const locked = node.submitted || ended;
   const status = node.answered ? 'Answered'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`
@@ -157,52 +160,71 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
           {header && <div className="mb-1 text-[11px] font-semibold tracking-wide text-muted-foreground uppercase">{header}{q.multiSelect && ' · select any'}</div>}
           <div className="text-[15px] font-medium">{fieldText(q.question) ?? ''}</div>
         </div>
-        <div className="grid gap-2 sm:grid-cols-2">
-          {(q.options ?? []).map((opt: any, oi: number) => {
-            const label = fieldText(opt.label) ?? `Option ${oi + 1}`;
-            const description = fieldText(opt.description);
-            const on = picked(opt.label ?? '');
-            return (
-              <button
-                key={oi}
-                type="button"
-                disabled={locked}
-                data-option={opt.label ?? ''}
-                aria-pressed={on}
-                onClick={() => model.questionPick(node, active, opt.label ?? '')}
-                className={cn(
-                  'flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-sm transition-colors disabled:cursor-default',
-                  on ? 'border-primary bg-primary/8 ring-1 ring-primary/30' : 'hover:border-foreground/20 hover:bg-muted/50',
-                )}
-              >
-                <span className="font-medium">{label}</span>
-                {description && <span className="text-xs text-muted-foreground">{description}</span>}
-              </button>
-            );
-          })}
-        </div>
-        <ProseInput
-          label="Answer"
-          value={node.drafts[active] ?? ''}
-          onChange={(e) => model.questionDraft(node, active, e.target.value)}
-          // Enter moves to the next unanswered question, or sends once every question is answered.
-          onKeyDown={(e) => {
-            if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.repeat) return;
-            if (e.nativeEvent.isComposing || e.keyCode === 229) return;
-            const next = ConversationModel.nextUnansweredQuestion(node);
-            if (next !== null) model.questionTab(node, next);
-            else submit();
-          }}
-          disabled={locked}
-          placeholder={noteMode ? 'Add a note (optional)' : 'Or write your own answer…'}
-          data-custom-input={answer.kind === 'custom' ? 'active' : ''}
-          className={cn(answer.kind === 'custom' && 'border-primary ring-1 ring-primary/30')}
-        />
-        <div className="flex justify-end">
-          <Button size="sm" onClick={submit} disabled={!ready || locked}>
-            <SendIcon /> {multi ? 'Send all answers' : 'Send answer'}
-          </Button>
-        </div>
+        {viewOnly ? (
+          <ul className="grid gap-2 sm:grid-cols-2">
+            {(q.options ?? []).map((opt: any, oi: number) => {
+              const label = fieldText(opt.label) ?? `Option ${oi + 1}`;
+              const description = fieldText(opt.description);
+              return (
+                <li key={oi} className="flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-sm">
+                  <span className="font-medium">{label}</span>
+                  {description && <span className="text-xs text-muted-foreground">{description}</span>}
+                </li>
+              );
+            })}
+          </ul>
+        ) : (
+          <div className="grid gap-2 sm:grid-cols-2">
+            {(q.options ?? []).map((opt: any, oi: number) => {
+              const label = fieldText(opt.label) ?? `Option ${oi + 1}`;
+              const description = fieldText(opt.description);
+              const on = picked(opt.label ?? '');
+              return (
+                <button
+                  key={oi}
+                  type="button"
+                  disabled={locked}
+                  data-option={opt.label ?? ''}
+                  aria-pressed={on}
+                  onClick={() => model.questionPick(node, active, opt.label ?? '')}
+                  className={cn(
+                    'flex flex-col items-start gap-0.5 rounded-xl border px-3 py-2 text-left text-sm transition-colors disabled:cursor-default',
+                    on ? 'border-primary bg-primary/8 ring-1 ring-primary/30' : 'hover:border-foreground/20 hover:bg-muted/50',
+                  )}
+                >
+                  <span className="font-medium">{label}</span>
+                  {description && <span className="text-xs text-muted-foreground">{description}</span>}
+                </button>
+              );
+            })}
+          </div>
+        )}
+        {!viewOnly && (
+          <>
+          <ProseInput
+            label="Answer"
+            value={node.drafts[active] ?? ''}
+            onChange={(e) => model.questionDraft(node, active, e.target.value)}
+            // Enter moves to the next unanswered question, or sends once every question is answered.
+            onKeyDown={(e) => {
+              if (e.key !== 'Enter' || e.shiftKey || e.ctrlKey || e.altKey || e.metaKey || e.repeat) return;
+              if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+              const next = ConversationModel.nextUnansweredQuestion(node);
+              if (next !== null) model.questionTab(node, next);
+              else submit();
+            }}
+            disabled={locked}
+            placeholder={noteMode ? 'Add a note (optional)' : 'Or write your own answer…'}
+            data-custom-input={answer.kind === 'custom' ? 'active' : ''}
+            className={cn(answer.kind === 'custom' && 'border-primary ring-1 ring-primary/30')}
+          />
+          <div className="flex justify-end">
+            <Button size="sm" onClick={submit} disabled={!ready || locked}>
+              <SendIcon /> {multi ? 'Send all answers' : 'Send answer'}
+            </Button>
+          </div>
+          </>
+        )}
       </div>
     </div>
   );
