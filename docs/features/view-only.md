@@ -13,7 +13,7 @@ Controls are removed from the DOM (`useViewOnly`, `web/src/state/viewOnly.ts`), 
 
 - Sidebar: ⚙ Settings and **Conduct**. The `#settings` route renders the session view; `SettingsView`'s chunk is never loaded.
 - Session view: the Composer (and the usage chip beside Send), and the empty state's **Start conducting** / **New project**.
-- Session header: the permission-mode toggle, Sync, Resume, and the mutating ⋮ items (rename, model, effort, prune, fork, auto-approve plans, enforce playbooks, debug capture, sync worktree, interrupt/terminate). Summarize, Statistics, mid-turn statistics and Mute stay.
+- Session header: the permission-mode toggle, Sync, Resume, and the whole ⋮ **Session actions** menu (its trigger is not rendered, so Summarize, Statistics, mid-turn statistics and per-session Mute are not offered either).
 - Turn indicator: the Interrupt buttons; the "Working…" label stays.
 - Plan and question cards still show their content (plan markdown, question text, option labels and descriptions); the approve/reject, feedback, option buttons, answer field and send are removed.
 - Resume: `resumeSession` and a notification click (`resumeSessionByAnchor`) open the read-only Ended pane (`openEndedSession`) instead of `POST /api/instances`; the Ended pane's Resume button is hidden.

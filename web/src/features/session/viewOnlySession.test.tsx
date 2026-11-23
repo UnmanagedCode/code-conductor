@@ -1,5 +1,5 @@
-// View-only: the session view carries no composer, no mutating header control and
-// no Interrupt; the read-only items stay. Every arm has a flag-off control.
+// View-only: the session view carries no composer, no mutating header control, no ⋮ menu
+// and no Interrupt. Every arm has a flag-off control.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react';
 
@@ -36,6 +36,10 @@ async function openMenu() {
   });
   return screen.getByRole('menu');
 }
+const narrowMatchMedia = (query: string) => ({
+  media: query, matches: false, onchange: null,
+  addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+});
 const items = (menu: HTMLElement) => within(menu).queryAllByRole('menuitem').concat(within(menu).queryAllByRole('menuitemcheckbox')).map((e) => e.textContent ?? '');
 const has = (menu: HTMLElement, re: RegExp) => items(menu).some((t) => re.test(t));
 
@@ -86,60 +90,44 @@ describe('view-only session view', () => {
     expect(screen.getByRole('button', { name: 'Resume' })).toBeTruthy();
   });
 
-  it('header menu keeps read items only', async () => {
-    // Invariant: ⋮ holds Summarize, Statistics, mid-turn statistics and Mute; none of the mutating items. Flag off holds them all.
-    seed({ instances: [inst('A', { project: '.conduct' })], activeId: 'A' });
-    setViewOnly(true);
-    const r = renderView();
-    let menu = await openMenu();
-    for (const re of [/Summarize session/, /Statistics/, /Show mid-turn statistics/, /Mute notifications/]) expect(has(menu, re), String(re)).toBe(true);
-    for (const re of [/Rename/, /Change model/, /Change effort/, /Prune context/, /Fork session/, /Auto-approve plans/, /Enforce playbooks/, /debug capture/, /Interrupt|Terminate/]) {
-      expect(has(menu, re), String(re)).toBe(false);
-    }
-    r.unmount();
-    cleanup();
-    setViewOnly(false);
-    renderView();
-    menu = await openMenu();
-    for (const re of [/Rename/, /Change model/, /Change effort/, /Prune context/, /Fork session/, /Auto-approve plans/, /Enforce playbooks/, /debug capture/, /Terminate/]) {
-      expect(has(menu, re), String(re)).toBe(true);
+  it('no ⋮ in view-only, for a live, a running and a narrow-screen worktree session', () => {
+    // Invariant: view-only renders no "Session actions" trigger whichever arm would show one (idle, running, stopped
+    // worktree below md); the flag off renders it in each of those arms.
+    const cases: { name: string; instance: Instance; narrow: boolean }[] = [
+      { name: 'live idle session', instance: inst('A'), narrow: false },
+      { name: 'running turn', instance: inst('A', { status: 'turn', displayStatus: 'turn' }), narrow: false },
+      { name: 'stopped worktree session below md', instance: inst('A', { status: 'exited', displayStatus: 'exited', worktree: WORKTREE }), narrow: true },
+    ];
+    for (const c of cases) {
+      if (c.narrow) vi.stubGlobal('matchMedia', narrowMatchMedia);
+      try {
+        seed({ instances: [c.instance], activeId: 'A' });
+        setViewOnly(true);
+        const r = renderView();
+        expect(trigger(), `${c.name}, view-only`).toBeNull();
+        r.unmount();
+        setViewOnly(false);
+        renderView();
+        expect(trigger(), `${c.name}, flag off`).not.toBeNull();
+        cleanup();
+      } finally { vi.unstubAllGlobals(); }
     }
   });
 
-  it('a stopped worktree session on a narrow screen has no ⋮ in view-only', () => {
-    // Invariant: the worktree-only ⋮ exists for Sync alone, so it is absent in view-only and present otherwise.
-    vi.stubGlobal('matchMedia', (query: string) => ({
-      media: query, matches: false, onchange: null,
-      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
-    }));
+  it('flag off: ⋮ offers its full item set', async () => {
+    // Invariant: with view-only off, the ⋮ of an idle .conduct plan-mode worktree session on a narrow screen lists every
+    // item that view-only gates, plus the read items. Guards against the menu losing an item when its gates were removed.
+    vi.stubGlobal('matchMedia', narrowMatchMedia);
     try {
-      seed({ instances: [inst('A', { status: 'exited', displayStatus: 'exited', worktree: WORKTREE })], activeId: 'A' });
-      setViewOnly(true);
+      seed({ instances: [inst('A', { project: '.conduct', worktree: WORKTREE })], activeId: 'A' });
       const r = renderView();
-      expect(trigger()).toBeNull();
+      const menu = await openMenu();
+      for (const re of [
+        /Rename/, /Change model/, /Change effort/, /Prune context/, /Fork session/, /Auto-approve plans/,
+        /Enforce playbooks/, /debug capture/, /Sync worktree/, /Terminate/,
+        /Summarize session/, /Statistics/, /Show mid-turn statistics/, /Mute notifications/,
+      ]) expect(has(menu, re), String(re)).toBe(true);
       r.unmount();
-      setViewOnly(false);
-      renderView();
-      expect(trigger()).not.toBeNull();
-    } finally { vi.unstubAllGlobals(); }
-  });
-
-  it('a live worktree session on a narrow screen: ⋮ has no Sync worktree in view-only', async () => {
-    // Invariant: the narrow-screen ⋮ of an idle worktree session omits "Sync worktree" in view-only; the flag off offers it.
-    vi.stubGlobal('matchMedia', (query: string) => ({
-      media: query, matches: false, onchange: null,
-      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
-    }));
-    try {
-      seed({ instances: [inst('A', { worktree: WORKTREE })], activeId: 'A' });
-      setViewOnly(true);
-      const r = renderView();
-      expect(has(await openMenu(), /Sync worktree/)).toBe(false);
-      r.unmount();
-      cleanup();
-      setViewOnly(false);
-      renderView();
-      expect(has(await openMenu(), /Sync worktree/)).toBe(true);
     } finally { vi.unstubAllGlobals(); }
   });
 
