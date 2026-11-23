@@ -124,6 +124,25 @@ describe('view-only session view', () => {
     } finally { vi.unstubAllGlobals(); }
   });
 
+  it('a live worktree session on a narrow screen: ⋮ has no Sync worktree in view-only', async () => {
+    // Invariant: the narrow-screen ⋮ of an idle worktree session omits "Sync worktree" in view-only; the flag off offers it.
+    vi.stubGlobal('matchMedia', (query: string) => ({
+      media: query, matches: false, onchange: null,
+      addEventListener: () => {}, removeEventListener: () => {}, addListener: () => {}, removeListener: () => {}, dispatchEvent: () => true,
+    }));
+    try {
+      seed({ instances: [inst('A', { worktree: WORKTREE })], activeId: 'A' });
+      setViewOnly(true);
+      const r = renderView();
+      expect(has(await openMenu(), /Sync worktree/)).toBe(false);
+      r.unmount();
+      cleanup();
+      setViewOnly(false);
+      renderView();
+      expect(has(await openMenu(), /Sync worktree/)).toBe(true);
+    } finally { vi.unstubAllGlobals(); }
+  });
+
   it('turn indicator: Working shown, no Interrupt', () => {
     // Invariant: a running turn still reads "Working…", with no Interrupt / Interrupt now; flag off offers Interrupt.
     seed({ instances: [inst('A', { status: 'turn', displayStatus: 'turn' })], activeId: 'A' });

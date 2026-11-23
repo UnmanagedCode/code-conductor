@@ -272,7 +272,6 @@ describe('sendPrompt', () => {
     sendMock.mockRejectedValue(new ViewOnlyError('prompt frame'));
     expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
     sendMock.mockReset();
-    sendMock.mockReset();
     expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: true });
   });
 

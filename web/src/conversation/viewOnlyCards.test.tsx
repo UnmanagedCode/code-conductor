@@ -48,7 +48,7 @@ describe('view-only cards', () => {
     expect(card.queryByRole('button', { name: /Send (all )?answers?/ })).toBeNull();
     // A multi-question card keeps its (local) question tabs.
     expect(card.getByRole('group', { name: 'Questions' })).toBeTruthy();
-    expect(card.getAllByRole('button').length).toBe(2);
+    expect(el(root, 'question').querySelectorAll('[data-option]').length).toBe(0);
   });
 
   it('normal mode: both cards keep their controls', async () => {

@@ -24,7 +24,7 @@ export function EndedBanner({ inst }: { inst: Instance }) {
     >
       <span className="min-w-0 flex-1">
         {crashed ? 'This session crashed.' : 'This session has ended.'}
-        {' '}{resumable ? 'Its transcript is read-only until you resume it.' : 'Its transcript is read-only.'}
+        {' '}{resumable && !viewOnly ? 'Its transcript is read-only until you resume it.' : 'Its transcript is read-only.'}
       </span>
       {!viewOnly && resumable && inst.sessionId && (
         <Button
