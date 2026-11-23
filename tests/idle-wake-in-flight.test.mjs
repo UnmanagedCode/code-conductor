@@ -256,7 +256,10 @@ async function parkedRig() {
 
 // Invariant: a parked hold whose queued turn never starts is released by the
 // backstop armed at the caller's turn_end, with subscription_changed and one
-// stderr line saying so.
+// stderr line saying so. This is what bounds the known mis-attribution of
+// Instance.prompt()'s idle-gap rule: a wake marked queued that the CLI took into
+// the turn it was already opening leaves no later turn to clear the flag, and the
+// hold ends here, a finish reported late rather than a false finish.
 test('the backstop releases a parked hold whose queued turn never starts', async () => {
   const r = await parkedRig();
   const lines = [];
@@ -307,7 +310,8 @@ test('a release cancels the backstop', async () => {
 
 // Invariant: the backstop is armed with PARKED_BACKSTOP_MS, and that delay clears
 // the measured worst case (dequeue max 9.5 s in conductor session jsonls) — a
-// shorter one would release the hold inside the result → message_start window.
+// shorter one would release the hold inside the window from the result to the
+// queued turn's opener.
 test('the backstop is armed with PARKED_BACKSTOP_MS, which exceeds the measured dequeue maximum', async () => {
   const r = await parkedRig();
   assert.equal(r.timers[0].ms, PARKED_BACKSTOP_MS);

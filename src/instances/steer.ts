@@ -341,6 +341,10 @@ export function _openDrainWindow(this: Instance): void {
       return;
     }
     drainCount += 1;
+    // The severed turn was the CLI's input held before the abort: it is discarded,
+    // so nothing queued is pending any more (see Instance._queuedPromptPending).
+    // Before the drain_abort event, so the hub's onEvent for it releases a hold.
+    this._queuedPromptPending = false;
     this._emitUi({ kind: 'system', subtype: 'drain_abort', data: { count: drainCount } });
     // Slide the window: another queued message could follow, extend deadline.
     // _drainTimer is always set by the time an event can fire (the listener

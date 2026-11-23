@@ -109,6 +109,83 @@ test('system/init during drain window triggers drain_abort and fires interrupt',
   assert.ok(inst._drainListener !== null, 'drain listener still attached');
 });
 
+// Invariant (INV-1 guard: no drain window open): a turn the drain severs at its
+// opener is not a turn for cc. An init or a UserPromptSubmit hook_started inside
+// the window, after the aborted turn's result, leaves the status `idle` and emits
+// no `turn_start` (so no owner is armed for it).
+test('an opener inside the drain window does not start a turn', async () => {
+  const events = collectEvents(instances);
+  const { id, inst } = await setupInstance();
+
+  await runHardAbort(id, inst, events);
+  const starts = [];
+  const onStart = () => starts.push(inst.status);
+  inst.on('turn_start', onStart);
+  cleanupListeners.push(() => inst.off('turn_start', onStart));
+
+  inst._handleStdoutLine(JSON.stringify({
+    type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-8000-000000000001',
+    hook_name: 'UserPromptSubmit', hook_event: 'UserPromptSubmit', session_id: inst.sessionId,
+  }));
+  injectSpuriousInit(inst);
+
+  assert.equal(inst.status, 'idle', 'still idle');
+  assert.deepEqual(starts, [], 'no turn_start');
+  const drainEvs = events.filter(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'drain_abort');
+  assert.equal(drainEvs.length, 1, 'premise: the init was drained');
+});
+
+// Invariant (the queued-prompt flag never outlives the CLI-held input it stands
+// for): a write queued in a turn that is then hard-aborted is discarded by the
+// drain, which severs the turn the CLI opens for it. queuedPromptPending is false
+// once that turn is severed, so a later wake delivered to the idle instance is
+// not marked queued and does not park.
+test('a queued write severed by the drain clears queuedPromptPending; a later idle wake does not park', async () => {
+  const events = collectEvents(instances);
+  const { id, inst } = await setupInstance();
+  inst.prompt('start slow');
+  await waitFor(() => events.some(e => e.id === id && e.ev.kind === 'text_delta'));
+  // A wake written into the running turn (the fake CLI holds it: no scenario turn).
+  await inst.prompt('queued wake', [], { internal: true, annotateIfMidTurn: false });
+  assert.equal(inst.queuedPromptPending, true, 'premise: written into a running turn');
+  await inst.interrupt({ force: true });
+  await waitFor(() => inst.status === 'idle');
+  assert.ok(inst._drainListener !== null, 'premise: drain window open');
+
+  // The CLI dequeues the held write and opens a turn for it; the drain severs it.
+  injectSpuriousInit(inst);
+  assert.equal(events.filter(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'drain_abort').length, 1,
+    'premise: severed');
+  assert.equal(inst.status, 'idle');
+  const heldAfterSever = inst.queuedPromptPending;
+  inst._closeDrainWindow();
+
+  // A later wake to the now-idle instance, from a worker it owns.
+  const hub = instances._idleHub;
+  const worker = {
+    id: 'w-drain', sessionId: 'w-drain-sid', project: 'demo', proc: { pid: 1 }, status: 'turn',
+    acceptsMidTurnSteering: true, steerPending: false, activeAgentTaskCount: 0, taskNotificationPending: false,
+    rotationPending: false, _stopInterruptedTurn: false, _emitUi() {}, ring: { trimmedBefore: 0 },
+    ringSnapshot() { return []; }, async prompt() {}, async interrupt() {},
+  };
+  instances.byId.set(worker.id, worker);
+  let parked;
+  try {
+    hub._buildFoldedStub = async () => 'stub';
+    instances.noteDispatch(inst.sessionId, worker.sessionId);
+    hub.onTurnStart(worker.id);
+    worker.status = 'idle';
+    instances.emit('event', { id: worker.id, ev: { kind: 'turn_end', isError: false, stopReason: 'end_turn' } });
+    await waitFor(() => !hub._inFlight.has(id) || hub._parked.has(id));
+    parked = hub._parked.has(id);
+  } finally {
+    instances.byId.delete(worker.id);
+  }
+  assert.equal(parked, false, 'the later idle wake is not parked');
+  assert.equal(inst.queuedPromptPending, false);
+  assert.equal(heldAfterSever, false, 'the severed write was no longer held');
+});
+
 test('multiple system/init events each trigger a drain, window slides', async () => {
   const events = collectEvents(instances);
   const { id, inst } = await setupInstance();
@@ -177,8 +254,9 @@ test('closing the window manually prevents any subsequent system/init from drain
   );
   assert.equal(drainEvs.length, 0, 'no drain_abort after window expired');
 
-  // Instance remains healthy.
-  assert.equal(inst.status, 'idle', 'instance is still idle after expired window');
+  // Outside the window, an init after the aborted turn's result is the opener of
+  // a turn the CLI started, so cc's status follows it into `turn`.
+  assert.equal(inst.status, 'turn', 'an init after the window starts a turn');
 });
 
 test('hard abort with nothing queued: window opens and closes harmlessly, normal behavior intact', async () => {

@@ -340,14 +340,16 @@ export async function forwardServer({ frameMs = 500 } = {}) {
 // model, `--permission-mode`, `--allow-dangerously-skip-permissions`,
 // `--permission-prompt-tool stdio`, `--settings`. The prompt is NOT an argv
 // element here — it goes over stdin, which is what lets a case send a second
-// one.
-export function claudeSession({ cwd, settings }) {
+// one. `extra` flags go before `--settings` (e.g. `--include-partial-messages`,
+// which cc passes, for a case that reads `stream_event` frames).
+export function claudeSession({ cwd, settings, extra = [] }) {
   const child = spawn('claude', [
     '-p', '--model', MODEL,
     '--input-format=stream-json', '--output-format=stream-json', '--verbose',
     '--include-hook-events',
     '--permission-mode', 'bypassPermissions', '--allow-dangerously-skip-permissions',
     '--permission-prompt-tool', 'stdio',
+    ...extra,
     '--settings', settings,
   ], { cwd, env: cliEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
 

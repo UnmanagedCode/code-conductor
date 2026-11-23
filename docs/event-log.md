@@ -76,6 +76,7 @@ A human steer mid-turn starts no turn and writes nothing. A UI interrupt writes 
   - A synthesized `turn` `end` directly precedes the `exit` of the death that interrupted the turn.
   - A `wake` is written after the stub reaches the conductor.
 - **Turns** are recorded for conductors and conducted workers only; a plain UI session's turns are not.
+- **Turn start time.** A prompted turn's `turn` `start` is stamped at the prompt's write; a turn the CLI opened on its own (a queued prompt, a task notification) at its opener (`system/init` or a UserPromptSubmit `hook_started`), before its hooks and first API call — or at its first `message_start` when the opener could not start it (it arrived before the process's first `result`). A turn the post-abort drain severs at its opener has no `start` row.
 
 ## Reader rules
 
