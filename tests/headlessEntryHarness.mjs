@@ -12,12 +12,16 @@
 //   signal-then-stray  a SIGINT arrives (the interrupt never settles), then
 //                      something outside the runner throws
 //   stray-rejection    something outside the runner rejects, unhandled
+//   view-signal-before-selection
+//                      (--view argv, viewMain) a SIGINT arrives while start() is
+//                      still pending, so no session was picked
 //
 // When the result is written, the harness prints the process's SIGINT and
 // SIGTERM listener counts to stderr (`LISTENERS SIGINT=<n> SIGTERM=<n>`).
 //
 // PROJECTS_ROOT must point at a scratch root: the runner's spawn resolves the
 // Conductor role from that root's settings.
+import { viewMain } from '../src/headless/view.ts';
 import { headlessMain } from '../src/headless/entry.ts';
 import { parseHeadlessArgs } from '../src/headless/args.ts';
 
@@ -62,6 +66,10 @@ const starts = {
     promptOrQueueSteer: async () => { setTimeout(() => process.kill(process.pid, 'SIGINT'), 20); },
     interrupt: () => { throw new Error('interrupt exploded'); },
   }))),
+  'view-signal-before-selection': () => {
+    setTimeout(() => process.kill(process.pid, 'SIGINT'), 20);
+    return new Promise(() => {});
+  },
 };
 const start = starts[kase];
 if (!start) throw new Error(`unknown case ${kase}`);
@@ -77,4 +85,4 @@ process.stdout.write = (chunk, ...rest) => {
 // A real run's server sockets keep the event loop alive; the stub boot has
 // none, and node's signal watchers do not count.
 setInterval(() => {}, 1_000);
-void headlessMain(args, { start });
+void (args.kind === 'view' ? viewMain(args, { start }) : headlessMain(args, { start }));

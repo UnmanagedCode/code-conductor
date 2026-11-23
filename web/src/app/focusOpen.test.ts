@@ -23,14 +23,17 @@ const CAPS = { git: true };
 let stop: (() => void) | null = null;
 
 /** A fresh controller over a mocked socket; `health` answers each GET /api/health in turn (the last repeats). */
-async function boot({ health, instances = [] }: { health: unknown[]; instances?: unknown[] }) {
+async function boot({ health, instances = [] }: { health: (object | Error)[]; instances?: unknown[] }) {
   stop?.();
   vi.resetModules();
   const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
   ws.sent.length = 0;
   let healthReads = 0;
   const calls = routeFetch({
-    'GET /api/health': () => ({ json: { capabilities: CAPS, ...(health[Math.min(healthReads++, health.length - 1)] as object) } }),
+    'GET /api/health': () => {
+      const h = health[Math.min(healthReads++, health.length - 1)];
+      return h instanceof Error ? h : { json: { capabilities: CAPS, ...(h as object) } };
+    },
     'GET /api/instances/': () => ({ json: {} }),
     'GET /api/instances': () => ({ json: instances }),
     'POST /api/instances': () => ({ json: {} }),
@@ -91,6 +94,40 @@ describe('opening the focused session', () => {
     await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
     await settle();
     expect(b.active()).toBe('iS');
+  });
+
+  it('stops polling when the controller is stopped', async () => {
+    // Invariant: abort ends the wait for the root; no health read follows it.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { FOCUS_POLL_MS } = await import('./focus');
+    const b = await boot({ health: [focusOn(null)] });
+    await b.open();
+    const reads = () => b.calls.filter((x) => x.url === '/api/health').length;
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    const before = reads();
+    expect(before, 'fixture check: the poll read health').toBeGreaterThan(1);
+    stop?.(); stop = null;
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS * 5);
+    expect(reads()).toBe(before);
+  });
+
+  it('stops polling, warning once, when the server is unreachable', async () => {
+    // Invariant: a network failure is terminal for the poll — no read and no warning per tick against a dead server.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { FOCUS_POLL_MS } = await import('./focus');
+    const { SERVER_UNREACHABLE_MESSAGE } = await import('@shared/http');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = await boot({ health: [focusOn(null), new Error('connection refused')] });
+    await b.open();
+    const reads = () => b.calls.filter((x) => x.url === '/api/health').length;
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    const failed = reads();
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS * 5);
+    expect(reads(), 'no read after the failed one').toBe(failed);
+    const focusWarns = warn.mock.calls.filter((c) => String(c[0]).startsWith('focus:'));
+    expect(focusWarns).toHaveLength(1);
+    expect(String((focusWarns[0][1] as Error).message)).toBe(SERVER_UNREACHABLE_MESSAGE);
+    expect(b.appStore.get().activeId).toBeNull();
   });
 
   it('an anchor that resolves wins over the focused session', async () => {

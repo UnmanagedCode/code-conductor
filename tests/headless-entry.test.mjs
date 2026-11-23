@@ -287,3 +287,16 @@ test('stdout closed before the result is written: exit 2, the undelivered result
   assert.match(stderr, /headless: the result was not delivered: stdout closed \(EPIPE\)/);
   assert.doesNotMatch(stderr, /unexpected failure/);
 });
+
+// Invariant: a replay stopped by a signal before it picked a session still ends
+// `stopped` (exit 0) with a null sessionId, through the injected start seam.
+test('viewMain: a signal before any session is picked ends stopped, exit 0, sessionId null', async (t) => {
+  const home = await freshHome(t);
+  const r = await harness(t, home, 'view-signal-before-selection', ['--view']);
+  assert.equal(r.code, 0, r.stderr);
+  const res = onlyJson(r.stdout);
+  assert.equal(res.reason, 'stopped');
+  assert.equal(res.exitCode, 0);
+  assert.equal(res.sessionId, null);
+  assert.equal(res.error, null);
+});
