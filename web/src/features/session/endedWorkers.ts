@@ -39,8 +39,8 @@ export function endedWorkers(rows: SpawnedSessionRow[], instances: Instance[], l
   const out: EndedWorker[] = [];
   for (const r of rows) {
     if (liveSessionIds.has(r.sessionId)) continue;
+    if (instances.some((i) => i.sessionId === r.sessionId && isLiveStatus(i.status))) continue;
     const held = instances.find((i) => i.sessionId === r.sessionId);
-    if (held && isLiveStatus(held.status)) continue;
     out.push({
       sessionId: r.sessionId, project: r.project, worktreeName: r.worktreeName, title: r.title, firstPrompt: r.firstPrompt,
       status: held ? (held.displayStatus ?? held.status) : r.archived ? 'archived' : 'offline',

@@ -12,10 +12,10 @@ vi.mock('@/app/controller', async (orig) => ({
 
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
-import { routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { held, routeFetch, type RouteAnswer } from '@/test/routeFetch';
 import { settle } from '@/test/settle';
 import { SubagentPanel } from './SessionPanels';
-import { setShowEndedWorkers } from './endedWorkers';
+import { endedWorkers, setShowEndedWorkers, SHOW_ENDED_WORKERS_KEY } from './endedWorkers';
 
 const conductor = { id: 'cond', sessionId: 'sid-cond', project: 'demo', status: 'idle', displayStatus: 'idle' } as Instance;
 const live = (id: string, extra: Partial<Instance> = {}): Instance => ({
@@ -103,6 +103,57 @@ describe('workers panel: ended workers', () => {
     expect(await screen.findByRole('button', { name: /job e1/ })).toBeTruthy();
   });
 
+  it('the toggle is written to storage and read back at load', async () => {
+    // Invariant: turning the switch on stores the choice, and a freshly loaded module reads it back as on.
+    setShowEndedWorkers(true);
+    expect(localStorage.getItem(SHOW_ENDED_WORKERS_KEY)).not.toBeNull();
+    vi.resetModules();
+    const fresh = await import('./endedWorkers');
+    expect(fresh.showEndedWorkersStore.get().show).toBe(true);
+    setShowEndedWorkers(false);
+    localStorage.clear();
+    vi.resetModules();
+    expect((await import('./endedWorkers')).showEndedWorkersStore.get().show).toBe(false);
+  });
+
+  it("a session switch never shows the previous session's ended workers", async () => {
+    // Invariant: rows read for session A are not rendered under session B, even while B's read is still pending.
+    const b = held();
+    routeFetch({
+      [ROUTE]: () => ({ json: { workers: [spawned('e1')] } }),
+      'GET /api/sessions/sid-b/workers': () => b.answer,
+    });
+    const r = mount([]);
+    expect(await toggle()).toBeTruthy();
+    const other = { ...conductor, id: 'cond-b', sessionId: 'sid-b' } as Instance;
+    r.rerender(<SubagentPanel inst={other} />);
+    await settle();
+    expect(fetch).toHaveBeenCalledWith('/api/sessions/sid-b/workers', expect.anything());
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Workers/ })).toBeNull();
+    b.release({ json: { workers: [] } });
+  });
+
+  it('a retained dead worker already in the live list renders once', async () => {
+    // Invariant: a worker listed live is never also listed ended, whatever its status.
+    routeFetch(answer([spawned('wx'), spawned('e1')]));
+    mount([live('wx', { status: 'exited', displayStatus: 'exited' })]);
+    fireEvent.click(await toggle());
+    await screen.findByRole('button', { name: /job e1/ });
+    expect(screen.getAllByRole('button', { name: /job wx/ })).toHaveLength(1);
+  });
+
+  it('with the toggle on and no live workers, the header count stays 0 and the empty note is gone', async () => {
+    // Invariant: the header counts live workers only; "No live workers" shows only while ended rows are hidden.
+    routeFetch(answer([spawned('e1')]));
+    mount([]);
+    expect(screen.queryByText('No live workers')).toBeNull();
+    fireEvent.click(await toggle());
+    await screen.findByRole('button', { name: /job e1/ });
+    expect(screen.queryByText('No live workers')).toBeNull();
+    expect(within(screen.getByRole('button', { name: /^Workers/ })).getByText('0')).toBeTruthy();
+  });
+
   it('tapping an ended worker opens it read-only with a history push; a retained dead worker is selected', async () => {
     // Invariant: an ended row with no instance opens via openEndedSession({ push: true }); one a dead instance holds selects that instance.
     routeFetch(answer([spawned('e1', { worktreeName: 'wt-a' }), spawned('e3')]));
@@ -162,5 +213,17 @@ describe('workers panel: ended workers', () => {
     const ended = { id: 'ended:sid-x', sessionId: 'sid-x', project: 'demo', status: 'exited', displayStatus: 'exited', ended: { source: 'session', worktreeName: null } } as Instance;
     mount([], ended);
     expect(await toggle()).toBeTruthy();
+  });
+});
+
+describe('endedWorkers', () => {
+  it('a session held by a dead and a live instance is excluded, whichever comes first', () => {
+    // Invariant: any live holder of the session removes it from the ended list.
+    const row = spawned('x') as unknown as Parameters<typeof endedWorkers>[0][number];
+    const dead = { id: 'i1', sessionId: 'sid-x', project: 'demo', status: 'exited' } as Instance;
+    const alive = { id: 'i2', sessionId: 'sid-x', project: 'demo', status: 'idle' } as Instance;
+    expect(endedWorkers([row], [dead, alive], new Set())).toEqual([]);
+    expect(endedWorkers([row], [alive, dead], new Set())).toEqual([]);
+    expect(endedWorkers([row], [dead], new Set()).map((w) => w.instanceId)).toEqual(['i1']);
   });
 });
