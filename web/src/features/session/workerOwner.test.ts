@@ -49,11 +49,12 @@ describe('workerOwnerOf', () => {
     expect(ownerOf(g, sub)).toMatchObject({ kind: 'owned', sessionId: C1, label: C1_LABEL, target: { kind: 'select', instanceId: f.c1.id } });
   });
 
-  // Invariant: a non-conducted conductor-project spawner (a top-level conductor) is not a section lead; a dead worker that names it with no root owner stays unknown.
-  it('a dead worker whose caller is a top-level conductor and that has no owner resolves to unknown', () => {
+  // Invariant: a top-level conductor is not a section lead, so a dead worker with no reported root resolves through its listed spawner's own root (that conductor); with no listed spawner it stays unknown.
+  it('a dead worker whose caller is a top-level conductor resolves to that conductor; an unlisted caller stays unknown', () => {
     const f = fleet();
     const dead = { ...f.w1, status: 'exited', rootSessionId: null, callerInstanceId: f.c1.id };
-    expect(ownerOf(f, dead)).toEqual({ kind: 'unknown' });
+    expect(ownerOf(f, dead)).toMatchObject({ kind: 'owned', sessionId: C1, label: C1_LABEL, target: { kind: 'select', instanceId: f.c1.id } });
+    expect(ownerOf(f, { ...dead, callerInstanceId: 'i-gone' })).toEqual({ kind: 'unknown' });
   });
 
   it('a live conducted worker resolves its owner\'s label and instance; C1 and C2 workers resolve differently', () => {

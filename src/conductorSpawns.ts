@@ -6,6 +6,7 @@
 // A read-only consumer of the session store: everything goes through
 // `loadSessions()`, nothing here writes.
 
+import type { SessionSpawner } from '../shared/wireRows.ts';
 import { loadSessions, type SessionsDoc } from './sessionStore.ts';
 
 export interface SpawnedProject { project: string; lastSpawnAt: string; worktrees: string[] }
@@ -50,6 +51,14 @@ export function conductedLineage(doc: SessionsDoc, publicId: string): { parent: 
   const rec = doc.get(publicId);
   if (rec?.conducted !== true) return null;
   return { parent: rec.parent ?? null, root: rootOf(doc, publicId) };
+}
+
+// GET /api/sessions/:sid/spawner: a session's recorded lineage, in the shape the client puts on an Instance.
+export async function sessionSpawner(publicId: string): Promise<SessionSpawner> {
+  const lineage = conductedLineage((await loadSessions()).byPublic, publicId);
+  return lineage
+    ? { conducted: true, parentSessionId: lineage.parent, rootSessionId: lineage.root }
+    : { conducted: false, parentSessionId: null, rootSessionId: null };
 }
 
 const memo = new WeakMap<SessionsDoc, SpawnedProjectsByRoot>();

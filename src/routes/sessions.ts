@@ -1,7 +1,7 @@
 import express from 'express';
 import { WebSocket } from 'ws';
 import { findSessionLocation, spawnedSessionRows } from '../projects.ts';
-import { conductorSpawnedProjects } from '../conductorSpawns.ts';
+import { conductorSpawnedProjects, sessionSpawner } from '../conductorSpawns.ts';
 import { pageLineageEvents, retiredLineageSource } from '../lineagePager.ts';
 import { applySessionTitle, MAX_TITLE_LEN } from '../sessionTitles.ts';
 import { applySessionViewed } from '../sessionViewed.ts';
@@ -243,6 +243,16 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
       const sid = String(req.params.sessionId || '');
       assertValidSid(sid);
       res.json({ workers: await spawnedSessionRows(await publicIdFor(sid)) });
+    } catch (e) { next(e); }
+  });
+
+  // The session's recorded spawn lineage (the ended pane's owner chip reads it). A session that
+  // is not conducted, or unknown, answers 200 with the not-conducted shape.
+  r.get('/sessions/:sessionId/spawner', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      res.json(await sessionSpawner(await publicIdFor(sid)));
     } catch (e) { next(e); }
   });
 }

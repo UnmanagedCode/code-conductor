@@ -169,6 +169,11 @@ export interface SessionRow {
 // A session a conductor spawned, with the place its record names (GET /api/sessions/:sid/workers).
 export type SpawnedSessionRow = SessionRow & { project: string; worktreeName: string | null };
 
+// A session's recorded spawn lineage (GET /api/sessions/:sid/spawner): conductedLineage's parent
+// and root, both null when the session is not conducted or the link is unrecorded. The field names
+// match InstanceSummary's, so the client spreads them onto an Instance.
+export interface SessionSpawner { conducted: boolean; parentSessionId: string | null; rootSessionId: string | null }
+
 // A project's convention selection. `unset` (never chosen) and `none` (chosen
 // to have none) compose the same document; only the marker and the sidebar's
 // flag tell them apart. `selected` slugs are in marker order, verbatim, and may

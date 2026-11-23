@@ -4,7 +4,7 @@ import { useMemo } from 'react';
 import { useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
-import { CONDUCT_PROJECT, deriveConductors, directOwnerOf, ownerLabel } from '@shared/conductors';
+import { CONDUCT_PROJECT, deriveConductors, directOwnerOf, isLiveStatus, ownerLabel } from '@shared/conductors';
 import { selectInstance } from '@/app/controller';
 import { resumeSession } from '@/app/sessionActions';
 import { promptSendable } from '@/features/composer/send';
@@ -18,10 +18,21 @@ export type WorkerOwner =
 
 const NONE: WorkerOwner = { kind: 'none' };
 
+/** The server reports no root for a stopped instance; its listed spawner still names one, by the server's root rule. */
+function deadWorkerRoot(inst: Instance, instances: readonly Instance[]): string | null {
+  if (isLiveStatus(inst.status) || !inst.callerInstanceId) return null;
+  const spawner = instances.find((i) => i.id === inst.callerInstanceId);
+  if (!spawner?.sessionId) return null;
+  return (spawner.conducted ? spawner.rootSessionId : spawner.sessionId) ?? null;
+}
+
 export function workerOwnerOf(inst: Instance, { instances, conductRows }: { instances: readonly Instance[]; conductRows: readonly any[] }): WorkerOwner {
   if (!inst.conducted) return NONE;
+  // An ended pane has no spawner instance; its recorded parent stands in when that is listed, as a caller-less resume does.
+  const parent = inst.ended && !inst.callerInstanceId && inst.parentSessionId
+    ? instances.find((i) => i.sessionId === inst.parentSessionId) : undefined;
   // Ungated: an exited worker of a live section lead still names the section lead.
-  const sessionId = directOwnerOf(inst, instances);
+  const sessionId = directOwnerOf(parent ? { ...inst, callerInstanceId: parent.id } : inst, instances) ?? deadWorkerRoot(inst, instances);
   if (!sessionId) return { kind: 'unknown' };
   const conductors = deriveConductors({ conductRows, instances });
   const label = ownerLabel(sessionId, { conductors, instances });

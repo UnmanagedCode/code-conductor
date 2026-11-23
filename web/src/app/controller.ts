@@ -4,6 +4,7 @@
 // stores and to app events; nothing here touches the DOM beyond the URL hash.
 import { bus, connect, send, type BusEventMap } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
+import type { SessionSpawner } from '@shared/wireRows';
 import { isViewOnly } from '@shared/viewOnly';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
 import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState, type StaleList } from '@/state/app';
@@ -309,7 +310,19 @@ export function openEndedSession({ sessionId, project, worktreeName, title = nul
   if (push) pushSessionAnchor(sessionId); else writeSessionAnchor(sessionId);
   syncRoute();
   closeSidebarOnMobile();
+  void adoptEndedSpawner(ended);
   return lazyHistory.openNewest();
+}
+
+/** Puts the session's recorded spawn lineage on its ended pane, so the header can offer Back to the owner. A pane that has moved on is left alone. */
+async function adoptEndedSpawner(ended: Instance): Promise<void> {
+  try {
+    const body = await apiFetch<SessionSpawner | null>(`/api/sessions/${encodeURIComponent(ended.sessionId!)}/spawner`);
+    if (body?.conducted !== true || appStore.get().ended !== ended) return;
+    appStore.set({ ended: { ...ended, conducted: true, parentSessionId: body.parentSessionId, rootSessionId: body.rootSessionId } });
+  } catch (e) {
+    console.warn('ended pane: spawner read failed:', e);
+  }
 }
 
 /**

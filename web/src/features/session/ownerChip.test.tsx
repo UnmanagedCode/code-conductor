@@ -133,6 +133,82 @@ describe('owner chip', () => {
   });
 });
 
+// A read-only ended pane (openEndedSession) carries the server-recorded lineage, and an exited
+// listed worker has lost its server-side root: both still name an owner.
+const ended = (over: Record<string, any>) => ({
+  id: 'ended:w-arch', project: 'demo', sessionId: 'w-arch', status: 'exited', displayStatus: 'exited', mode: 'plan', title: 'Warch', worktree: null,
+  ended: { source: 'session', worktreeName: null }, conducted: true, ...over,
+});
+
+describe('owner chip on an ended pane', () => {
+  // Invariant: an archived worker with a recorded spawner gets the same back control and navigation (click, Alt+ArrowUp) as a live one.
+  it('an ended worker whose owner is running shows `Back to <owner>` and selects it on click and Alt+↑', () => {
+    const w = ended({ parentSessionId: C1, rootSessionId: C1 });
+    show(w);
+    expect(back(C1_LABEL)).not.toBeNull();
+    fireEvent.click(back(C1_LABEL)!);
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[f.c1.id, { push: true, userGesture: true }]]);
+    cleanup();
+    vi.mocked(selectInstance).mockClear();
+    show(w);
+    altUp();
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[f.c1.id, { push: true, userGesture: true }]]);
+  });
+
+  // Invariant: an ended worker's inactive listed conductor is resumed, as for a live worker.
+  it('an ended worker of an inactive listed conductor resumes it on click', () => {
+    show(ended({ parentSessionId: CI, rootSessionId: CI }));
+    fireEvent.click(back(CI_LABEL)!);
+    expect(vi.mocked(resumeSession).mock.calls).toEqual([[{ projectName: CONDUCT_PROJECT, worktreeName: null, sessionId: CI }]]);
+    expect(selectInstance).not.toHaveBeenCalled();
+  });
+
+  // Invariant: an ended worker whose conductor is archived or unlisted shows the chip as plain text, with no Back button.
+  it('an ended worker of an unlisted conductor shows the chip with no Back button', () => {
+    show(ended({ parentSessionId: CGONE, rootSessionId: CGONE }));
+    expect(chip()).not.toBeNull();
+    expect(chip()!.tagName).not.toBe('BUTTON');
+    expect(screen.queryAllByRole('button', { name: /^Back to/ })).toHaveLength(0);
+  });
+
+  // Invariant: the direct live section lead of an ended worker wins over the root, as for live workers.
+  it('an ended worker of a live section lead shows `Back to <section lead>`', () => {
+    const lead = { ...f.c2, conducted: true, rootSessionId: C1 };
+    seedWorkerFleet({ ...f, c2: lead });
+    show(ended({ parentSessionId: C2, rootSessionId: C1 }));
+    expect(back(C2_LABEL)).not.toBeNull();
+    expect(back(C1_LABEL)).toBeNull();
+    fireEvent.click(back(C2_LABEL)!);
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[lead.id, { push: true, userGesture: true }]]);
+  });
+});
+
+describe('owner chip on a dead listed worker', () => {
+  // Invariant: a retained exited worker names its spawner's root (a top-level spawner is its own root) and goes there on click.
+  it('an exited worker the server reports no root for shows `Back to <spawner>`', () => {
+    show({ ...f.w1, status: 'exited', rootSessionId: null, callerInstanceId: f.c1.id });
+    expect(back(C1_LABEL)).not.toBeNull();
+    fireEvent.click(back(C1_LABEL)!);
+    expect(vi.mocked(selectInstance).mock.calls).toEqual([[f.c1.id, { push: true, userGesture: true }]]);
+  });
+
+  // Invariant: a dead worker spawned by an ordinary conducted worker names that worker's root, not the worker.
+  it('an exited worker spawned by an ordinary worker shows `Back to <root conductor>`', () => {
+    const mid = { ...f.w2, sessionId: 'w-mid', id: 'i-w-mid', title: 'Wmid', rootSessionId: C1 };
+    seedWorkerFleet(f, [mid]);
+    show({ ...f.w1, status: 'exited', rootSessionId: null, callerInstanceId: mid.id });
+    expect(back(C1_LABEL)).not.toBeNull();
+    expect(back('Wmid')).toBeNull();
+  });
+
+  // Invariant: the dead-worker fallback is gated on status; a live worker the server gives no owner stays `Conducted worker`.
+  it('a live worker with no root and a listed spawner still reads `Conducted worker`', () => {
+    show({ ...f.w1, status: 'idle', rootSessionId: null, callerInstanceId: f.c1.id });
+    expect(chip()?.getAttribute('data-owner-chip')).toBe('unknown');
+    expect(screen.queryAllByRole('button', { name: /^Back to/ })).toHaveLength(0);
+  });
+});
+
 describe('Alt+ArrowUp', () => {
   it('on window or the textarea selects the owner; inside an open Session-actions menu it does not; after unmount it does not', async () => {
     const r = show(f.w1);
