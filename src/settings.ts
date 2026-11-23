@@ -25,6 +25,9 @@
 //   - On a redirected session, a second entry on the mutating tools
 //     (REDIRECT_POST_TOOL_MATCHER below).
 //
+// On EVERY session, whatever the hook URL, redirect or conductor flag:
+// top-level `disableAutoMode: "disable"`.
+//
 // The interactive tools (AskUserQuestion / ExitPlanMode / EnterPlanMode)
 // are NO LONGER gated by a static PreToolUse deny hook. Under CLI 2.1.x
 // they are enabled via `--permission-prompt-tool stdio` (see Instance.spawn)
@@ -133,7 +136,14 @@ export const HOOK_HTTP_TIMEOUT_S = 660;
 export function buildSettingsJSON({ hookCallbackUrl, redirect = false, conductor = false }: { hookCallbackUrl?: string; redirect?: boolean; conductor?: boolean } = {}): string {
   const httpHook = (url: string) => [{ type: 'http', url, timeout: HOOK_HTTP_TIMEOUT_S }];
   const preToolUse: unknown[] = [];
-  const out: Record<string, unknown> = { hooks: { PreToolUse: preToolUse } };
+  // AUTO MODE IS OFF FOR EVERY SESSION cc spawns, unconditionally (no toggle):
+  // cc drives each session's permission mode itself (`--permission-mode`, the
+  // plan-approve flow). A session cannot turn it back on: `--settings` (flag
+  // settings) outranks the user and project settings.json, and the CLI merges
+  // this key restrictively with "disable" as its only valid value.
+  // MEASURED (claude 2.1.330): top-level `disableAutoMode` is in the settings
+  // schema and read by the CLI's auto-mode gate.
+  const out: Record<string, unknown> = { hooks: { PreToolUse: preToolUse }, disableAutoMode: 'disable' };
   if (hookCallbackUrl) {
     preToolUse.push({
       matcher: redirect ? REDIRECT_PRE_TOOL_MATCHER : MUTATING_TOOL_MATCHER,

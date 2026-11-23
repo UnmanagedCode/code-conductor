@@ -248,6 +248,7 @@ describe('a worker session on a remote system', () => {
     assert.match(settings.hooks.PreToolUse[0].matcher, /\bRead\b/,
       'Read is not hooked — the refusal seam criterion 11 needs is gone');
     assert.ok(settings.hooks.PostToolUse, 'the PostToolUse write-back seam is still registered');
+    assert.equal(settings.disableAutoMode, 'disable', 'the redirected launch argv disables auto mode');
   });
 
   // PINS B5: a worker can read its OWN backgrounded command's interim output.

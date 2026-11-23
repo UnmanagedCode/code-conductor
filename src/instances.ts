@@ -2602,7 +2602,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       // HookBroker allows local calls and applies the redirect policy to
       // redirected ones. A conductor also gets the read-nudge entry, and every
       // session also gets the PostToolUse tool-result-nudge entry
-      // (src/toolResultNudges.ts). The full layout: buildSettingsJSON.
+      // (src/toolResultNudges.ts); and every session has auto mode disabled.
+      // The full layout: buildSettingsJSON.
       '--settings', buildSettingsJSON({
         hookCallbackUrl: this.hookCallbackUrl ?? undefined,
         redirect: this._redirect !== null,
