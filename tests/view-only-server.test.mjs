@@ -30,3 +30,32 @@ test('health without the flag is unchanged', async () => {
     assert.equal('viewOnly' in capabilities, false);
   } finally { await close(); }
 });
+
+// Invariant: a headless-family server advertises its focus cell on health, live
+// (the cell is read per request); an ordinary server's health has no `focus` key.
+test('health carries the focus cell, and follows it', async () => {
+  const focus = { sessionId: null };
+  const { baseUrl, close } = await bootServer({ focus });
+  try {
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/health`)).json()).focus, { sessionId: null });
+    focus.sessionId = 'sess-1';
+    assert.deepEqual((await (await fetch(`${baseUrl}/api/health`)).json()).focus, { sessionId: 'sess-1' });
+  } finally { await close(); }
+});
+
+test('health without a focus cell has no focus key', async () => {
+  const { baseUrl, close } = await bootServer();
+  try {
+    assert.equal('focus' in await (await fetch(`${baseUrl}/api/health`)).json(), false);
+  } finally { await close(); }
+});
+
+// Invariant: a replay server refuses session creation over REST with the replay code.
+test('a replay server answers POST /api/instances 409 VIEW_REPLAY_NO_LAUNCH', async () => {
+  const { baseUrl, close } = await bootServer({ replay: true });
+  try {
+    const res = await fetch(`${baseUrl}/api/instances`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(res.status, 409);
+    assert.equal((await res.json()).code, 'VIEW_REPLAY_NO_LAUNCH');
+  } finally { await close(); }
+});

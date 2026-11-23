@@ -9,7 +9,7 @@ import { ROOT_LOCK_HELD_EXIT } from '../rootLock.ts';
 export const OUTPUT_FORMATS = ['text', 'json', 'stream-json'] as const;
 export type OutputFormat = typeof OUTPUT_FORMATS[number];
 
-export type HeadlessReason = 'completed' | 'conductor_error' | 'signal' | 'usage_error' | 'root_held' | 'boot_failed';
+export type HeadlessReason = 'completed' | 'conductor_error' | 'signal' | 'usage_error' | 'root_held' | 'boot_failed' | 'stopped' | 'no_session';
 
 // Every reason but `signal`, whose code is 128 + the signal number (signalExitCode).
 export const EXIT_CODES = {
@@ -18,6 +18,9 @@ export const EXIT_CODES = {
   usage_error: 2,
   conductor_error: 3,
   root_held: ROOT_LOCK_HELD_EXIT,
+  // `--view` only (src/headless/view.ts): the replay's normal end, and a root with no session to show.
+  stopped: 0,
+  no_session: 4,
 } as const satisfies Record<Exclude<HeadlessReason, 'signal'>, number>;
 
 export function signalExitCode(signal: NodeJS.Signals): number {

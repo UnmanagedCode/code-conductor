@@ -65,6 +65,8 @@ const USAGE = [
   ['an unreadable prompt file', ['--prompt-file', 'does-not-exist.md']],
   ['a whitespace-only prompt', ['--prompt', '  ']],
   ['an empty stdin prompt', ['--prompt-file', '-']],
+  ['--view with a prompt', ['--view', '--prompt', 'x']],
+  ['--session without --view', ['--session', 'x']],
 ];
 for (const [name, args] of USAGE) {
   test(`usage error, ${name}: exit 2, one usage_error object, nothing booted`, async (t) => {

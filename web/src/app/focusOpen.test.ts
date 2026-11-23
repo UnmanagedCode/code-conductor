@@ -1,0 +1,139 @@
+// Focus mode's opener (app/focus.ts, wired by the controller's first connect and
+// its popstate handler): a headless-family server names the session on
+// GET /api/health, and the client opens it with no gesture — a live session is
+// selected, an inactive one opens read-only, nothing is ever POSTed — waiting
+// for a live run's root to spawn, yielding to an anchor that resolves, and
+// keeping Back from a worker on the focused session.
+import '@/test/browserHash';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { consumeStashedAnchor } from '@shared/anchor';
+import { routeFetch, type RouteAnswer } from '@/test/routeFetch';
+import { settle } from '@/test/settle';
+
+vi.mock('@shared/ws', () => {
+  const bus = new EventTarget();
+  const sent: [string, unknown][] = [];
+  return { bus, sent, connect: vi.fn(), send: vi.fn((t: string, payload: unknown) => { sent.push([t, payload]); }) };
+});
+
+const inst = (id: string, sessionId: string) => ({ id, sessionId, project: 'p', status: 'idle', mode: 'default' });
+const MISS: RouteAnswer = { status: 404, json: {} };
+const ON_DISK: RouteAnswer = { json: { project: 'p', worktreeName: null, archived: false } };
+const CAPS = { git: true };
+let stop: (() => void) | null = null;
+
+/** A fresh controller over a mocked socket; `health` answers each GET /api/health in turn (the last repeats). */
+async function boot({ health, instances = [] }: { health: unknown[]; instances?: unknown[] }) {
+  stop?.();
+  vi.resetModules();
+  const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
+  ws.sent.length = 0;
+  let healthReads = 0;
+  const calls = routeFetch({
+    'GET /api/health': () => ({ json: { capabilities: CAPS, ...(health[Math.min(healthReads++, health.length - 1)] as object) } }),
+    'GET /api/instances/': () => ({ json: {} }),
+    'GET /api/instances': () => ({ json: instances }),
+    'POST /api/instances': () => ({ json: {} }),
+    'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? MISS
+      : url.includes('/lineage-events') ? { json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }
+      : ON_DISK),
+    'GET /api/projects': () => ({ json: [] }),
+    'GET /api/workspaces': () => ({ json: [] }),
+  });
+  // The app's startup read (main.tsx).
+  void (await import('@shared/capabilities')).loadCapabilities();
+  const c = await import('./controller');
+  const { appStore, activeInstance } = await import('@/state/app');
+  c.startController();
+  stop = c.stopController;
+  return {
+    c, appStore, calls,
+    open: async () => { ws.bus.dispatchEvent(new CustomEvent('open', { detail: {} })); await settle(); },
+    active: () => activeInstance(appStore.get())?.id ?? null,
+    posts: () => calls.filter((x) => x.method === 'POST' && x.url === '/api/instances').length,
+    subscribes: () => ws.sent.filter(([t]) => t === 'subscribe').map(([, p]) => (p as { id: string }).id),
+  };
+}
+const focusOn = (sessionId: string | null) => ({ focus: { sessionId } });
+
+beforeEach(() => { history.replaceState(null, '', '/'); });
+afterEach(() => { stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); consumeStashedAnchor(); });
+
+describe('opening the focused session', () => {
+  it('an inactive focused session opens read-only, anchored, with no POST', async () => {
+    // Invariant: page load in focus mode shows the named session's transcript and never starts a CLI.
+    const b = await boot({ health: [focusOn('S')] });
+    await b.open();
+    expect(b.appStore.get().activeId).toBe('ended:S');
+    expect(location.hash).toBe('#session=S');
+    expect(b.posts()).toBe(0);
+  });
+
+  it('a live focused session is selected and subscribed', async () => {
+    // Invariant: a live session is selected as it stands (a subscribe frame goes out), not opened read-only.
+    const b = await boot({ health: [focusOn('S')], instances: [inst('iS', 'S')] });
+    await b.open();
+    expect(b.active()).toBe('iS');
+    expect(b.subscribes()).toEqual(['iS']);
+    expect(b.posts()).toBe(0);
+  });
+
+  it('waits while the server names no session yet, then opens the one it names', async () => {
+    // Invariant: a live run's root has not spawned at page load; the client re-reads health every FOCUS_POLL_MS until it names the session.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { FOCUS_POLL_MS } = await import('./focus');
+    const b = await boot({ health: [focusOn(null), focusOn(null), focusOn('S')], instances: [inst('iS', 'S')] });
+    await b.open();
+    expect(b.active(), 'nothing opens while the focus names no session').toBeNull();
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    await settle();
+    expect(b.active(), 'still null after the first poll').toBeNull();
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    await settle();
+    expect(b.active()).toBe('iS');
+  });
+
+  it('an anchor that resolves wins over the focused session', async () => {
+    // Invariant: a reload on a worker stays on that worker.
+    history.replaceState(null, '', '/#session=W');
+    const b = await boot({ health: [focusOn('S')], instances: [inst('iW', 'W'), inst('iS', 'S')] });
+    await b.open();
+    expect(b.active()).toBe('iW');
+    expect(location.hash).toBe('#session=W');
+  });
+
+  it('without a focus key nothing opens by itself', async () => {
+    // Invariant (control): an ordinary server's page load opens no session on its own.
+    const b = await boot({ health: [{}], instances: [inst('iS', 'S')] });
+    await b.open();
+    expect(b.appStore.get().activeId).toBeNull();
+    expect(b.posts()).toBe(0);
+  });
+});
+
+describe('Back in focus mode', () => {
+  it('from a worker returns to the exited focused session, not the empty screen', async () => {
+    // Invariant: Back onto an entry naming an unlisted (exited) session opens its read-only pane instead of clearing the selection.
+    const b = await boot({ health: [focusOn('S')], instances: [inst('iW', 'W')] });
+    await b.open();
+    expect(b.appStore.get().activeId, 'fixture check: the focused session is open').toBe('ended:S');
+    b.c.selectInstance('iW', { push: true });
+    expect(b.active(), 'fixture check: the worker is selected').toBe('iW');
+    history.back();
+    await settle();
+    expect(b.appStore.get().activeId).toBe('ended:S');
+    expect(location.hash).toBe('#session=S');
+  });
+
+  it('control: without focus, Back onto an unlisted session leaves nothing selected', async () => {
+    // Invariant: the Back-to-ended behaviour belongs to focus mode alone.
+    history.replaceState(null, '', '/#session=S');
+    history.pushState(null, '', '/');
+    const b = await boot({ health: [{}], instances: [inst('iW', 'W')] });
+    await b.open();
+    b.c.selectInstance('iW', { push: true });
+    history.back();
+    await settle();
+    expect(b.appStore.get().activeId).not.toBe('ended:S');
+  });
+});

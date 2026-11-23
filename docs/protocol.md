@@ -33,6 +33,7 @@
 
 - [Headless run result](protocol/headless.md#headless-run-result)
 - [Output formats](protocol/headless.md#output-formats)
+- [Replay result](protocol/headless.md#replay-result)
 
 ## [mcp.md](protocol/mcp.md) — params, session resolution, renewal and idle wake
 

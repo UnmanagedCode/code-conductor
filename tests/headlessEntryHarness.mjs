@@ -37,7 +37,7 @@ function fakeRoot(over = {}) {
 function fakeInstances(root, over = {}) {
   return { create: async () => root, on() {}, off() {}, isTreeQuiescent: () => false, exitCauseFor: () => null, ...over };
 }
-const booted = (instances) => ({ instances, host: '127.0.0.1', port: 1 });
+const booted = (instances) => ({ instances, host: '127.0.0.1', port: 1, focus: { sessionId: null } });
 
 const starts = {
   'boot-throws': async () => { throw new Error('boom at boot'); },
