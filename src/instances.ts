@@ -822,6 +822,7 @@ export class Instance extends EventEmitter implements InstanceLike {
   _backgroundJobs: Map<string, BackgroundJob>;
   _taskNotificationPending: boolean;
   _queuedPromptPending: boolean;
+  _resultSinceTurnStart: boolean;
   _idleWindowDirty: boolean;
   _turnFirstReqCacheRead: number | null;
   _turnFirstReqCacheCreation: number | null;
@@ -1226,27 +1227,49 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (Idle-time completions that get NO re-invocation turn at all are the
     // hub's idle task-drain settle path — see IdleSubscriptionHub.onEvent.)
     this._taskNotificationPending = false;
-    // A prompt written into a RUNNING turn that the CLI has not taken in yet.
-    // The CLI folds a mid-turn message only at a top-level tool round-trip; with
-    // none before the turn ends it opens a new turn for it, so the turn's own
-    // result is followed by system/init + message_start before the status
-    // returns to `turn` (measured over conductor session jsonls: queued
-    // enqueue → dequeue → new turn after the old turn's end_turn, vs enqueue →
-    // remove + queued_command attachment in the same turn). A fold leaves no
-    // stdout signal, so this is a model, not an observation: SET by a mid-turn
-    // prompt() after the send, CLEARED by any top-level tool_result (a fold),
-    // by the next idle→turn transition (the queued turn started; see
-    // _setStatus), and on (re)spawn and exit. Read by IdleSubscriptionHub: while
-    // set, a delivered wake is not yet taken in, so its caller still awaits it.
+    // A prompt the CLI may hold queued and has not taken in yet. The CLI folds a
+    // mid-turn message only at a top-level tool round-trip; with none before the
+    // turn ends it opens a new turn for it after the old turn's `result` (see
+    // _resultSinceTurnStart for how that turn announces itself). Measured over
+    // conductor session jsonls: queued enqueue → dequeue → new turn after the
+    // old turn's end_turn, vs enqueue → remove + queued_command attachment in
+    // the same turn. A fold leaves no stdout signal, so this is a model, not an
+    // observation: SET by prompt() after the send when the write may be queued —
+    // into a running turn, or into the idle gap between a `result` and the
+    // opener of a turn the CLI already holds (this flag still set); CLEARED by
+    // any top-level tool_result (a fold), by the next idle→turn transition (the
+    // queued turn started; see _setStatus), and on (re)spawn and exit. Read by
+    // IdleSubscriptionHub: while set, a delivered wake is not yet taken in, so
+    // its caller still awaits it. Known cost of the idle-gap case: a write that
+    // reached the CLI before its dequeue is taken into that same turn and no
+    // further turn comes, so the flag outlives it; the hub's PARKED_BACKSTOP_MS
+    // ends that hold at the next turn end — a finish reported late, never a
+    // false finish.
     this._queuedPromptPending = false;
+    // True once this process has ended a turn (a top-level `result`) and no turn
+    // has started since. It gates the start of a turn the CLI opens on its own
+    // (a queued prompt, an idle-time task notification): after a `result`, the
+    // CLI's next turn announces itself with a top-level `system/init`, or first
+    // a `system/hook_started` for `UserPromptSubmit` when such a hook is
+    // configured, before the hooks run and long before its `message_start`
+    // (measured over conductor debug captures: every post-`result`
+    // `message_start` is preceded by one of the two, and every such opener ends
+    // in a `message_start` or a `result`). _handleStdoutLine starts the turn at
+    // that opener, so every reader (hub arming, awaitingWake, displayStatus)
+    // sees it from there. Before the process's first `result` the opener
+    // belongs to the spawn or a prompt()-started turn, never a CLI-opened one.
+    // SET at a top-level turn_end, CLEARED by every idle→turn transition (see
+    // _setStatus) and on (re)spawn.
+    this._resultSinceTurnStart = false;
     // True when any NON-task-lifecycle event was processed while this
     // instance was idle — i.e. the current idle window is not pure background-
     // task bookkeeping. The load-bearing case: an unprompted re-invocation
-    // turn announces itself with CLI-local `system/init` + `system/status`
-    // lines long before its `message_start` (which waits on the API) flips
-    // status to 'turn'. A background task draining inside that window must NOT
-    // fire the idle task-drain wake (the opening turn's turn_end owns it), so
-    // the hub refuses to arm a settle while this is set. SET at the top of the
+    // turn's opener (`system/init` or a UserPromptSubmit `hook_started`, see
+    // _resultSinceTurnStart) arrives under `idle` and dirties the window before
+    // it moves the status to `turn`; so does any idle-time line that opens no
+    // turn. A background task draining inside such a window must NOT fire the
+    // idle task-drain wake (a turn the CLI is opening owns it), so the hub
+    // refuses to arm a settle while this is set. SET at the top of the
     // _handleStdoutLine event loop for any idle-time event outside
     // TASK_LIFECYCLE_SUBTYPES; CLEARED on turn_end (a fresh idle window starts
     // clean) and on (re)spawn. Replayed history (loadHistory) bypasses
@@ -1755,13 +1778,18 @@ export class Instance extends EventEmitter implements InstanceLike {
     // (the re-invocation payload) is being delivered right now. Mid-turn
     // message_starts never reach here (status is already 'turn'), so agent-loop
     // steps inside a turn can't falsely clear it.
-    if (next === 'turn') { this._taskNotificationPending = false; this._queuedPromptPending = false; this._turnStarts += 1; }
+    if (next === 'turn') {
+      this._taskNotificationPending = false;
+      this._queuedPromptPending = false;
+      this._resultSinceTurnStart = false;
+      this._turnStarts += 1;
+    }
     if (next === 'turn') this._liveAsk.onTurnStart();
     // A new turn starts: clear the per-turn cache-miss capture so the next
     // message_start is treated as this turn's first request (see the
     // constructor comment). Fires exactly once per turn start, for both
-    // prompt-initiated (prompt() → _setStatus) and unprompted (message_start
-    // flips idle→turn) turns.
+    // prompt-initiated (prompt() → _setStatus) and unprompted (the CLI's
+    // opener, or failing that message_start, flips idle→turn) turns.
     if (next === 'turn') {
       // Every turn starts real; prompt() and clearContext() mark a nudge-chain
       // turn after this transition (see `_turnNudgeChain`).
@@ -2460,6 +2488,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     this._turnForceAborted = false;
     this._taskNotificationPending = false;
     this._queuedPromptPending = false;
+    this._resultSinceTurnStart = false;
     this._idleWindowDirty = false;
     // Per-turn cache-miss capture starts clean on every (re)spawn. Cross-turn
     // state (_prevTurnPrefix, _prefixBaselineInvalid) is NOT reset here: a
@@ -2977,19 +3006,30 @@ export class Instance extends EventEmitter implements InstanceLike {
         }
         this._trackModel(data?.model);
       }
+      // The opener of a turn the CLI started on its own (a queued prompt, an
+      // idle-time task notification, a ScheduleWakeup fire), which never went
+      // through prompt()'s _setStatus('turn'): a top-level `system/init`, or a
+      // UserPromptSubmit `hook_started` ahead of it, after this process's last
+      // `result` (see _resultSinceTurnStart). The turn starts here rather than
+      // at its `message_start`, which waits on the hooks and the API. Guarded to
+      // 'idle' so spawn ('spawning') and dead ('crashed'/'exited') states are
+      // untouched and a prompt()-started turn (already 'turn') is a no-op; and
+      // not while the post-abort drain window is open, which severs these turns
+      // at their init before any API call (they must arm no owner).
+      if (ev.kind === 'system' && !ev.parentToolUseId && this.status === 'idle'
+          && this._resultSinceTurnStart && this._drainListener == null
+          && (ev.subtype === 'init'
+            || (ev.subtype === 'hook_started' && evData(ev)?.hook_event === 'UserPromptSubmit'))) {
+        this._setStatus('turn');
+      }
       // message_start reports the model too, and fires at the actual turn
       // boundary rather than a turn later once the next init lands.
       if (ev.kind === 'message_start') {
         if (ev.model) this._trackModel(ev.model);
-        // A turn we didn't initiate (e.g. a ScheduleWakeup fire re-invoking the
-        // turn internally) never went through prompt()'s _setStatus('turn').
-        // message_start is the earliest turn-start signal on the stream, so flip
-        // idle→turn here. Guarded to 'idle' so spawn ('spawning') and dead
-        // ('crashed'/'exited') states are untouched, and so it's a no-op for
-        // prompt-initiated turns (already 'turn') and mid-turn re-emits. Unlike
-        // system/init, message_start doesn't fire at spawn and isn't the drain
-        // window's trigger — so no spurious post-spawn turn and no fight with
-        // the post-abort drain (which severs on init, before any API round-trip).
+        // Fallback turn start for an unprompted turn whose opener was not seen
+        // (it arrived while the drain window was open, or before this process's
+        // first `result`). Guarded to 'idle', so it is a no-op for every turn
+        // the opener or prompt() already started and for mid-turn re-emits.
         if (this.status === 'idle') this._setStatus('turn');
         // ev.usage may be `null`: the parser nulls out an all-zero block
         // (src/parser.ts) while still emitting the event. The optional chains
@@ -3142,6 +3182,7 @@ export class Instance extends EventEmitter implements InstanceLike {
           }));
         }
         this._setStatus('idle');
+        if (!ev.parentToolUseId) this._resultSinceTurnStart = true;
         if (!ev.parentToolUseId) this.emit('turn_ended', { ...(typeof ev.stopReason === 'string' ? { stopReason: ev.stopReason } : {}) });
         this._idleWindowDirty = false; // fresh idle window starts clean
         // This turn's plan-file writes stop corroborating the next turn's
@@ -3643,6 +3684,9 @@ export class Instance extends EventEmitter implements InstanceLike {
     const chain = idleNudge || (this._renewalNudgeChain && parseRenewSeed(safeText) !== null);
     if (!chain) this._renewalNudgeChain = false;
     const wasTurn = this.status === 'turn';
+    // The CLI may queue this write: into a running turn, or behind a turn it
+    // holds queued whose opener has not arrived yet (see _queuedPromptPending).
+    const cliMayQueue = wasTurn || this._queuedPromptPending;
     this._sendRaw({
       type: 'user',
       message: { role: 'user', content },
@@ -3672,8 +3716,8 @@ export class Instance extends EventEmitter implements InstanceLike {
       : null);
     this._setStatus('turn');
     this._turnActor = null;
-    // Written into a running turn: the CLI may queue it past this turn's end.
-    if (wasTurn) this._queuedPromptPending = true;
+    // After the transition, which clears the flag on a turn start.
+    if (cliMayQueue) this._queuedPromptPending = true;
     // A real message steered into a chain turn makes it real.
     this._turnNudgeChain = wasTurn ? (this._turnNudgeChain && chain) : chain;
   }

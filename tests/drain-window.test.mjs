@@ -109,6 +109,32 @@ test('system/init during drain window triggers drain_abort and fires interrupt',
   assert.ok(inst._drainListener !== null, 'drain listener still attached');
 });
 
+// Invariant (INV-1 guard: no drain window open): a turn the drain severs at its
+// opener is not a turn for cc. An init or a UserPromptSubmit hook_started inside
+// the window, after the aborted turn's result, leaves the status `idle` and emits
+// no `turn_start` (so no owner is armed for it).
+test('an opener inside the drain window does not start a turn', async () => {
+  const events = collectEvents(instances);
+  const { id, inst } = await setupInstance();
+
+  await runHardAbort(id, inst, events);
+  const starts = [];
+  const onStart = () => starts.push(inst.status);
+  inst.on('turn_start', onStart);
+  cleanupListeners.push(() => inst.off('turn_start', onStart));
+
+  inst._handleStdoutLine(JSON.stringify({
+    type: 'system', subtype: 'hook_started', hook_id: '00000000-0000-4000-8000-000000000001',
+    hook_name: 'UserPromptSubmit', hook_event: 'UserPromptSubmit', session_id: inst.sessionId,
+  }));
+  injectSpuriousInit(inst);
+
+  assert.equal(inst.status, 'idle', 'still idle');
+  assert.deepEqual(starts, [], 'no turn_start');
+  const drainEvs = events.filter(e => e.id === id && e.ev.kind === 'system' && e.ev.subtype === 'drain_abort');
+  assert.equal(drainEvs.length, 1, 'premise: the init was drained');
+});
+
 test('multiple system/init events each trigger a drain, window slides', async () => {
   const events = collectEvents(instances);
   const { id, inst } = await setupInstance();
@@ -177,8 +203,9 @@ test('closing the window manually prevents any subsequent system/init from drain
   );
   assert.equal(drainEvs.length, 0, 'no drain_abort after window expired');
 
-  // Instance remains healthy.
-  assert.equal(inst.status, 'idle', 'instance is still idle after expired window');
+  // Outside the window, an init after the aborted turn's result is the opener of
+  // a turn the CLI started, so cc's status follows it into `turn`.
+  assert.equal(inst.status, 'turn', 'an init after the window starts a turn');
 });
 
 test('hard abort with nothing queued: window opens and closes harmlessly, normal behavior intact', async () => {

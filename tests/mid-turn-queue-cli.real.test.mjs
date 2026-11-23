@@ -11,7 +11,11 @@
 //     turn, and the session jsonl records `enqueue` then `dequeue` for it;
 //   * a message written while a top-level tool call is running is FOLDED into
 //     that turn at the tool's result: no second `result`, and the jsonl records
-//     `enqueue` then `remove` plus a `queued_command` attachment.
+//     `enqueue` then `remove` plus a `queued_command` attachment;
+//   * the queued turn announces itself before its first API call: after the
+//     `result`, a top-level UserPromptSubmit `hook_started` (when such a hook is
+//     configured) or `system/init` precedes its `stream_event message_start`.
+//     cc starts the turn there (Instance._resultSinceTurnStart).
 // A fold leaves no stdout frame, so the jsonl is the only mechanical evidence.
 //
 // Harness and the two rules every case follows: tests/cliContractCase.mjs.
@@ -82,6 +86,37 @@ t('a message written during a top-level tool call is folded into the running tur
     assert.equal(ops(lines, 'dequeue').length, 1, 'only the first became a turn');
     assert.ok(lines.some((l) => l.type === 'attachment' && l.attachment?.type === 'queued_command'),
       'the folded message rides in as a queued_command attachment');
+  } finally {
+    s.kill();
+    await clean();
+  }
+});
+
+// PINS: the queued turn's first top-level frame after the first `result` that is
+// an opener or a `message_start` is the UserPromptSubmit `hook_started`, and a
+// `system/init` also precedes that `message_start` — the opener cc starts a
+// CLI-opened turn at, ahead of the hooks and the API.
+t('a queued turn opens with a UserPromptSubmit hook_started, then init, before its message_start', async () => {
+  const { dir, clean } = await fixture();
+  const settings = JSON.stringify({
+    hooks: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: 'true' }] }] },
+  });
+  const s = claudeSession({ cwd: dir, settings, extra: ['--include-partial-messages'] });
+  try {
+    s.prompt('Reply with the single word ALPHA.');
+    await s.waitFor((f) => f.type === 'system' && f.subtype === 'init', 120_000);
+    s.prompt('Reply with the single word OMEGA.');
+    const first = await s.waitFor(isResult, 120_000);
+    await s.waitFor((f) => isResult(f) && f !== first, 120_000);
+    const after = s.events.slice(s.events.indexOf(first) + 1).filter((f) => !f.parent_tool_use_id);
+    const isUps = (f) => f.type === 'system' && f.subtype === 'hook_started' && f.hook_event === 'UserPromptSubmit';
+    const isInit = (f) => f.type === 'system' && f.subtype === 'init';
+    const isStart = (f) => f.type === 'stream_event' && f.event?.type === 'message_start';
+    const firstOf = after.find((f) => isUps(f) || isInit(f) || isStart(f));
+    assert.ok(firstOf && isUps(firstOf), `the first opener frame is the UserPromptSubmit hook_started (got ${firstOf?.type}/${firstOf?.subtype ?? firstOf?.event?.type})`);
+    const startAt = after.findIndex(isStart);
+    assert.ok(startAt > 0, 'the queued turn made an API call');
+    assert.ok(after.slice(0, startAt).some(isInit), 'a system/init precedes its message_start');
   } finally {
     s.kill();
     await clean();

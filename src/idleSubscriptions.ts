@@ -15,8 +15,9 @@
 //
 // A conductor OWNS a target if it spawned it (`target.callerInstanceId`) or has
 // ever dispatched to it (noteDispatch, called by every turn-starting MCP
-// handler). On every transition into `turn` the manager calls onTurnStart(),
-// which ARMS one entry per live owner; the entry is consumed when the turn ends
+// handler). On every transition into `turn` — a prompt() write, or the CLI's
+// opener of a turn it started on its own (Instance._resultSinceTurnStart) — the
+// manager calls onTurnStart(), which ARMS one entry per live owner; the entry is consumed when the turn ends
 // and a wake-stub user prompt is injected into the owner. An idle conductor gets
 // the worker's recent output folded into the stub; a conductor that is itself
 // mid-turn gets a plain stub delivered live into its running turn as a steering
@@ -106,13 +107,16 @@ export const DEFAULT_SUBSCRIBE_TIMEOUT_SECONDS = Math.floor(DEFAULT_SUBSCRIBE_TI
 // while still waking ~360x sooner than the 30-min heartbeat would report.
 // How long a parked wake hold (`_parked`) may outlive its caller's turn_end before
 // the backstop releases it. The hold normally clears when the queued turn starts,
-// and that follows the old turn's `result` by one CLI dequeue plus one API
-// time-to-first-byte. Measured over conductor session jsonls (wakes queued past a
-// running turn's end): `dequeue` max 9.5 s, first assistant record of the queued
-// turn p90 6.8 s, max under 15 s. 30 s clears the measured tail with margin, so
-// the backstop fires only for a queue the CLI never started (a model of the CLI
-// that is wrong for some case), where a stuck "awaiting a wake" would otherwise
-// last forever and hide a real finish.
+// which is at the CLI's opener of that turn (a `system/init`, or a
+// UserPromptSubmit `hook_started` ahead of the hooks; see
+// Instance._resultSinceTurnStart), so it spans the old turn's `result` → one CLI
+// dequeue, and neither the hooks nor the API time-to-first-byte. Measured over
+// conductor session jsonls (wakes queued past a running turn's end, its
+// `end_turn` record → the `queue-operation` dequeue): max 9.5 s. 30 s clears that
+// with margin, so the backstop fires only for a queue the CLI never started (a
+// model of the CLI that is wrong for some case, such as a write prompt() marked
+// queued that the CLI took into the turn it was already opening), where a stuck
+// "awaiting a wake" would otherwise last forever and hide a real finish.
 export const PARKED_BACKSTOP_MS = 30_000;
 export const IDLE_DRAIN_SETTLE_MS = Number(process.env.ORCH_IDLE_DRAIN_SETTLE_MS) || 5_000;
 
@@ -525,9 +529,10 @@ export class IdleSubscriptionHub {
   // event at all — a re-invocation's init/status, a prompt echo, an exit —
   // means someone else owns the wake (turn_end) and the settle
   // drops. Two-sided guard against waking one turn early:
-  //   pre-arm:  idleWindowDirty — a re-invocation that STARTED opening before
-  //             this drain event (its init/status already written, its
-  //             message_start still waiting on the API) refuses the arm;
+  //   pre-arm:  a re-invocation that STARTED opening before this drain event
+  //             has moved the status to `turn` at its opener; one whose opener
+  //             did not start a turn (see Instance._resultSinceTurnStart) still
+  //             left idleWindowDirty set — either refuses the arm;
   //   post-arm: the armSeq freeze check — a re-invocation opening AFTER the
   //             arm advances the ring within ms (CLI-local writes) and the
   //             fire-time check drops.
@@ -740,7 +745,8 @@ export class IdleSubscriptionHub {
 
   // A target entered a turn (driven by InstanceManager's per-instance
   // 'turn_start' wiring, which fires from _setStatus's into-`turn` branch — so
-  // it covers prompt-initiated AND unprompted re-invocation turns alike). Arm
+  // it covers prompt-initiated AND unprompted re-invocation turns alike, the
+  // latter from the CLI's opener, before its hooks and API call). Arm
   // one wake per live owner; owners already armed are left alone, which is what
   // makes a mid-turn steer deliver ONE wake rather than two.
   onTurnStart(targetInstanceId: string): void {
