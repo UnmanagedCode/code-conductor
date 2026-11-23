@@ -33,6 +33,7 @@ import { isBackToOwnerKey, openOwner, useWorkerOwner, type WorkerOwner } from '.
 import { cn } from '@/lib/utils';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
 import { useViewOnly } from '@/state/viewOnly';
+import { useFocusMode } from '@/state/focus';
 
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
 export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
@@ -191,6 +192,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   useSignal(modelsSignal);
   useSignal(mutesSignal);
   const viewOnly = useViewOnly();
+  const focus = useFocusMode();
   const projectName = projectLabel(inst.project);
   const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
@@ -259,7 +261,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
 
   return (
     <header ref={headerRef} className="touch-pan-x touch-pinch-zoom sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5" data-session-header>
-      <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={onMenu}><MenuIcon /></Button>
+      {!focus && <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={onMenu}><MenuIcon /></Button>}
 
       <div className="flex min-w-0 flex-1 items-center gap-2">
         <Dot status={inst.displayStatus ?? inst.status} awaitingWake={inst.awaitingWake} waitingOnJob={inst.waitingOnJob}

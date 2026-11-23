@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { Kbd } from '@/components/ui/kbd';
 import { appStore, activeInstance } from '@/state/app';
+import { useFocusMode } from '@/state/focus';
 import { closeView, syncRoute } from '@/state/route';
 import { writeSessionAnchor } from '@shared/anchor';
 import { uiStore } from '@/app/ui';
@@ -52,12 +53,15 @@ export function ViewShell({
 } & Omit<React.HTMLAttributes<HTMLElement>, 'title'>) {
   useEscapeToClose();
   const column = useSessionColumn({ gutter: false });
+  const focus = useFocusMode();
   return (
     <main className="flex min-w-0 flex-1 flex-col" {...rest}>
       <header className="sticky top-[env(safe-area-inset-top,0px)] z-10 flex min-h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 py-2 backdrop-blur md:px-5">
-        <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
-          <MenuIcon />
-        </Button>
+        {!focus && (
+          <Button variant="ghost" size="icon-sm" className="md:hidden" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
+            <MenuIcon />
+          </Button>
+        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon-sm" aria-label="Back" onClick={leaveView} data-view-back>

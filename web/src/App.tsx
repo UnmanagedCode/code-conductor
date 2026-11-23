@@ -11,6 +11,7 @@ import { themeStore } from '@/app/theme';
 import { ConfirmHost, ToastHost } from '@/ui/feedback';
 import { ErrorBoundary, RegionFallback } from '@/ui/ErrorBoundary';
 import { TOAST_EDGE_GAP } from '@/ui/toastLayout';
+import { useFocusMode } from '@/state/focus';
 import { AppSidebar } from '@/features/sidebar/AppSidebar';
 import { keepFilterEscape } from '@/features/sidebar/FilterBar';
 import { SessionView } from '@/features/session/SessionView';
@@ -88,23 +89,29 @@ function AppShell() {
   const sidebarOpen = useStore(uiStore, (s) => s.sidebarOpen);
   const theme = useStore(themeStore, (s) => s.resolved);
   const columnFull = useStore(dockModeStore, (s) => s.mode === 'full');
+  const focus = useFocusMode();
   return (
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
       <div className={`relative flex ${SHELL_BOX} overflow-hidden bg-background`}>
-        <div className="hidden shrink-0 md:flex">
-          <ErrorBoundary fallback={sidebarFallback('w-72 flex-none border-r border-sidebar-border bg-sidebar')}>
-            <AppSidebar />
-          </ErrorBoundary>
-        </div>
-        <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
-          <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent} onEscapeKeyDown={keepFilterEscape}>
-            <SheetTitle className="sr-only">Navigation</SheetTitle>
-            <ErrorBoundary fallback={sidebarFallback()}>
-              <AppSidebar mobile />
-            </ErrorBoundary>
-          </SheetContent>
-        </Sheet>
+        {/* Focus mode (a headless run or `--view` replay): one session, no sidebar to pick another. */}
+        {!focus && (
+          <>
+            <div className="hidden shrink-0 md:flex">
+              <ErrorBoundary fallback={sidebarFallback('w-72 flex-none border-r border-sidebar-border bg-sidebar')}>
+                <AppSidebar />
+              </ErrorBoundary>
+            </div>
+            <Sheet open={sidebarOpen} onOpenChange={(o) => uiStore.set({ sidebarOpen: o })}>
+              <SheetContent side="left" className="w-[88%] max-w-sm gap-0 p-0 md:hidden" onOpenAutoFocus={focusContent} onEscapeKeyDown={keepFilterEscape}>
+                <SheetTitle className="sr-only">Navigation</SheetTitle>
+                <ErrorBoundary fallback={sidebarFallback()}>
+                  <AppSidebar mobile />
+                </ErrorBoundary>
+              </SheetContent>
+            </Sheet>
+          </>
+        )}
         <div className="flex min-w-0 flex-1 flex-col">
           <ResumeBanner />
           <div className="flex min-h-0 min-w-0 flex-1">

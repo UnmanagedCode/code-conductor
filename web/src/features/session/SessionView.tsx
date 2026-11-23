@@ -18,6 +18,7 @@ import { UsageChip } from './UsageChip';
 import { EndedBanner } from './EndedBanner';
 import { focusPromptAfterSelect } from './promptFocus';
 import { useViewOnly } from '@/state/viewOnly';
+import { useFocusMode } from '@/state/focus';
 
 /** The logo whose cursor blinks while the socket is open and holds still while it (re)connects. */
 function LiveMark({ className }: { className?: string }) {
@@ -27,16 +28,19 @@ function LiveMark({ className }: { className?: string }) {
 
 function EmptyState() {
   const viewOnly = useViewOnly();
+  const focus = useFocusMode();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-6 text-center" data-empty-state>
       <LiveMark className="size-32" />
       <div className="space-y-2">
         <h2 className="text-2xl font-semibold tracking-tight text-balance">Ready when you are, maestro</h2>
         <p className="mx-auto max-w-md text-muted-foreground">
-          Pick a session from the sidebar, start one in a project, or let a conductor orchestrate several agents for you.
+          {focus
+            ? 'Waiting for the session to start.'
+            : 'Pick a session from the sidebar, start one in a project, or let a conductor orchestrate several agents for you.'}
         </p>
       </div>
-      {!viewOnly && (
+      {!viewOnly && !focus && (
         <div className="flex flex-wrap justify-center gap-2">
           <Button onClick={() => void startConducting()}><SparklesIcon /> Start conducting</Button>
           <Button variant="outline" onClick={openNewProjectDialog}><FolderPlusIcon /> New project</Button>
@@ -49,6 +53,7 @@ function EmptyState() {
 export function SessionView() {
   const inst = useStore(appStore, activeInstance);
   const viewOnly = useViewOnly();
+  const focus = useFocusMode();
   const column = useSessionColumn();
   const composerRef = React.useRef<ComposerHandle>(null);
 
@@ -66,7 +71,7 @@ export function SessionView() {
     return (
       <main className="flex min-w-0 flex-1 flex-col">
         <div className="flex h-(--header-height) shrink-0 items-center px-3 md:hidden">
-          <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={openSidebar}><MenuIcon /></Button>
+          {!focus && <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={openSidebar}><MenuIcon /></Button>}
         </div>
         <EmptyState />
       </main>

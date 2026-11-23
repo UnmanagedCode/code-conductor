@@ -9,7 +9,7 @@ A headless run (`node server.ts --prompt …`, [features/conduct.md](../features
 
 | Field | Type | Meaning |
 |---|---|---|
-| `reason` | string | `completed` \| `conductor_error` \| `signal` \| `usage_error` \| `root_held` \| `boot_failed` |
+| `reason` | string | `completed` \| `conductor_error` \| `signal` \| `usage_error` \| `root_held` \| `boot_failed`; a `--view` replay also `stopped` \| `no_session` |
 | `exitCode` | number | The process's exit code (table below). |
 | `sessionId` | string \| null | The root conductor's public session id; null when the root was never spawned. |
 | `text` | string \| null | The root's last top-level assistant text (the last message with text in its event ring); null when it has none. |
@@ -25,8 +25,14 @@ Exit codes — `EXIT_CODES` and `signalExitCode` (`src/headless/result.ts`):
 | 1 | `boot_failed` — any boot failure but the lock's (the ordinary server's "failed to start" code) |
 | 2 | `usage_error` — nothing booted, no lock taken |
 | 3 | `conductor_error` — the root exited, crashed, failed to spawn or take its prompt, or its last turn ended in an error |
+| 4 | `no_session` — `--view` only: no session to show |
 | 7 | `root_held` — `RootLockHeldError` or `RootLockUnreadableError` (`ROOT_LOCK_HELD_EXIT`, the ordinary server's refusal code too) |
 | 128 + n | `signal` — `SIGINT` 130, `SIGTERM` 143 |
+
+`stopped` (`--view` only) is a replay's normal end on `SIGINT` / `SIGTERM` and exits 0 ([Replay result](#replay-result)).
+
+## Replay result
+`node server.ts --view` ([features/conduct.md](../features/conduct.md) → Headless mode) writes the same one-line object, always in `json`, on every outcome, and takes the exit codes above. `stopped` carries the shown `sessionId` (null when the signal came before one was picked) and null `text`, `costUsd`, `durationMs` and `error`. `no_session` carries the refusal as `error`. `usage_error`, `root_held` and `boot_failed` are as in a run. Its stderr names the session (`headless: viewing session <id> (view-only)`).
 
 `make headless` (docker) collapses every failure to make's own exit 2; `docker/headless.sh` passes the code through ([docker/README.md](../../docker/README.md) → Headless runs).
 

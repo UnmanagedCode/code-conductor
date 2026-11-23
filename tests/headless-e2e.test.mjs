@@ -83,6 +83,9 @@ test('a completed run: exit 0, the one result object on stdout, every log line o
   assert.doesNotMatch(run.out.stdout, /listening on/);
   const sent = fs.readFileSync(path.join(home, 'root-stdin.jsonl'), 'utf8');
   assert.ok(sent.includes(JSON.stringify(`${HEADLESS_FRAGMENT}\n\nsay hi and finish`).slice(1, -1)), 'the root got the fragment then the prompt');
+  // Invariant: the run records its root's session for a later `--view`.
+  const marker = JSON.parse(fs.readFileSync(path.join(home, 'project', '.code-conductor', 'headless-last-run.json'), 'utf8'));
+  assert.deepEqual(marker, { sessionId: res.sessionId });
 });
 
 // Invariant (the restart and shutdown refusals): a headless run refuses both
@@ -105,6 +108,10 @@ test('mid-run, the restart and shutdown routes refuse 409; the resume files are 
     const rows = await (await fetch(`${base}/api/instances`)).json();
     return rows.some((r) => r.project === '.conduct' && r.status === 'turn');
   }, 'the root mid-turn');
+  // Invariant: a live run's health names its root's session as the focus.
+  const rootRow = (await (await fetch(`${base}/api/instances`)).json()).find((r) => r.project === '.conduct');
+  const health = await (await fetch(`${base}/api/health`)).json();
+  assert.equal(health.focus.sessionId, rootRow.sessionId);
   const restart = await fetch(`${base}/api/admin/restart`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
   assert.equal(restart.status, 409);
   assert.equal((await restart.json()).code, 'RESTART_DISABLED_HEADLESS');

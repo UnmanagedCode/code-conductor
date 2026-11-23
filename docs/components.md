@@ -188,6 +188,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 
 - [The projects-root lock](components/headless.md#the-projects-root-lock)
 - [Headless mode](components/headless.md#headless-mode)
+- [Replay (--view)](components/headless.md#replay---view)
 
 ## [playbooks.md](components/playbooks.md) — playbooks and convention skill parts
 

@@ -7,6 +7,8 @@ A spectator mode for watching cc (for example on a phone) without a stray tap ch
 - `CC_VIEW_ONLY=1` ([environment.md](../environment.md)), read by `entryStartOptions` (`server.ts`) and carried to `GET /api/health` as `capabilities.viewOnly: true`. The key is absent when the flag is unset; it is not a `Platform` capability ([components/platform.md](../components/platform.md#platform-capabilities)).
 - The client reads it once through `loadCapabilities` (`shared/capabilities.ts`) → `setViewOnly`. Until `/api/health` answers, the client behaves as in normal mode; a failed read leaves the flag unchanged.
 
+- A `--view` replay ([conduct.md](conduct.md) → Headless mode) forces view-only on and, unlike `CC_VIEW_ONLY`, also refuses session creation server-side (`409 VIEW_REPLAY_NO_LAUNCH`).
+
 ## What the UI removes
 
 Controls are removed from the DOM (`useViewOnly`, `web/src/state/viewOnly.ts`), not disabled:

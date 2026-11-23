@@ -4429,6 +4429,9 @@ export class Instance extends EventEmitter implements InstanceLike {
 }
 
 
+// A refusal every create() answers (409 with `code`), for a manager that must never start a session.
+export interface CreateRefusal { code: string; message: string }
+
 export class InstanceManager extends EventEmitter implements InstanceManagerLike {
   byId: Map<string, Instance>;
   // Frozen pagers of instances dropped from byId (src/retiredPagers.ts).
@@ -4470,6 +4473,9 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // EXIT_CAUSE_CAP; in memory only.
   _exitCauses: Map<string, ExitCause>;
   serverPort: number | null;
+  // When set, every create() rejects with this refusal before any guard or spawn
+  // (a `--view` replay, src/headless/view.ts).
+  _refuseCreates: CreateRefusal | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
   _coreClaudePluginRoot: string;
   _idleHub: IdleSubscriptionHub;
@@ -4489,9 +4495,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _exitArchives: Set<Promise<void>>;
 
   // Keep the shared singleton for the host platform; any other platform gets its own launcher so spawn options follow it.
-  constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform) }: { claudeLauncher?: LauncherLike; platform?: Platform } = {}) {
+  constructor({ platform = hostPlatform, claudeLauncher = platform === hostPlatform ? defaultClaudeLauncher : new RealClaudeLauncher(platform), refuseCreates = null }: { claudeLauncher?: LauncherLike; platform?: Platform; refuseCreates?: CreateRefusal | null } = {}) {
     super();
     this._platform = platform;
+    this._refuseCreates = refuseCreates;
     // Where SIGTERM is soft a CLI's children exit on EOF once cc is gone, so
     // survivors are left alone; where it is not, they are tree-killed at the deadline.
     this.relaunchGraceMs = RELAUNCH_GRACE_MS;
@@ -5099,6 +5106,10 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   // stop+resume — can't both slip past during the await gap _doCreate opens
   // before spawn() attaches `.proc`.
   create(opts: CreateInstanceInput = {}): Promise<Instance> {
+    if (this._refuseCreates) {
+      const { message, code } = this._refuseCreates;
+      return Promise.reject(Object.assign(new Error(message), { statusCode: 409, code }));
+    }
     const { resume } = opts;
     if (!resume) return this._doCreate(opts);
     // Already fully live: a running instance owns this session. `claude

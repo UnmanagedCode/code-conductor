@@ -65,6 +65,8 @@ const USAGE = [
   ['an unreadable prompt file', ['--prompt-file', 'does-not-exist.md']],
   ['a whitespace-only prompt', ['--prompt', '  ']],
   ['an empty stdin prompt', ['--prompt-file', '-']],
+  ['--view with a prompt', ['--view', '--prompt', 'x']],
+  ['--session without --view', ['--session', 'x']],
 ];
 for (const [name, args] of USAGE) {
   test(`usage error, ${name}: exit 2, one usage_error object, nothing booted`, async (t) => {
@@ -284,4 +286,17 @@ test('stdout closed before the result is written: exit 2, the undelivered result
   assert.match(stderr, /the prompt is empty/, 'premise: the usage result was the one written');
   assert.match(stderr, /headless: the result was not delivered: stdout closed \(EPIPE\)/);
   assert.doesNotMatch(stderr, /unexpected failure/);
+});
+
+// Invariant: a replay stopped by a signal before it picked a session still ends
+// `stopped` (exit 0) with a null sessionId, through the injected start seam.
+test('viewMain: a signal before any session is picked ends stopped, exit 0, sessionId null', async (t) => {
+  const home = await freshHome(t);
+  const r = await harness(t, home, 'view-signal-before-selection', ['--view']);
+  assert.equal(r.code, 0, r.stderr);
+  const res = onlyJson(r.stdout);
+  assert.equal(res.reason, 'stopped');
+  assert.equal(res.exitCode, 0);
+  assert.equal(res.sessionId, null);
+  assert.equal(res.error, null);
 });

@@ -172,3 +172,50 @@ test('a stdin that fails mid-read is a usage error, not a throw', async () => {
   assert.equal(r.kind, 'usage');
   assert.match(r.message, /stdin.*EIO/);
 });
+
+// Invariant: `--view` (alone, or with --session in either value form) is a
+// replay argv carrying the requested session, or null for the last run's.
+test('--view parses to a replay; --session takes both value forms in either order', () => {
+  assert.deepEqual(parseHeadlessArgs(['--view']), { kind: 'view', session: null });
+  assert.deepEqual(parseHeadlessArgs(['--view', '--session', 'a']), { kind: 'view', session: 'a' });
+  assert.deepEqual(parseHeadlessArgs(['--session=a', '--view']), { kind: 'view', session: 'a' });
+});
+
+// Invariant: --view refuses every run flag beside it, naming the first one in argv order.
+for (const argv of [
+  ['--view', '--prompt', 'x'],
+  ['--view', '--prompt-file', 'p.md'],
+  ['--view', '--mode', 'plan'],
+  ['--view', '--output-format', 'json'],
+  ['--view', '--include-workers'],
+]) {
+  test(`--view cannot be combined with ${argv[1]}`, () => {
+    assert.deepEqual(parseHeadlessArgs(argv), { kind: 'usage', message: `--view cannot be combined with ${argv[1]}`, format: 'json' });
+  });
+}
+test('--view names the first clashing flag in argv order', () => {
+  assert.equal(parseHeadlessArgs(['--mode', 'plan', '--view', '--prompt', 'x']).message, '--view cannot be combined with --mode');
+});
+
+// Invariant: --session without --view is refused before the prompt checks, so a
+// run never silently ignores it.
+test('--session alone needs --view', () => {
+  assert.deepEqual(parseHeadlessArgs(['--session', 'a']), { kind: 'usage', message: '--session needs --view', format: 'json' });
+});
+test('--session with a prompt needs --view', () => {
+  assert.equal(parseHeadlessArgs(['--session', 'a', '--prompt', 'x']).message, '--session needs --view');
+});
+
+// Invariant: misuse of the replay flags is a usage error naming its cause.
+const VIEW_USAGE = [
+  [['--view', '--view'], '--view given more than once'],
+  [['--view=1'], '--view takes no value'],
+  [['--view', '--session'], '--session needs a value'],
+  [['--view', '--session', 'a', '--session', 'b'], '--session given more than once'],
+  [['--view', 'stray'], "unexpected argument 'stray' in a headless run"],
+];
+for (const [argv, message] of VIEW_USAGE) {
+  test(`usage error, replay flags: ${JSON.stringify(argv)}`, () => {
+    assert.deepEqual(parseHeadlessArgs(argv), { kind: 'usage', message, format: 'json' });
+  });
+}

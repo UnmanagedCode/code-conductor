@@ -20,6 +20,8 @@ import { closeSidebarOnMobile } from './ui';
 import { resumeSession } from './sessionActions';
 import { beginGesture, gestureOvertaken, gestureSelected } from './gestures';
 import { startPristineWatch } from './pristine';
+import { openFocusedSession } from './focus';
+import { focusState } from '@shared/focus';
 import { startAgoTick } from './agoTick';
 import { startAccountUsagePolling } from './accountUsage';
 import { isLiveStatus } from '@shared/conductors';
@@ -519,6 +521,11 @@ export function startController() {
     const { instances, pristine } = appStore.get();
     const live = anchor ? instances.find((i) => i.sessionId === anchor) ?? (pristine?.sessionId === anchor ? pristine : null) : null;
     const target = live?.id ?? null;
+    // Focus mode has no sidebar to land on: an unlisted anchor (an exited focused conductor) opens read-only.
+    if (!target && anchor && focusState() !== null) {
+      void resumeSessionByAnchor(anchor, { clearAnchorOnMiss: false });
+      return;
+    }
     if (target !== appStore.get().activeId) selectInstance(target);
     else if (anchor && !target && instancesLanded) {
       writeSessionAnchor(null);
@@ -549,6 +556,8 @@ export function startController() {
       if (!appStore.get().activeId && routeStore.get().route.view === 'session') {
         const anchor = readSessionAnchor() || consumeStashedAnchor();
         if (anchor && (await resumeSessionByAnchor(anchor))) return;
+        // No anchor resolved: a focus-mode server names the session to open.
+        void openFocusedSession({ signal, refreshInstances, hasActive: () => appStore.get().activeId !== null, resumeSessionByAnchor });
       }
     }
     // A newer open owns the socket now, and re-subscribes the active session itself.

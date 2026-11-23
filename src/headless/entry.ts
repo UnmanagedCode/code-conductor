@@ -15,11 +15,15 @@ import { createHeadlessStream, type HeadlessStream } from './stream.ts';
 import { RootLockHeldError, RootLockUnreadableError } from '../rootLock.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { errMsg } from '../../shared/basics.ts';
+import type { HealthFocus } from '../../shared/focus.ts';
+import { recordHeadlessRun } from './lastRun.ts';
 
 export interface HeadlessBoot {
   instances: InstanceManagerLike | null;
   host: string;
   port: number;
+  // The session GET /api/health tells the UI to focus on (server.ts); set when the root spawns.
+  focus: HealthFocus | null;
 }
 
 export interface HeadlessEntryDeps {
@@ -29,14 +33,14 @@ export interface HeadlessEntryDeps {
 
 // The stderr lines naming where the run's web UI answers: the bound address, or
 // for a wildcard bind every non-internal IPv4 (in a container, its own IP).
-function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): string[] {
+export function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os.NetworkInterfaceInfo[]> = os.networkInterfaces()): string[] {
   const hosts = host === '0.0.0.0' || host === '::'
     ? Object.values(nets).flatMap((list) => list ?? []).filter((n) => n.family === 'IPv4' && !n.internal).map((n) => n.address)
     : [host];
   return hosts.map((h) => `headless: UI at http://${h.includes(':') ? `[${h}]` : h}:${port}`);
 }
 
-export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>, { start }: HeadlessEntryDeps): Promise<void> {
+export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' | 'view' }>, { start }: HeadlessEntryDeps): Promise<void> {
   // Before anything can log: every console line goes to stderr, and the result
   // (and any streamed line) goes out through the real stdout.
   const format = args.format;
@@ -157,6 +161,8 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     console.log(`code-conductor listening on http://${boot.host}:${boot.port}`);
     for (const line of headlessUiLines(boot.host, boot.port)) console.log(line);
     if (!boot.instances) { finish(bareResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
+    const focus = boot.focus;
+    if (!focus) { finish(bareResult('boot_failed', 'the server booted without a focus cell', EXIT_CODES.boot_failed)); return; }
     for (const s of ['SIGINT', 'SIGTERM'] as const) process.off(s, onEarlySignal);
     running = true;
     if (format === 'stream-json') {
@@ -172,7 +178,12 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' }>
     finish(await runHeadless({
       instances: boot.instances, prompt: prompt.text, mode: args.mode,
       expose: (h) => { run = h; },
-      onRoot: (root) => stream?.setRoot(root),
+      onRoot: (root) => {
+        stream?.setRoot(root);
+        if (!root.sessionId) return;
+        focus.sessionId = root.sessionId;
+        void recordHeadlessRun(root.sessionId).catch((e) => console.error('headless: recording the run\'s session failed:', errMsg(e)));
+      },
     }));
   }
 }

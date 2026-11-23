@@ -5,6 +5,7 @@ import {
 import { Button } from '@/components/ui/button';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
+import { useFocusMode } from '@/state/focus';
 import { closeView, replaceHash, useRoute } from '@/state/route';
 import { uiStore } from '@/app/ui';
 import { loadCapabilities } from '@shared/capabilities';
@@ -45,6 +46,7 @@ export function visibleSections(caps: SectionCaps | null) {
 export function SettingsView() {
   const route = useRoute();
   const activeSid = useStore(appStore, (s) => activeInstance(s)?.sessionId ?? null);
+  const focus = useFocusMode();
   const [caps, setCaps] = React.useState<SectionCaps | null>(null);
   const [capsLoaded, setCapsLoaded] = React.useState(false);
   const sections = visibleSections(caps);
@@ -89,7 +91,7 @@ export function SettingsView() {
   return (
     <main className="flex min-w-0 flex-1 flex-col" data-settings-view>
       <header className="flex h-(--header-height) shrink-0 items-center gap-2 border-b bg-background/85 px-3 backdrop-blur md:hidden">
-        <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}><MenuIcon /></Button>
+        {!focus && <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}><MenuIcon /></Button>}
         <h1 className="flex-1 text-sm font-semibold">Settings</h1>
         <Button variant="ghost" size="sm" onClick={() => closeView(activeSid)}><ArrowLeftIcon /> Back</Button>
       </header>

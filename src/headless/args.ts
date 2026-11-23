@@ -1,6 +1,7 @@
 // The headless argv contract: `node server.ts --prompt <text> | --prompt-file
 // <path|-> [--mode code|plan] [--output-format text|json|stream-json]
-// [--include-workers]`. Pure — the entry (src/headless/entry.ts) reads the
+// [--include-workers]`, or `node server.ts --view [--session <id>]` (a replay
+// of a finished run, src/headless/view.ts). Pure — the entry (src/headless/entry.ts) reads the
 // prompt and boots. An argv carrying none of the headless flags is an ordinary
 // boot, whatever else it holds; once one is present, every argument must be one
 // of them.
@@ -17,13 +18,20 @@ export type HeadlessArgs =
   | { kind: 'headless'; source: HeadlessSource; mode: HeadlessMode; format: OutputFormat; includeWorkers: boolean }
   // `format`: the requested --output-format when it is valid, else `json` — the
   // shape the usage result is printed in.
+  // `--view`: serve a finished run's session view-only; `session` is `--session`, or null for the last run's.
+  | { kind: 'view'; session: string | null }
   | { kind: 'usage'; message: string; format: OutputFormat };
 
-export const HEADLESS_SYNOPSIS = 'usage: node server.ts (--prompt <text> | --prompt-file <path|->) [--mode code|plan] [--output-format text|json|stream-json] [--include-workers]';
+export const HEADLESS_SYNOPSIS = 'usage: node server.ts (--prompt <text> | --prompt-file <path|->) [--mode code|plan] [--output-format text|json|stream-json] [--include-workers]\n       node server.ts --view [--session <id>]';
 
-const VALUE_FLAGS = ['--prompt', '--prompt-file', '--mode', '--output-format'] as const;
+const VALUE_FLAGS = ['--prompt', '--prompt-file', '--mode', '--output-format', '--session'] as const;
 const INCLUDE_WORKERS = '--include-workers';
-const FLAGS = [...VALUE_FLAGS, INCLUDE_WORKERS] as const;
+const VIEW = '--view';
+// Bare flags: no value.
+const SWITCHES = [INCLUDE_WORKERS, VIEW] as const;
+const FLAGS = [...VALUE_FLAGS, ...SWITCHES] as const;
+// What a replay refuses beside it: every flag of a run.
+const RUN_FLAGS = ['--prompt', '--prompt-file', '--mode', '--output-format', INCLUDE_WORKERS] as const;
 type ValueFlag = typeof VALUE_FLAGS[number];
 type Flag = typeof FLAGS[number];
 const MODES: readonly HeadlessMode[] = ['code', 'plan'];
@@ -40,6 +48,8 @@ export function parseHeadlessArgs(argv: string[]): HeadlessArgs {
   if (!argv.some((a) => flagOf(a) !== null)) return { kind: 'none' };
   const values = new Map<ValueFlag, string>();
   let includeWorkers = false;
+  let view = false;
+  const seen: Flag[] = [];
   // The first error wins, but the loop reads on where it can so a usage result
   // still knows the requested format.
   let error: string | null = null;
@@ -48,10 +58,12 @@ export function parseHeadlessArgs(argv: string[]): HeadlessArgs {
     const arg = argv[i];
     const flag = flagOf(arg);
     if (flag === null) { record(`unexpected argument '${arg}' in a headless run`); continue; }
-    if (flag === INCLUDE_WORKERS) {
+    seen.push(flag);
+    if (flag === INCLUDE_WORKERS || flag === VIEW) {
+      const already = flag === VIEW ? view : includeWorkers;
       if (arg.length > flag.length) record(`${flag} takes no value`);
-      else if (includeWorkers) record(`${flag} given more than once`);
-      includeWorkers = true;
+      else if (already) record(`${flag} given more than once`);
+      if (flag === VIEW) view = true; else includeWorkers = true;
       continue;
     }
     const repeated = values.has(flag);
@@ -66,6 +78,12 @@ export function parseHeadlessArgs(argv: string[]): HeadlessArgs {
   const format: OutputFormat = isFormat(requested) ? requested : 'json';
   const usage = (message: string): HeadlessArgs => ({ kind: 'usage', message, format });
   if (error !== null) return usage(error);
+  if (view) {
+    const clash = seen.find((f) => (RUN_FLAGS as readonly string[]).includes(f));
+    if (clash !== undefined) return usage(`--view cannot be combined with ${clash}`);
+    return { kind: 'view', session: values.get('--session') ?? null };
+  }
+  if (values.has('--session')) return usage('--session needs --view');
   const prompt = values.get('--prompt');
   const file = values.get('--prompt-file');
   if (prompt !== undefined && file !== undefined) return usage('give --prompt or --prompt-file, not both');

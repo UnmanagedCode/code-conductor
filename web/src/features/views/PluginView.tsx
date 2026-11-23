@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { useSignal, useStore } from '@/state/createStore';
 import { useRoute } from '@/state/route';
+import { useFocusMode } from '@/state/focus';
 import { closeSidebarOnMobile, uiStore } from '@/app/ui';
 import { pluginsChangedSignal, pluginsChangeStore } from '@/features/settings/pluginsSignal';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
@@ -53,6 +54,7 @@ export function PluginView() {
   const dock = useStore(dockStore, (s) => s);
   const collapsed = useStore(dockCollapsedStore, (s) => s.collapsed);
   const desktop = useMediaQuery(WIDE_QUERY);
+  const focus = useFocusMode();
   const available = useAvailableWidth(columnRef);
   const pluginsRev = useSignal(pluginsChangedSignal);
 
@@ -178,7 +180,7 @@ export function PluginView() {
               <TooltipContent side="bottom">{t.label}</TooltipContent>
             </Tooltip>
           )}
-          {!desktop && (
+          {!desktop && !focus && (
             <Button variant="ghost" size="icon-sm" aria-label="Open sidebar" onClick={() => uiStore.set({ sidebarOpen: true })}>
               <MenuIcon />
             </Button>
