@@ -1,8 +1,11 @@
 // A `--view` replay's boot (start({replay: true}), server.ts) skips the plugin
 // host's init() + autoStartAll(), so an enabled auto-start plugin is not running
 // after it; an explicit start (a plugin view the user opens) still starts it.
-// Control: the same boot without `replay` autostarts it. In-process start() on a
-// throwaway root; the plugin backend is detached, so close() stops it by the
+// Control: the same boot without `replay` autostarts it. The absence window is
+// anchored to the control's measured boot→ready latency: no production seam
+// reaches the supervisor from start() (createServer builds the plugin host with
+// no supervisor injection), so the replay arm waits several multiples of it.
+// In-process start() on a throwaway root; the plugin backend is detached, so close() stops it by the
 // registry and then by the recorded pgid.
 
 import { test } from 'node:test';
@@ -66,11 +69,16 @@ async function bootWithPlugin(opts) {
 }
 
 // Invariant (control): without `replay` the boot autostarts the enabled plugin.
+let controlLatencyMs = null;
+const WINDOW_MULTIPLE = 5;
+
 test('a headless boot autostarts an enabled auto-start plugin', async () => {
+  const t0 = Date.now();
   const s = await bootWithPlugin({});
   try {
     const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });
     assert.ok(row.pid);
+    controlLatencyMs = Date.now() - t0;
   } finally { await s.close(); }
 });
 
@@ -85,8 +93,9 @@ test('a replay boot leaves an auto-start plugin stopped; an explicit start still
     assert.equal(before.autoStart, true);
     assert.notEqual(before.state, 'ready');
     assert.equal(before.pid ?? null, null, 'no backend process');
-    await new Promise((r) => setTimeout(r, 1000));
-    assert.equal((await s.row()).pid ?? null, null, 'still none a second later');
+    assert.ok(controlLatencyMs !== null, 'premise: the control measured its boot→ready latency');
+    await new Promise((r) => setTimeout(r, WINDOW_MULTIPLE * controlLatencyMs));
+    assert.equal((await s.row()).pid ?? null, null, `still none ${WINDOW_MULTIPLE}x the control's boot→ready latency later`);
     const res = await fetch(`${s.base}/api/plugins/fake-plugin/start`, { method: 'POST' });
     assert.equal(res.status, 200, await res.text());
     const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });

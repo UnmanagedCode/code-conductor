@@ -23,7 +23,7 @@ const CAPS = { git: true };
 let stop: (() => void) | null = null;
 
 /** A fresh controller over a mocked socket; `health` answers each GET /api/health in turn (the last repeats). */
-async function boot({ health, instances = [] }: { health: (object | Error)[]; instances?: unknown[] }) {
+async function boot({ health, instances = [] }: { health: (object | Error)[]; instances?: unknown[] | Error }) {
   stop?.();
   vi.resetModules();
   const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
@@ -32,10 +32,10 @@ async function boot({ health, instances = [] }: { health: (object | Error)[]; in
   const calls = routeFetch({
     'GET /api/health': () => {
       const h = health[Math.min(healthReads++, health.length - 1)];
-      return h instanceof Error ? h : { json: { capabilities: CAPS, ...(h as object) } };
+      return h instanceof Error || 'status' in h ? (h as RouteAnswer) : { json: { capabilities: CAPS, ...(h as object) } };
     },
     'GET /api/instances/': () => ({ json: {} }),
-    'GET /api/instances': () => ({ json: instances }),
+    'GET /api/instances': () => (instances instanceof Error ? instances : { json: instances }),
     'POST /api/instances': () => ({ json: {} }),
     'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? MISS
       : url.includes('/lineage-events') ? { json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }
@@ -128,6 +128,32 @@ describe('opening the focused session', () => {
     expect(focusWarns).toHaveLength(1);
     expect(String((focusWarns[0][1] as Error).message)).toBe(SERVER_UNREACHABLE_MESSAGE);
     expect(b.appStore.get().activeId).toBeNull();
+  });
+
+  it('keeps polling, warning once, while health answers a refusal', async () => {
+    // Invariant: a non-network failure (a 500) is retried every FOCUS_POLL_MS, and warned about once, not per tick.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    const { FOCUS_POLL_MS } = await import('./focus');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = await boot({ health: [focusOn(null), { status: 500, json: { error: 'boom' } }] });
+    await b.open();
+    const reads = () => b.calls.filter((x) => x.url === '/api/health').length;
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS);
+    const first = reads();
+    await vi.advanceTimersByTimeAsync(FOCUS_POLL_MS * 4);
+    expect(reads(), 'health reads keep growing').toBeGreaterThan(first + 2);
+    const focusWarns = warn.mock.calls.filter((c) => String(c[0]).startsWith('focus:'));
+    expect(focusWarns).toHaveLength(1);
+    expect(String((focusWarns[0][1] as Error).message)).toContain('boom');
+  });
+
+  it('a failed instances read still opens the focused session, warning once', async () => {
+    // Invariant: the list read failing does not stop the focused session opening read-only.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const b = await boot({ health: [focusOn('S')], instances: new Error('connection refused') });
+    await b.open();
+    expect(b.appStore.get().activeId).toBe('ended:S');
+    expect(warn.mock.calls.filter((c) => String(c[0]).startsWith('focus:'))).toHaveLength(1);
   });
 
   it('an anchor that resolves wins over the focused session', async () => {

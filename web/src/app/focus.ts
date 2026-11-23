@@ -34,7 +34,7 @@ export async function openFocusedSession({ signal, refreshInstances, hasActive, 
     if (signal.aborted) return;
     try { setFocus(focusFromHealth(await apiFetch('/api/health'))); }
     catch (e) {
-      // An unreachable server ends the poll (the socket's reconnect path owns recovery); a refusal is retried, warned once.
+      // An unreachable server ends the poll: a headless-family server never restarts, so the run is gone and reloading the page is the recovery; a refusal is retried, warned once.
       if (e instanceof NetworkError) { console.warn('focus: the server is unreachable, no longer waiting for its session:', e); return; }
       if (!warned) { warned = true; console.warn('focus: could not read /api/health, will retry:', e); }
     }
