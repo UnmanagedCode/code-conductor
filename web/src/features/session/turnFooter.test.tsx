@@ -9,6 +9,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { getTaskTracker } from '@/app/trackers';
 import type { Instance } from '@/state/types';
+import { routeFetch } from '@/test/routeFetch';
 import { SessionView } from './SessionView';
 
 const inst = (id: string, extra: Partial<Instance> = {}): Instance => ({
@@ -25,6 +26,9 @@ const indicator = () => document.querySelector('[data-turn-indicator]') as HTMLE
 const panel = () => document.querySelector('[data-task-panel]') as HTMLElement | null;
 
 afterEach(() => vi.useRealTimers());
+
+// The workers panel reads the session's spawned sessions; answer it (and any other read) with `{}`.
+beforeEach(() => { routeFetch({}); });
 
 describe('turn footer', () => {
   it('is absent with no session and shows the working row only while a turn runs', () => {

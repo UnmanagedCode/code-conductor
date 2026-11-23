@@ -18,6 +18,7 @@ import { appStore } from '@/state/app';
 import { accountUsageStore, refreshAccountUsage } from '@/app/accountUsage';
 import { rateLimits } from '@/app/trackers';
 import type { Instance, InstanceWorktree } from '@/state/types';
+import { routeFetch } from '@/test/routeFetch';
 import { SessionView } from './SessionView';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
 
@@ -57,6 +58,9 @@ beforeEach(() => {
   sent.length = 0;
   seed();
 });
+
+// The workers panel reads the session's spawned sessions; answer it (and any other read) with `{}`.
+beforeEach(() => { routeFetch({}); });
 
 describe('SessionView', () => {
   // Invariant: an ended pane's header offers nothing that addresses its (gone)

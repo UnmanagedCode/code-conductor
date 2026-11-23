@@ -32,6 +32,17 @@ export function rootOf(doc: SessionsDoc, publicId: string): string | null {
   return null;
 }
 
+// The sessions `publicId` spawned (or last resumed): records whose recorded `parent` is it,
+// with their recorded place. A record with no `project` cannot be placed and is skipped.
+// Direct children only, not grandchildren.
+export function spawnedChildren(doc: SessionsDoc, publicId: string): { sessionId: string; project: string; worktree: string | null }[] {
+  const out: { sessionId: string; project: string; worktree: string | null }[] = [];
+  for (const [sessionId, rec] of doc) {
+    if (rec.parent === publicId && rec.project) out.push({ sessionId, project: rec.project, worktree: rec.worktree ?? null });
+  }
+  return out;
+}
+
 // A session's stored spawn lineage: null unless it is `conducted`; else its
 // recorded `parent` and the `rootOf` its chain resolves to (either null when
 // unrecorded).

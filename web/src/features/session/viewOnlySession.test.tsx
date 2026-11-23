@@ -11,6 +11,7 @@ import { TooltipProvider } from '@/components/ui/tooltip';
 import { appStore } from '@/state/app';
 import { setViewOnly } from '@shared/viewOnly';
 import type { Instance, InstanceWorktree, Project } from '@/state/types';
+import { routeFetch } from '@/test/routeFetch';
 import { SessionView } from './SessionView';
 
 const WORKTREE: InstanceWorktree = { worktreeName: 'wt-a', branch: 'code-conductor/wt-a', baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null };
@@ -45,6 +46,9 @@ const has = (menu: HTMLElement, re: RegExp) => items(menu).some((t) => re.test(t
 
 beforeEach(() => seed());
 afterEach(() => { cleanup(); setViewOnly(false); });
+
+// The workers panel reads the session's spawned sessions; answer it (and any other read) with `{}`.
+beforeEach(() => { routeFetch({}); });
 
 describe('view-only session view', () => {
   it('no composer', () => {
@@ -110,7 +114,7 @@ describe('view-only session view', () => {
         renderView();
         expect(trigger(), `${c.name}, flag off`).not.toBeNull();
         cleanup();
-      } finally { vi.unstubAllGlobals(); }
+      } finally { vi.unstubAllGlobals(); routeFetch({}); }
     }
   });
 
@@ -128,7 +132,7 @@ describe('view-only session view', () => {
         /Summarize session/, /Statistics/, /Show mid-turn statistics/, /Mute notifications/,
       ]) expect(has(menu, re), String(re)).toBe(true);
       r.unmount();
-    } finally { vi.unstubAllGlobals(); }
+    } finally { vi.unstubAllGlobals(); routeFetch({}); }
   });
 
   it('turn indicator: Working shown, no Interrupt', () => {

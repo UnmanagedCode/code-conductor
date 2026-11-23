@@ -166,6 +166,9 @@ export interface SessionRow {
   awaitingUserSource: 'tool' | 'text' | null;
 }
 
+// A session a conductor spawned, with the place its record names (GET /api/sessions/:sid/workers).
+export type SpawnedSessionRow = SessionRow & { project: string; worktreeName: string | null };
+
 // A project's convention selection. `unset` (never chosen) and `none` (chosen
 // to have none) compose the same document; only the marker and the sidebar's
 // flag tell them apart. `selected` slugs are in marker order, verbatim, and may
