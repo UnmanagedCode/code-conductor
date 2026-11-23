@@ -1,12 +1,17 @@
-// A `--view` replay's boot (start({replay: true}), server.ts) skips the plugin
-// host's init() + autoStartAll(), so an enabled auto-start plugin is not spawned
-// at boot; an explicit start (a plugin view the user opens) still spawns it.
-// Control: the same boot without `replay` spawns it. The evidence is the
-// platform handed through start({platform}) to the plugin supervisor, whose
-// spawnChild is the only boot-path caller of spawnOptions('daemon'): a counting
-// wrapper records each such call. In-process start() on a throwaway root; the
-// plugin backend is detached, so close() stops it by the registry and then by
-// the recorded pgid.
+// What a `--view` replay's plugin handling shows end to end: the control
+// (start() without `replay`) autostarts an enabled auto-start plugin, and in a
+// replay an explicit POST /api/plugins/:id/start still starts it lazily. The
+// boot-time skip itself (`if (!replay)` around the host's init()+autoStartAll()
+// chain in startHolding) is NOT proved here — it is pinned structurally in
+// tests/web-build-wiring.test.mjs. No behavioural test can see it: the chain
+// settles before start() returns (init is already settled by the boot's
+// convention regeneration), and an explicit start joins a boot start still in
+// flight, so a spawn count after an explicit start is 1 with or without the skip.
+// The evidence of a spawn is the platform handed through start({platform}) to
+// the plugin supervisor, whose spawnChild is the only boot-path caller of
+// spawnOptions('daemon'). In-process start() on a throwaway root; the plugin
+// backend is detached, so close() stops it by the registry and then by the
+// recorded pgid.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -89,17 +94,14 @@ test('a headless boot spawns an enabled auto-start plugin', async () => {
   } finally { await s.close(); }
 });
 
-// Invariant: a replay's boot requests no daemon spawn (listing the plugins runs
-// the host's lazy init, which the control's autostart chains onto), and an
-// explicit start requests one and brings the backend up.
-test('a replay boot spawns no auto-start plugin; an explicit start still spawns it', async () => {
+// Invariant: in a replay an explicit start requests a daemon spawn and brings
+// the backend up (the lazy start a plugin view relies on).
+test('in a replay, an explicit plugin start still spawns the backend', async () => {
   const s = await bootWithPlugin({ replay: true, viewOnly: true });
   try {
     const before = await s.row();
     assert.ok(before, 'the plugin is discovered');
     assert.equal(before.autoStart, true);
-    assert.equal(s.daemonSpawns(), 0, 'no daemon spawn at boot');
-    assert.equal(before.pid ?? null, null, 'no backend process');
     const res = await fetch(`${s.base}/api/plugins/fake-plugin/start`, { method: 'POST' });
     assert.equal(res.status, 200, await res.text());
     const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });

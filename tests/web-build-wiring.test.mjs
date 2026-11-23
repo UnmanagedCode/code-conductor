@@ -88,6 +88,24 @@ test('server.ts\'s entry block starts the server with exactly start(entryStartOp
   ]);
 });
 
+// A `--view` replay starts no plugin backend at boot: the plugin host's
+// fire-and-forget init()+autoStartAll() chain sits under exactly `!replay`, and
+// is the only place either is called from startHolding. Pinned structurally
+// because no behavioural test can see it: the chain settles before start()
+// returns (init is already settled by the boot's convention regeneration), and an
+// explicit start joins a boot start still in flight (tests/replay-plugin-boot.test.mjs).
+test('startHolding runs the plugin host\'s init()+autoStartAll() chain only under `!replay`, and nowhere else', async () => {
+  const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
+  const body = src.slice(src.indexOf('async function startHolding('), src.indexOf('\nif (process.argv[1]'));
+  const flat = body.replace(/\s+/g, ' ');
+  assert.equal(flat.split('pluginHost.init()').length - 1, 1, 'one init() call');
+  assert.equal(flat.split('pluginHost.autoStartAll()').length - 1, 1, 'one autoStartAll() call');
+  assert.ok(
+    flat.includes('if (!replay) pluginHost.init() .then(() => pluginHost.autoStartAll()) .catch('),
+    'the chain is the body of `if (!replay)`, unwidened and unbraced past its .catch',
+  );
+});
+
 // A real in-process start() on port 0 against a throwaway store, with the web
 // build replaced by a counter. CLAUDE_BIN is a node that exits at once, so the
 // boot readiness probe spawns nothing that outlives the test.
