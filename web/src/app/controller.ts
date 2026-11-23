@@ -293,7 +293,7 @@ export function selectInstance(id: string | null, opts: SelectOptions = {}) {
  * (newest first) and the composer stays disabled. The anchor names it, so a
  * reload reopens it the same way.
  */
-export function openEndedSession({ sessionId, project, worktreeName, title = null }: { sessionId: string; project: string; worktreeName: string | null; title?: string | null }) {
+export function openEndedSession({ sessionId, project, worktreeName, title = null, push = false }: { sessionId: string; project: string; worktreeName: string | null; title?: string | null; push?: boolean }) {
   const prev = appStore.get().activeId;
   if (prev) send('unsubscribe', { id: prev });
   const ended: Instance = {
@@ -304,7 +304,7 @@ export function openEndedSession({ sessionId, project, worktreeName, title = nul
   conversation.clear();
   lazyHistory.reset();
   emit('select', { id: ended.id, sessionId, userGesture: false });
-  writeSessionAnchor(sessionId);
+  if (push) pushSessionAnchor(sessionId); else writeSessionAnchor(sessionId);
   syncRoute();
   closeSidebarOnMobile();
   return lazyHistory.openNewest();

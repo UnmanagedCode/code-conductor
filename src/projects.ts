@@ -10,9 +10,10 @@ import { projectsRoot, orchStoreRoot, projectStoreDir, localWorktreesRoot, plugi
 import { validateName, readProjectRecord } from './projectRecord.ts';
 import { getProject, listProjects } from './projectRegistry.ts';
 import { claudeConfigDir } from './claudeConfigDir.ts';
+import { spawnedChildren } from './conductorSpawns.ts';
 import { LOCAL_SYSTEM_ID, projectPlacement } from './systems/registry.ts';
 import { writeFileAtomic } from './systems/localSystem.ts';
-import type { SessionRow, ProjectInfo, SessionCounts } from '../shared/wireRows.ts';
+import type { SessionRow, SpawnedSessionRow, ProjectInfo, SessionCounts } from '../shared/wireRows.ts';
 import { firstPromptHead } from '../shared/promptPreview.ts';
 import { stripAuthorMarker } from './promptAuthor.ts';
 import { errCode } from '../shared/basics.ts';
@@ -738,6 +739,29 @@ async function recordedPlace(
   const { worktreePathFor } = await import('./worktrees.ts');
   const cwd = worktreePathFor(proj, worktreeName);
   return { cwd, place: placeOf(proj, cwd) };
+}
+
+// The sessions `parentPublicId` spawned, live or not, as rows plus their recorded
+// place, newest activity first. A child whose project is unlisted or degraded, or
+// that has no transcript left, is omitted; a row that fails to build is logged and
+// skipped so one broken worker cannot fail the list.
+export async function spawnedSessionRows(parentPublicId: string): Promise<SpawnedSessionRow[]> {
+  const children = spawnedChildren((await loadSessions()).byPublic, parentPublicId);
+  if (!children.length) return [];
+  const projects = await listProjects({ includeConduct: true });
+  const out: SpawnedSessionRow[] = [];
+  for (const c of children) {
+    const proj = projects.find(p => p.name === c.project);
+    if (!proj || proj.degraded) continue;
+    try {
+      const place = c.worktree ? (await recordedPlace(proj, c.worktree)).place : placeOf(proj, proj.path);
+      const row = await sessionRowForCwd(place, c.sessionId);
+      if (row) out.push({ ...row, project: c.project, worktreeName: c.worktree });
+    } catch (e) {
+      console.warn(`spawnedSessionRows: ${c.sessionId} skipped:`, e);
+    }
+  }
+  return out.sort(byLastActivityDesc);
 }
 
 // Does a transcript for `sessionId` exist ANYWHERE under any transcript root cc

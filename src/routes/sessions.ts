@@ -1,6 +1,6 @@
 import express from 'express';
 import { WebSocket } from 'ws';
-import { findSessionLocation } from '../projects.ts';
+import { findSessionLocation, spawnedSessionRows } from '../projects.ts';
 import { conductorSpawnedProjects } from '../conductorSpawns.ts';
 import { pageLineageEvents, retiredLineageSource } from '../lineagePager.ts';
 import { applySessionTitle, MAX_TITLE_LEN } from '../sessionTitles.ts';
@@ -13,7 +13,7 @@ import { publicIdFor } from '../sessionLineage.ts';
 import { generateSummary, askSession, countMessages } from '../summarize.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { httpError } from '../httpError.ts';
-import { intQueryParam, sidParam, sendAttachment, jsonBody, type ServerCtx } from './shared.ts';
+import { intQueryParam, sidParam, assertValidSid, sendAttachment, jsonBody, type ServerCtx } from './shared.ts';
 import type { ProjectsHintFrame } from '../../shared/wsFrames.ts';
 
 export function mountSessions(r: express.Router, { instances, serverCtx }: { instances?: InstanceManagerLike | null; serverCtx?: ServerCtx | null }): void {
@@ -232,6 +232,17 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
       // machine, and the place names cc's own store. This body is the wire
       // contract and must not grow a field (card 2026-0292).
       res.json({ project: hit.project, worktreeName: hit.worktreeName, archived: await isArchived(backing) });
+    } catch (e) { next(e); }
+  });
+
+  // The sessions this one spawned directly (recorded `parent`), live or not, as
+  // rows plus their recorded place, newest activity first — the Workers panel's
+  // ended list. An unknown session has no children: 200 `{ workers: [] }`.
+  r.get('/sessions/:sessionId/workers', async (req, res, next) => {
+    try {
+      const sid = String(req.params.sessionId || '');
+      assertValidSid(sid);
+      res.json({ workers: await spawnedSessionRows(await publicIdFor(sid)) });
     } catch (e) { next(e); }
   });
 }

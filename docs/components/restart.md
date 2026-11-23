@@ -15,7 +15,7 @@ The REST shell, the restart and resume contract, worktree and git paths, model c
 | `src/routes/workspaces.ts` | `mountWorkspaces` | `/workspaces` |
 | `src/routes/projectSessions.ts` | `mountProjectSessions` | project and worktree session lists, delete / archive / restore, `/archived` |
 | `src/routes/worktrees.ts` | `mountWorktrees` | worktree diff, commits, `sync`, `merge`, `lock`, `DELETE` worktree |
-| `src/routes/sessions.ts` | `mountSessions` | `/sessions/:sessionId/*` (title, viewed, summary, ask, lineage, attachments, locate), `/conductors/projects` |
+| `src/routes/sessions.ts` | `mountSessions` | `/sessions/:sessionId/*` (title, viewed, summary, ask, lineage, attachments, locate, workers), `/conductors/projects` |
 | `src/routes/instances.ts` | `mountInstances` | `/instances…` and `GET /sessions/:sessionId/pristine` (only when `instances` is present) |
 | `src/routes/instanceHooks.ts` | `mountInstanceHooks` | `POST /instances/:id/hook-callback`, `bash-forward` (only when `instances` is present) |
 | `src/routes/voice.ts` | `mountTranscribe`, `mountTts` | `/transcribe`, `/tts` and their Settings catalogs |

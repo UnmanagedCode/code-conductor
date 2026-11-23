@@ -20,6 +20,11 @@ const conductor: Instance = { id: 'C', sessionId: 'sc', project: '.conduct', sta
 const worker: Instance = { id: 'W', sessionId: 'sw', project: 'p', status: 'idle', mode: 'default', callerInstanceId: 'C', title: 'Fix the parser' };
 const pinged: Instance = { id: 'B', sessionId: 'sb', project: 'p', status: 'idle', mode: 'default' };
 
+const endedRow = {
+  sessionId: 'se', project: 'p', worktreeName: null, title: 'Old job', firstPrompt: null, conducted: true, persistent: false,
+  archived: false, turnEndSeq: 0, viewedSeq: 0, lastActivity: 1, size: 1, resumeMode: 'cold', awaitingUser: null, awaitingUserSource: null,
+};
+
 let stopPrevious: (() => void) | null = null;
 
 /** A fresh controller over a mocked socket, with the conductor selected and its workers panel rendered. */
@@ -31,7 +36,9 @@ async function boot() {
   const { appStore } = await import('@/state/app');
   const { SubagentPanel } = await import('@/features/session/SessionPanels');
   const ws = await import('@shared/ws') as unknown as { sent: [string, unknown][] };
-  routeFetch({}); // the controller's usage poll reads at start
+  localStorage.clear();
+  // The controller's usage poll reads at start; the panel reads the conductor's spawned sessions.
+  routeFetch({ 'GET /api/sessions/sc/workers': () => ({ json: { workers: [endedRow] } }) });
   appStore.set({ instances: [conductor, worker, pinged] });
   c.startController();
   stopPrevious = c.stopController;
@@ -59,6 +66,18 @@ describe('session selection and the history', () => {
     c.selectInstance(worker.id, { userGesture: true });
     expect(at()).toEqual({ active: 'W', hash: '#session=sw' });
     expect(history.length).toBe(before);
+  });
+
+  it('an ended worker opened from the workers panel pushes an entry, and Back selects the conductor again', async () => {
+    // Invariant: openEndedSession({ push: true }) adds a history entry for the ended session's anchor; Back returns to the conductor.
+    const { at } = await boot();
+    fireEvent.click(await screen.findByRole('switch', { name: 'Show ended workers' }));
+    const entries = history.length;
+    fireEvent.click(await screen.findByRole('button', { name: /Old job/ }));
+    expect(at()).toEqual({ active: 'ended:se', hash: '#session=se' });
+    expect(history.length).toBe(entries + 1);
+    history.back();
+    expect(at()).toEqual({ active: 'C', hash: '#session=sc' });
   });
 
   it('a notification click selects its instance in place, pushing no entry: Back then skips the session it replaced', async () => {

@@ -15,6 +15,7 @@ import { appStore } from '@/state/app';
 import { setSessionFull, setSessionWidth } from '@/app/sessionWidth';
 import { SESSION_WIDTH_MIN } from '@/app/sessionWidthScale';
 import type { Instance } from '@/state/types';
+import { routeFetch } from '@/test/routeFetch';
 import { SessionView } from './SessionView';
 
 const KEY = 'code-conductor:session-column';
@@ -65,6 +66,9 @@ function up(edge: 'left' | 'right') {
 function drag(edge: 'left' | 'right', dx: number) {
   down(edge); move(edge, dx); up(edge);
 }
+
+// The workers panel reads the session's spawned sessions; answer it (and any other read) with `{}`.
+beforeEach(() => { routeFetch({}); });
 
 describe('the session width handles', () => {
   it('are two pointer-only handles inside an aria-hidden layer', () => {

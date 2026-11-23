@@ -41,7 +41,11 @@
   A worker bound to a playbook also carries a small `<playbook-id> · <stage>` label (e.g. `forge · plan-rival`; one name when the stage is named as its playbook) at the right end of its row; a worker with no binding gets no label element at all, not a hidden one.
   Status and binding updates both arrive via the existing `instances` hint → `refreshInstances()` path (the same mechanism that drives sidebar live dots; the hint also fires on every playbook `spawn`/`transition`, not just a status flip).
   Tap any row, including its playbook label, to navigate directly to that worker's conversation view.
-  A session with no workers shows no panel.
+  A small switch, **Show ended workers** (off by default, remembered per browser), sits at the header's right with an `N ended` count; it appears only when N > 0.
+  Ended means a session this one spawned (its recorded `parent`) that has no live instance: stopped, exited, crashed, killed or archived. The header count stays the live count. With the switch off and no live workers the list reads `No live workers`.
+  With it on, the ended rows follow the live ones, muted, newest activity first, each ending in its status word: `exited` or `crashed` (a retained persistent worker), `archived`, or `offline` (no instance).
+  Tapping one opens it read-only in the Ended pane, or selects the retained instance, and adds a history entry so Back returns to the conductor. A worker another conductor resumed moves to that conductor's list (`parent` is overwritten on resume). The panel shows on an ended conductor's pane too.
+  A session with no workers, live or ended, shows no panel.
   Implemented in `SubagentPanel` (`web/src/features/session/SessionPanels.tsx`); backed by the `callerInstanceId` field on `Instance` (set when `spawn_instance` is called as `/mcp/<conductor sessionId>` — the sessionId is resolved back to the conductor's live `instanceId` so `callerInstanceId` stays an instanceId for the panel's `i.callerInstanceId === inst.id` filter).
   The worker's own view links back to its owner through the header owner chip and Alt+↑.
 
