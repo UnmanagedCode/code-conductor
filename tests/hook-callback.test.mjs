@@ -155,6 +155,7 @@ test('conductor spawn argv carries the nudge hook; a worker\'s does not', async 
   assert.equal(s.hooks.PreToolUse.length, 3);
   assert.equal(s.hooks.PreToolUse[1].matcher, READ_NUDGE_MATCHER);
   assert.equal(s.hooks.PreToolUse[1].hooks[0].url, cond.hookCallbackUrl);
+  assert.equal(s.disableAutoMode, 'disable', 'a conductor\'s real argv disables auto mode');
 
   await api(baseUrl, 'POST', '/api/projects', { name: 'h' });
   const r = await api(baseUrl, 'POST', '/api/instances', { project: 'h', mode: 'bypassPermissions' });
@@ -164,8 +165,8 @@ test('conductor spawn argv carries the nudge hook; a worker\'s does not', async 
   assert.equal(settingsArg(worker),
     `{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":${hook}},`
     + `{"matcher":"*","hooks":${hook.replace(JSON.stringify(worker.hookCallbackUrl), JSON.stringify(workerToolsUrl(worker)))}}],`
-    + `"PostToolUse":[{"matcher":${JSON.stringify(TOOL_RESULT_NUDGE_MATCHER)},"hooks":${hook}}]}}`,
-    'a worker\'s settings: the base PreToolUse entry, the worker-tools entry, and the tool-result nudge PostToolUse entry');
+    + `"PostToolUse":[{"matcher":${JSON.stringify(TOOL_RESULT_NUDGE_MATCHER)},"hooks":${hook}}]},"disableAutoMode":"disable"}`,
+    'a worker\'s settings: the base PreToolUse entry, the worker-tools entry, the tool-result nudge PostToolUse entry, and disableAutoMode');
 });
 
 // INVARIANT: every session's spawn argv registers the tool-result nudge

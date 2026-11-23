@@ -29,8 +29,8 @@ const SEND = 'mcp__code-conductor__send_prompt';
 // adds the read-nudge PreToolUse entry between the two (asserted against
 // GOLDEN_WORKER below). A redirected session widens the base PreToolUse matcher
 // and adds its own PostToolUse entry after the nudge entry.
-const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]}]}}';
-const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
+const GOLDEN_WORKER = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"disableAutoMode":"disable"}';
+const GOLDEN_REDIRECT = '{"hooks":{"PreToolUse":[{"matcher":"Edit|Write|NotebookEdit|Bash|Glob|Grep|Read","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"*","hooks":[{"type":"http","url":"http://h/?policy=worker-tools","timeout":660}]}],"PostToolUse":[{"matcher":"^(mcp__code-conductor__spawn_instance|mcp__code-conductor__delete_worktree)$","hooks":[{"type":"http","url":"http://h","timeout":660}]},{"matcher":"Edit|Write|NotebookEdit|Bash","hooks":[{"type":"http","url":"http://h","timeout":660}]}]},"disableAutoMode":"disable","permissions":{"deny":["Glob","Grep"]},"includeGitInstructions":false}';
 
 function observeMany(nudge, tool, n) {
   const out = [];
@@ -170,6 +170,6 @@ test('settings: conductor entry', () => {
   assert.deepEqual(s.hooks.PreToolUse[2], worker.hooks.PreToolUse.at(-1), 'the worker-tools entry, last, as on a worker');
   assert.deepEqual(s.hooks.PostToolUse, worker.hooks.PostToolUse, 'the same tool-result nudge entry as a worker');
   assert.equal(s.permissions, undefined);
-  assert.deepEqual(JSON.parse(buildSettingsJSON({ conductor: true })), { hooks: { PreToolUse: [] } },
-    'no URL, no hooks at all');
+  assert.deepEqual(JSON.parse(buildSettingsJSON({ conductor: true })), { hooks: { PreToolUse: [] }, disableAutoMode: 'disable' },
+    'no URL, no hooks at all, and auto mode still disabled');
 });
