@@ -1,8 +1,10 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EVICTING_ACTIONS, keepsResident, pluginFrames, overlayStore } from './plugins';
+import { setViewOnly } from '@shared/viewOnly';
 
 afterEach(() => {
+  setViewOnly(false);
   vi.unstubAllGlobals();
   pluginFrames.leave();
   for (const id of pluginFrames.residentIds()) (pluginFrames as any).evict(pluginFrames.resident.get(id));
@@ -72,6 +74,20 @@ describe('plugin frames', () => {
     expect(overlayStore.get().overlay?.message).toBe('Starting Hub…');
     document.querySelector('iframe')!.dispatchEvent(new Event('load'));
     expect(overlayStore.get().overlay).toBeNull();
+  });
+
+  it('plugin view loads in view-only: its lazy start is allowed and the frame mounts', async () => {
+    // Invariant: POST /api/plugins/:id/start passes the view-only backstop, so a stopped plugin's view still starts and shows.
+    setViewOnly(true);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(ok({ state: 'stopped', name: 'Hub' }))
+      .mockResolvedValueOnce(ok({ ok: true }));
+    vi.stubGlobal('fetch', fetchMock);
+    const h = host();
+    await pluginFrames.load({ id: 'hub', subpath: '/' });
+    expect(fetchMock.mock.calls[1]).toEqual(['/api/plugins/hub/start', expect.objectContaining({ method: 'POST' })]);
+    expect(overlayStore.get().overlay?.retry ?? null).toBeNull();
+    expect(h.querySelector('iframe')).not.toBeNull();
   });
 
   it('a frame is hidden from its src until its own load, and each plain load gets a fresh one', async () => {

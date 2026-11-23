@@ -36,8 +36,10 @@ import { mountErrorHandler } from './routes/errors.ts';
 import type { RelaunchOptions } from './routes/admin.ts';
 import type { ServerCtx } from './routes/shared.ts';
 
-export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus, restartStatus }:
+export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus, restartStatus, viewOnly = false }:
   {
+    // CC_VIEW_ONLY: GET /health adds capabilities.viewOnly.
+    viewOnly?: boolean;
     instances?: InstanceManagerLike | null;
     serverCtx?: ServerCtx | null;
     relaunch?: RelaunchOptions;
@@ -76,7 +78,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // src/playbookApi.ts; there is no write route.
   r.use('/playbooks', buildPlaybookApi({ playbookGate }));
 
-  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus });
+  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus, viewOnly });
   mountSpawnPrefs(r);
   mountProjects(r, { instances, capabilities });
   mountWorkspaces(r);

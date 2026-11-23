@@ -12,6 +12,7 @@ import { LogoTile, Wordmark } from '@/components/logo/Logo';
 import { useStore } from '@/state/createStore';
 import { appStore, activeInstance } from '@/state/app';
 import { closeView, useRoute } from '@/state/route';
+import { useViewOnly } from '@/state/viewOnly';
 import { closeSidebarOnMobile, setLens, uiStore } from '@/app/ui';
 import { themeStore, toggleTheme } from '@/app/theme';
 import { conductStore, startConducting } from '@/features/dialogs/conduct';
@@ -75,6 +76,7 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
   const starting = useStore(conductStore, (s) => s.starting);
   const active = useStore(appStore, activeInstance);
   const route = useRoute();
+  const viewOnly = useViewOnly();
   const { width, live, handleProps } = useResizableWidth({
     storageKey: SIDEBAR_WIDTH_STORAGE_KEY, min: SIDEBAR_MIN_WIDTH, max: SIDEBAR_MAX_WIDTH, defaultWidth: SIDEBAR_DEFAULT_WIDTH, edge: 'right', label: 'Resize sidebar',
   });
@@ -112,9 +114,11 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
           )}
         />
         <NotifyToggle />
-        <HeaderButton label={route.view === 'settings' ? 'Close settings' : 'Settings'} onClick={toggleSettings}>
-          <SettingsIcon />
-        </HeaderButton>
+        {!viewOnly && (
+          <HeaderButton label={route.view === 'settings' ? 'Close settings' : 'Settings'} onClick={toggleSettings}>
+            <SettingsIcon />
+          </HeaderButton>
+        )}
         {mobile && (
           <HeaderButton label="Close" onClick={closeSidebarOnMobile}>
             <XIcon />
@@ -122,15 +126,17 @@ export function AppSidebar({ mobile = false }: { mobile?: boolean }) {
         )}
       </div>
 
-      <div className="px-3">
-        <Hint label="Start a conductor: a session that orchestrates other sessions for you (uses the Conductor role's model)">
-          <Button className="w-full justify-start gap-2 shadow-sm" disabled={starting} onClick={() => void startConducting()} data-conduct>
-            {starting ? <LoaderCircleIcon className="animate-spin" /> : <SparklesIcon />}
-            Conduct
-            <span className="ml-auto text-[11px] font-normal opacity-80">{starting ? 'starting…' : 'new conductor'}</span>
-          </Button>
-        </Hint>
-      </div>
+      {!viewOnly && (
+        <div className="px-3">
+          <Hint label="Start a conductor: a session that orchestrates other sessions for you (uses the Conductor role's model)">
+            <Button className="w-full justify-start gap-2 shadow-sm" disabled={starting} onClick={() => void startConducting()} data-conduct>
+              {starting ? <LoaderCircleIcon className="animate-spin" /> : <SparklesIcon />}
+              Conduct
+              <span className="ml-auto text-[11px] font-normal opacity-80">{starting ? 'starting…' : 'new conductor'}</span>
+            </Button>
+          </Hint>
+        </div>
+      )}
 
       <Strip m={m} />
 

@@ -21,6 +21,7 @@
 - **Pins:** `tests/ws-origin.test.mjs` (real server, both paths, the no-lazy-start proof, LAN-share and tunnel acceptance), `tests/upgrade-origin.test.mjs` (the rule's rows, the guard's 403, the dedupe and the rate limit).
 
 **Client → server:**
+- A view-only client (`CC_VIEW_ONLY`) sends only the frames in `VIEW_ONLY_FRAMES_ALLOW` (`shared/viewOnly.ts`); the filter is client-side in `send()` and the server is unchanged. See [features/view-only.md](../features/view-only.md).
 - `subscribe` — `id`, optional `reqId` (triggers `snapshot` + live `event`s)
 - `unsubscribe` — `id`
 - `prompt` — `id`, `text`, optional `attachments` (`[{name, mediaType, dataBase64}]`). Refused `ok:false` "session is switching model — retry once it settles" for the whole of a restart model switch (`Instance.prompt`'s `409`); nothing is queued

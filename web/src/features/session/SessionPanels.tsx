@@ -12,6 +12,7 @@ import { runLabel, waitingOn } from '@shared/needsYou';
 import { readablePrompt } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
+import { useViewOnly } from '@/state/viewOnly';
 
 /** The model's live task list (TaskCreate / TaskUpdate), while any task is open. */
 export function TaskPanel({ inst }: { inst: Instance }) {
@@ -98,6 +99,7 @@ export function SubagentPanel({ inst }: { inst: Instance }) {
 
 /** "Working…" with interrupt controls while a turn runs; "Last response …" otherwise. */
 export function TurnIndicator({ inst }: { inst: Instance }) {
+  const viewOnly = useViewOnly();
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     const t = setInterval(() => tick((n) => n + 1), 15_000);
@@ -108,6 +110,7 @@ export function TurnIndicator({ inst }: { inst: Instance }) {
     return (
       <div className="flex items-center gap-2 px-1 text-sm text-muted-foreground" data-turn-indicator="working">
         <span data-turn-label className="animate-pulse">{interrupting ? 'Stopping at the next safe point…' : 'Working…'}</span>
+        {!viewOnly && (
         <div className="ml-auto flex items-center gap-1">
           {!interrupting && (
             <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => send('interrupt', { id: inst.id })} title="Stop at the next output boundary. Finished blocks and tool results are kept.">
@@ -120,6 +123,7 @@ export function TurnIndicator({ inst }: { inst: Instance }) {
             </Button>
           )}
         </div>
+        )}
       </div>
     );
   }

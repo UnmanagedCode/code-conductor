@@ -32,6 +32,7 @@ import { Dot, Hint, OWNER_BAR, ownerStyle } from '@/features/sidebar/rows';
 import { isBackToOwnerKey, openOwner, useWorkerOwner, type WorkerOwner } from './workerOwner';
 import { cn } from '@/lib/utils';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
+import { useViewOnly } from '@/state/viewOnly';
 
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
 export const RESTART_BUSY_TITLE = 'Switching restarts the session. Wait for the running turn to finish.';
@@ -189,6 +190,7 @@ function OwnerChip({ owner }: { owner: Extract<WorkerOwner, { kind: 'owned' }> }
 export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => void }) {
   useSignal(modelsSignal);
   useSignal(mutesSignal);
+  const viewOnly = useViewOnly();
   const projectName = projectLabel(inst.project);
   const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
   const canMenu = ['idle', 'turn', 'spawning'].includes(inst.status);
@@ -196,7 +198,8 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   // and decides whether a stopped worktree session has a ⋮ at all.
   const wide = useMediaQuery(WIDE_QUERY);
   // An ended session has no instance: nothing that addresses one is offered.
-  const menu = canMenu || (!!worktree && !wide && !inst.ended);
+  // View-only: the worktree arm exists only for Sync, which is not offered.
+  const menu = canMenu || (!viewOnly && !!worktree && !wide && !inst.ended);
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
   const enforcing = isEnforcing(inst.playbookEnforcement);
@@ -308,18 +311,18 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
         {inst.effort && <Badge variant="outline" className="font-normal"><GaugeIcon />{inst.effort}</Badge>}
       </div>
 
-      {worktree && wide && !inst.ended && (
+      {!viewOnly && worktree && wide && !inst.ended && (
         <Button variant="outline" size="sm" onClick={() => void syncWorktree()}>
           <GitPullRequestArrowIcon /> Sync
         </Button>
       )}
-      {(inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && !inst.ended && (
+      {!viewOnly && (inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && !inst.ended && (
         <Button size="sm" onClick={() => void respawnActive()}><PlayIcon /> Resume</Button>
       )}
       {inst.mode === 'plan' && canMenu && inst.autoApprovePlan && (
         <Badge variant="plan" className="hidden sm:inline-flex"><CheckIcon />Auto-approve</Badge>
       )}
-      <ModeToggle inst={inst} />
+      {!viewOnly && <ModeToggle inst={inst} />}
 
       {menu && (
         <DropdownMenu modal={false}>
@@ -329,10 +332,12 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           <DropdownMenuContent align="end" className="w-60">
             {canMenu && (
               <>
-                <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => inst.sessionId && openRenameDialog(inst.sessionId, inst.title ?? '')}><PencilIcon /> Rename</DropdownMenuItem>
+                {!viewOnly && <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => inst.sessionId && openRenameDialog(inst.sessionId, inst.title ?? '')}><PencilIcon /> Rename</DropdownMenuItem>}
                 <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => inst.sessionId && openSummaryDialog(inst.sessionId)}><FileTextIcon /> Summarize session</DropdownMenuItem>
                 <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => inst.sessionId && openStatsDialog(inst.sessionId)}><BarChart3Icon /> Statistics</DropdownMenuItem>
                 <DropdownMenuCheckboxItem checked={showCallUsage} onCheckedChange={(v) => setCallUsageShown(inst.sessionId, !!v)}>Show mid-turn statistics</DropdownMenuCheckboxItem>
+                {!viewOnly && (
+                  <>
                 <DropdownMenuSeparator />
                 <DropdownMenuSub>
                   <DropdownMenuSubTrigger disabled={!inst.sessionId || !!inst.modelSwitch || !between} title={between ? 'Switch this session to another model' : BETWEEN_TURNS_TITLE}><BrainIcon /> Change model</DropdownMenuSubTrigger>
@@ -381,16 +386,18 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                   title={between ? 'Start a new session from the whole conversation so far — the original is left intact' : 'Forking the whole session is only available between turns — mid-turn, fork from a message'}
                   onSelect={() => void forkWholeSession(inst.id)}
                 ><GitForkIcon /> Fork session…</DropdownMenuItem>
+                  </>
+                )}
                 <DropdownMenuSeparator />
                 <DropdownMenuItem disabled={!inst.sessionId} onSelect={() => muteSession(inst.sessionId, !muted)}>
                   {muted ? <><BellIcon /> Unmute notifications</> : <><BellOffIcon /> Mute notifications</>}
                 </DropdownMenuItem>
-                {inst.mode === 'plan' && (
+                {!viewOnly && inst.mode === 'plan' && (
                   <DropdownMenuCheckboxItem checked={!!inst.autoApprovePlan} onCheckedChange={(v) => send('auto_approve_plan', { id: inst.id, enabled: !!v })}>
                     Auto-approve plans
                   </DropdownMenuCheckboxItem>
                 )}
-                {inst.project === CONDUCT_PROJECT && (
+                {!viewOnly && inst.project === CONDUCT_PROJECT && (
                   <DropdownMenuCheckboxItem
                     checked={enforcing}
                     onCheckedChange={async () => {
@@ -402,15 +409,15 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
                     <span className="ml-2">Enforce playbooks</span>
                   </DropdownMenuCheckboxItem>
                 )}
-                <DropdownMenuItem disabled={!!inst.debug} onSelect={() => void startDebug()} title={inst.debug ? `Mirroring to ${inst.debugDir ?? '(unknown path)'}` : 'Mirror CLI stdin/stdout/stderr to the debug directory'}>
+                {!viewOnly && <DropdownMenuItem disabled={!!inst.debug} onSelect={() => void startDebug()} title={inst.debug ? `Mirroring to ${inst.debugDir ?? '(unknown path)'}` : 'Mirror CLI stdin/stdout/stderr to the debug directory'}>
                   <BugIcon /> {inst.debug ? 'Debug capture on' : 'Start debug capture'}
-                </DropdownMenuItem>
+                </DropdownMenuItem>}
               </>
             )}
-            {worktree && !wide && (
+            {!viewOnly && worktree && !wide && (
               <DropdownMenuItem onSelect={() => void syncWorktree()}><GitPullRequestArrowIcon /> Sync worktree</DropdownMenuItem>
             )}
-            {canMenu && (
+            {!viewOnly && canMenu && (
               <>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onSelect={() => void terminate()}>

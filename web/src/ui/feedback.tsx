@@ -7,6 +7,7 @@ import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { createStore, useStore } from '@/state/createStore';
 import { installToastFocus } from '@/ui/toastFocus';
+import { VIEW_ONLY_MESSAGE } from '@shared/viewOnly';
 
 export type ConfirmOptions = {
   title: string;
@@ -65,9 +66,20 @@ export function ToastHost(props: ToasterProps) {
   return <Toaster ref={ref} {...props} />;
 }
 
+/** The one toast every view-only refusal shows (startViewOnlyNotice). */
+export const VIEW_ONLY_TOAST_ID = 'view-only';
+
+// A caller's own error toast for a view-only refusal (`toast.error(title, e.message)`) is
+// dropped: the refusal's own toast has already fired, synchronously, inside refuse().
 export const toast = {
   success: (title: string, description?: string) => sonnerToast.success(title, { description }),
-  error: (title: string, description?: string) => sonnerToast.error(title, { description, duration: 8000 }),
+  error: (title: string, description?: string) => {
+    if (description === VIEW_ONLY_MESSAGE) return;
+    sonnerToast.error(title, { description, duration: 8000 });
+  },
   info: (title: string, description?: string) => sonnerToast(title, { description }),
-  warning: (title: string, description?: string) => sonnerToast.warning(title, { description, duration: 8000 }),
+  warning: (title: string, description?: string, opts?: { id?: string }) => {
+    if (description === VIEW_ONLY_MESSAGE && !opts?.id) return;
+    sonnerToast.warning(title, { description, duration: 8000, ...opts });
+  },
 };

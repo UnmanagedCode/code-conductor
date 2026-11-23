@@ -4,6 +4,7 @@
 // remembered: `loadCapabilities()` resolves null and the next call retries.
 
 import { apiFetch } from './http.ts';
+import { setViewOnly } from './viewOnly.ts';
 
 // The platform's flags by name (Platform.capabilities, src/platform/).
 export type Capabilities = Record<string, boolean>;
@@ -21,6 +22,7 @@ export function loadCapabilities(): Promise<Capabilities | null> {
       pending = null;
       return null;
     }
+    setViewOnly(loaded.viewOnly === true);
     return loaded;
   })();
   return pending;

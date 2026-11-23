@@ -18,6 +18,7 @@ import { pluginFrames } from './plugins';
 import { startPluginSessionBridge } from './pluginSession';
 import { postFrom, standInWindow, type StandIn } from './test/pluginHost';
 import { settle } from '@/test/settle';
+import { ViewOnlyError } from '@shared/viewOnly';
 
 const sendMock = vi.mocked(send);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -264,6 +265,15 @@ describe('sendPrompt', () => {
     // Invariant: a server refusal, closed socket or ack timeout surfaces to the plugin instead of reading as delivered.
     sendMock.mockRejectedValue(new Error('timeout'));
     expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: false, code: 'SEND_FAILED' });
+  });
+
+  it('sendPrompt in view-only answers VIEW_ONLY, not SEND_FAILED; flag off sends', async () => {
+    // Invariant: a view-only refusal reaches the plugin as its own result code; normal mode still delivers.
+    sendMock.mockRejectedValue(new ViewOnlyError('prompt frame'));
+    expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
+    sendMock.mockReset();
+    sendMock.mockReset();
+    expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: true });
   });
 
   it('rejects a bad sessionId or empty text as INVALID_ARGUMENT', async () => {

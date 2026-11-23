@@ -12,7 +12,9 @@
 //   - fetch() itself rejects (server down, restarting, unreachable) →
 //     NetworkError, whose message is SERVER_UNREACHABLE_MESSAGE whatever the
 //     browser's own wording was;
-//   - an AbortError passes through untouched.
+//   - an AbortError passes through untouched;
+//   - view-only mode is on and the call mutates (shared/viewOnly.ts) → ViewOnlyError,
+//     before fetch is called.
 // Callers branch on a status with `e instanceof ApiError && e.status === N`.
 //
 // apiFetch returns the PARSED BODY. A non-JSON body (a bodyless 204, or an
@@ -23,6 +25,7 @@
 // `T` names the route's body; it is the caller's claim about the wire.
 
 import { appUrl } from './appUrl.ts';
+import { isViewOnly, refuse, requestAllowed } from './viewOnly.ts';
 
 /** The one message every network failure (server down, restarting, unreachable) surfaces as. */
 export const SERVER_UNREACHABLE_MESSAGE = 'cc server unreachable — it may be restarting';
@@ -51,6 +54,8 @@ export class NetworkError extends Error {
 
 /** fetch with network failures normalized; the raw Response, no status check. For status-agnostic or streamed readers. */
 export async function apiResponse(url: string, opts?: RequestInit, fetchImpl: typeof fetch = fetch): Promise<Response> {
+  const method = opts?.method ?? 'GET';
+  if (isViewOnly() && !requestAllowed(method, url)) throw refuse(`${method.toUpperCase()} ${url}`);
   try {
     return await fetchImpl(appUrl(url), { cache: 'no-store', ...opts });
   } catch (e) {

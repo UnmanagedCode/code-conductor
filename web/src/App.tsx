@@ -5,6 +5,7 @@ import { Sheet, SheetContent, SheetTitle } from '@/components/ui/sheet';
 import { useStore } from '@/state/createStore';
 import { appStore } from '@/state/app';
 import { useRoute } from '@/state/route';
+import { useViewOnly } from '@/state/viewOnly';
 import { uiStore } from '@/app/ui';
 import { themeStore } from '@/app/theme';
 import { ConfirmHost, ToastHost } from '@/ui/feedback';
@@ -45,8 +46,10 @@ function ViewFallback() {
 
 function MainView() {
   const route = useRoute();
+  const viewOnly = useViewOnly();
   switch (route.view) {
-    case 'settings': return <SettingsView />;
+    // View-only has no settings page; its lazy chunk is never loaded.
+    case 'settings': return viewOnly ? <SessionView /> : <SettingsView />;
     case 'review': return <ReviewView />;
     case 'commits': return <CommitsView />;
     case 'costs': return <CostsView />;

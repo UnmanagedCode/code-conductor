@@ -17,6 +17,7 @@ import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
 import { EndedBanner } from './EndedBanner';
 import { focusPromptAfterSelect } from './promptFocus';
+import { useViewOnly } from '@/state/viewOnly';
 
 /** The logo whose cursor blinks while the socket is open and holds still while it (re)connects. */
 function LiveMark({ className }: { className?: string }) {
@@ -25,6 +26,7 @@ function LiveMark({ className }: { className?: string }) {
 }
 
 function EmptyState() {
+  const viewOnly = useViewOnly();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-6 text-center" data-empty-state>
       <LiveMark className="size-32" />
@@ -34,16 +36,19 @@ function EmptyState() {
           Pick a session from the sidebar, start one in a project, or let a conductor orchestrate several agents for you.
         </p>
       </div>
-      <div className="flex flex-wrap justify-center gap-2">
-        <Button onClick={() => void startConducting()}><SparklesIcon /> Start conducting</Button>
-        <Button variant="outline" onClick={openNewProjectDialog}><FolderPlusIcon /> New project</Button>
-      </div>
+      {!viewOnly && (
+        <div className="flex flex-wrap justify-center gap-2">
+          <Button onClick={() => void startConducting()}><SparklesIcon /> Start conducting</Button>
+          <Button variant="outline" onClick={openNewProjectDialog}><FolderPlusIcon /> New project</Button>
+        </div>
+      )}
     </div>
   );
 }
 
 export function SessionView() {
   const inst = useStore(appStore, activeInstance);
+  const viewOnly = useViewOnly();
   const column = useSessionColumn();
   const composerRef = React.useRef<ComposerHandle>(null);
 
@@ -86,7 +91,7 @@ export function SessionView() {
           <SubagentPanel inst={inst} />
           <TurnIndicator inst={inst} />
           {inst.ended && <EndedBanner inst={inst} />}
-          <Composer ref={composerRef} inst={inst} usageSlot={<UsageChip inst={inst} />} />
+          {!viewOnly && <Composer ref={composerRef} inst={inst} usageSlot={<UsageChip inst={inst} />} />}
         </div>
         <SessionWidthHandles />
       </div>
