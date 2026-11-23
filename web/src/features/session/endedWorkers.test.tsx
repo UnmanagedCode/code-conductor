@@ -216,6 +216,69 @@ describe('workers panel: ended workers', () => {
   });
 });
 
+describe('workers panel: header layout', () => {
+  const title = () => screen.getByRole('button', { name: /^Workers/ });
+  const chevron = () => screen.getByRole('button', { name: 'Toggle workers panel' });
+  const expanded = () => [title(), chevron()].map((b) => b.getAttribute('aria-expanded'));
+
+  it('the header reads title, then the ended toggle, then the chevron', async () => {
+    // Invariant: DOM order is title, ended toggle, chevron, with the chevron the header's last child.
+    routeFetch(answer([spawned('e1')]));
+    mount([live('w1')]);
+    const sw = await toggle();
+    const follows = (a: Node, b: Node) => Boolean(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
+    expect(follows(title(), sw)).toBe(true);
+    expect(follows(sw, chevron())).toBe(true);
+    expect(chevron().parentElement?.lastElementChild === chevron()).toBe(true);
+  });
+
+  it('the chevron stays the header\'s last child with or without the ended toggle', async () => {
+    // Invariant: the toggle appearing or disappearing never moves the chevron out of the last position.
+    routeFetch(answer([]));
+    const r = mount([live('w1')]);
+    await settle();
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(chevron().parentElement?.lastElementChild === chevron()).toBe(true);
+    r.unmount();
+    routeFetch(answer([spawned('e1')]));
+    mount([live('w1')]);
+    await toggle();
+    expect(chevron().parentElement?.lastElementChild === chevron()).toBe(true);
+  });
+
+  it('the switch and its label toggle ended rows without collapsing the panel', async () => {
+    // Invariant: neither the switch nor its "N ended" label collapses the panel; both flip the ended rows.
+    routeFetch(answer([spawned('e1')]));
+    mount([live('w1')]);
+    fireEvent.click(await toggle());
+    await screen.findByRole('button', { name: /job e1/ });
+    expect(expanded()).toEqual(['true', 'true']);
+    fireEvent.click(screen.getByText('1 ended'));
+    await settle();
+    expect(screen.queryByRole('button', { name: /job e1/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /job w1/ })).toBeTruthy();
+    expect(expanded()).toEqual(['true', 'true']);
+    fireEvent.click(screen.getByText('1 ended'));
+    expect(await screen.findByRole('button', { name: /job e1/ })).toBeTruthy();
+    expect(expanded()).toEqual(['true', 'true']);
+  });
+
+  it.each([['title area', title], ['chevron', chevron]])('the %s collapses and expands the panel', async (_name, trigger) => {
+    // Invariant: each trigger collapses (rows leave the DOM) and expands (rows return); both report the one shared state.
+    routeFetch(answer([spawned('e1')]));
+    mount([live('w1')]);
+    await toggle();
+    expect(screen.getByRole('button', { name: /job w1/ })).toBeTruthy();
+    fireEvent.click(trigger());
+    await settle();
+    expect(screen.queryByRole('button', { name: /job w1/ })).toBeNull();
+    expect(expanded()).toEqual(['false', 'false']);
+    fireEvent.click(trigger());
+    expect(await screen.findByRole('button', { name: /job w1/ })).toBeTruthy();
+    expect(expanded()).toEqual(['true', 'true']);
+  });
+});
+
 describe('endedWorkers', () => {
   it('a session held by a dead and a live instance is excluded, whichever comes first', () => {
     // Invariant: any live holder of the session removes it from the ended list.
