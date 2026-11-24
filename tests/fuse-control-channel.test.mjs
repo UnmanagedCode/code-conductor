@@ -84,7 +84,7 @@ describe('the control channel, cc side', () => {
       systemPath: '/srv/app', mirrorRoot: '/srv/app', exclude: ['/srv/app/secrets'],
     }));
     server = await ControlServer.listen({
-      socketPath: sockPath, mirror, source: localDirSource(srcRoot), tiers,
+      socketPath: sockPath, divergedRecord: `${sockPath}.diverged.json`, recoveredDir: `${sockPath}.recovered`, mirror, source: localDirSource(srcRoot), tiers,
       log: (l) => logs.push(l),
     });
     sock = await connect(sockPath);
@@ -305,7 +305,7 @@ describe('the control channel, cc side', () => {
       list: async (q) => (failList-- > 0 ? { error: 'EMFILE: too many open files' } : base.list(q)),
     };
     const srv = await ControlServer.listen({
-      socketPath: path.join(box, 'flaky.sock'), mirror, source: flaky, tiers, log: () => {},
+      socketPath: path.join(box, 'flaky.sock'), divergedRecord: `${path.join(box, 'flaky.sock')}.diverged.json`, recoveredDir: `${path.join(box, 'flaky.sock')}.recovered`, mirror, source: flaky, tiers, log: () => {},
     });
     const c = await connect(srv.socketPath);
     try {
@@ -387,7 +387,7 @@ describe('the control channel, cc side', () => {
       push: async (src, q) => { started(); await held; pushed = true; return base.push(src, q); },
     };
     const srv = await ControlServer.listen({
-      socketPath: path.join(box, 'slow.sock'), mirror, source: slow, tiers, log: () => {},
+      socketPath: path.join(box, 'slow.sock'), divergedRecord: `${path.join(box, 'slow.sock')}.diverged.json`, recoveredDir: `${path.join(box, 'slow.sock')}.recovered`, mirror, source: slow, tiers, log: () => {},
     });
     const c = await connect(srv.socketPath);
     const c2 = await connect(srv.socketPath);
@@ -521,7 +521,7 @@ describe('the control channel, cc side', () => {
       stat: async (q) => { if (boom-- > 0) throw new Error('EIO: source exploded'); return base.stat(q); },
     };
     const srv = await ControlServer.listen({
-      socketPath: path.join(box, 'throwy.sock'), mirror, source: throwy, tiers, log: () => {},
+      socketPath: path.join(box, 'throwy.sock'), divergedRecord: `${path.join(box, 'throwy.sock')}.diverged.json`, recoveredDir: `${path.join(box, 'throwy.sock')}.recovered`, mirror, source: throwy, tiers, log: () => {},
     });
     const c = await connect(srv.socketPath);
     try {
@@ -789,7 +789,7 @@ describe('the control channel, cc side', () => {
       async stat(q) { if (fetching && q === p) overlapped = true; return base.stat(q); },
     };
     const s2 = await ControlServer.listen({
-      socketPath: path.join(box, 'ctl2.sock'), mirror, source: slow, tiers, log: (l) => logs.push(l),
+      socketPath: path.join(box, 'ctl2.sock'), divergedRecord: `${path.join(box, 'ctl2.sock')}.diverged.json`, recoveredDir: `${path.join(box, 'ctl2.sock')}.recovered`, mirror, source: slow, tiers, log: (l) => logs.push(l),
     });
     const c2 = await connect(s2.socketPath);
     try {
@@ -1013,7 +1013,7 @@ describe('the control socket binds and connects at any store-root depth', () => 
   // stops removing the real file.
   test('T7: ControlServer listens past sun_path, serves a real frame, and unlinks on close', async () => {
     const server = await ControlServer.listen({
-      socketPath: sockPath, mirror, source: localDirSource(srcRoot), tiers, log: () => {},
+      socketPath: sockPath, divergedRecord: `${sockPath}.diverged.json`, recoveredDir: `${sockPath}.recovered`, mirror, source: localDirSource(srcRoot), tiers, log: () => {},
     });
     let dirfd = -1, sock;
     try {
@@ -1079,7 +1079,7 @@ describe('the control socket binds and connects at any store-root depth', () => 
     const sockPath = path.join(live, 'control.sock');
 
     const server = await ControlServer.listen({
-      socketPath: sockPath, mirror: mirror2, source: localDirSource(box2), tiers, log: () => {},
+      socketPath: sockPath, divergedRecord: `${sockPath}.diverged.json`, recoveredDir: `${sockPath}.recovered`, mirror: mirror2, source: localDirSource(box2), tiers, log: () => {},
     });
     await fs.stat(sockPath);
 
@@ -1140,7 +1140,7 @@ describe('read-only remote ancestors under a wide mirror root', {
     const logs = [];
     const base = localDirSource(srcRoot);
     const server = await ControlServer.listen({
-      socketPath: path.join(box, 'control.sock'), mirror, source: wrap ? wrap(base) : base, tiers,
+      socketPath: path.join(box, 'control.sock'), divergedRecord: `${path.join(box, 'control.sock')}.diverged.json`, recoveredDir: `${path.join(box, 'control.sock')}.recovered`, mirror, source: wrap ? wrap(base) : base, tiers,
       log: (l) => logs.push(l),
     });
     const socks = [];

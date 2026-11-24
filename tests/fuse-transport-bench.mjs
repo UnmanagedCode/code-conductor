@@ -177,7 +177,7 @@ async function rig(fn, { log = LOG } = {}) {
     const mkdirp = async (p) => (remote ? arm.sys.mkdir(p, { recursive: true }) : fs.mkdir(p, { recursive: true }));
     if (remote) await mkdirp(src);
     const server = await ControlServer.listen({
-      socketPath: path.join(root, 'control.sock'),
+      socketPath: path.join(root, 'control.sock'), divergedRecord: `${path.join(root, 'control.sock')}.diverged.json`, recoveredDir: `${path.join(root, 'control.sock')}.recovered`,
       mirror,
       source: arm.source,
       tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),

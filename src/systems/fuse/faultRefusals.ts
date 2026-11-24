@@ -34,7 +34,9 @@ export function divergedRefusal(p: string, f: Fault & { kind: 'diverged' }, syst
     + `session's copy and the system's have diverged and cc will not overwrite the system's copy `
     + `with a file it cannot reconcile. This is cc refusing to carry the file, NOT the file being `
     + `absent — cc has not looked, and this says nothing about whether it exists. The local copy `
-    + `is intact and readable, so the content is not lost. Bash runs ON SYSTEM '${systemId}', not `
+    + `is intact and readable, so the content is not lost — and if this session ends before the `
+    + `change lands, cc copies those bytes on the orchestrator into '${f.keptUnder}' for the `
+    + `operator, a copy this session cannot read. Bash runs ON SYSTEM '${systemId}', not `
     + `on the orchestrator: inspect the system's own '${p}' with \`cat\` there, and land the `
     + `change with \`sed -i\` or a \`>\` redirect on that machine.`;
 }

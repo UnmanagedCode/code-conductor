@@ -26,6 +26,7 @@ import { withinPosix } from '../mirror.ts';
 import { resolveTierEntry, type TierEntry } from './tierTable.ts';
 import { isSourceError, type RemoteSource } from './remoteSource.ts';
 import { MAX_FILE_BYTES } from '../protocol.ts';
+import { writeDivergedRecord } from './diverged.ts';
 import { KeyedLock, removeOwnedTree, replaceViaScratch, widenDirMode } from './mirrorPerms.ts';
 
 // ── the frame codec ─────────────────────────────────────────────────────────
@@ -130,7 +131,7 @@ export function encodeReply(status: number, err: number): Buffer {
 // channel the refusal points at — while an over-cap path was never
 // materialised at all, so there is nothing to read.
 export type Fault =
-  | { kind: 'diverged'; detail: string; refuses: 'writes' }
+  | { kind: 'diverged'; detail: string; keptUnder: string; refuses: 'writes' }
   | { kind: 'over-cap'; size: number; cap: number; refuses: 'all' };
 
 // ── the socket's ADDRESS, which is not its path ─────────────────────────────
@@ -205,6 +206,12 @@ export interface ControlServerOptions {
   // mode and mtime on this machine and into the parent's listing, which is the
   // metadata the exclusion exists to withhold.
   tiers: readonly TierEntry[];
+  // Where the set of diverged paths is persisted (`diverged.ts`), so a teardown
+  // that never saw this server can copy their bytes out of the mirror.
+  divergedRecord: string;
+  // The orchestrator-side directory those bytes are copied to at teardown; the
+  // refusal names it so the operator can be pointed at it.
+  recoveredDir: string;
   log?: (line: string) => void;
 }
 
@@ -300,7 +307,9 @@ export class ControlServer {
   //   3. this server being dropped. `FuseSession.teardown()` closes it, sets
   //      `#control = null`, and `runTeardown` then `rm -rf`s the run directory
   //      including the mirror, so the map and the files it protects die
-  //      together. No claim survives a session.
+  //      together. No claim survives a session — but the bytes of a DIVERGED
+  //      path do: they are listed in `diverged.json` and teardown copies them
+  //      to `recoveredDir` before that `rm -rf`.
   #claimed = new Map<string, { createdHere: boolean }>();
 
   // THE REVALIDATE FINGERPRINT: what the SOURCE held at `p` the last time cc
@@ -345,7 +354,27 @@ export class ControlServer {
   // reason for "cleared by nothing" is that cc cannot resync without destroying
   // the bytes the worker wrote — true of every path except that one, where the
   // bytes are what LANDED.
+  //
+  // THE DIVERGED SET IS PERSISTED to `diverged.json` (`#persistDiverged`):
+  // written before the REFUSED reply, rewritten on a clear. `over-cap` faults
+  // are not listed — nothing was ever materialised for them.
   #faults = new Map<string, Fault>();
+
+  // The tail of the serialised writes of `diverged.json`. Each write snapshots
+  // `#faults` when it EXECUTES, so the last write always reflects the latest
+  // state; the promise never rejects (a failed write is logged).
+  #divergedWrites: Promise<void> = Promise.resolve();
+
+  #persistDiverged(): Promise<void> {
+    const run = this.#divergedWrites.then(() => writeDivergedRecord(
+      this.#opts.divergedRecord,
+      [...this.#faults].filter(([, f]) => f.kind === 'diverged').map(([p]) => p),
+    )).catch((e: Error) => {
+      this.#opts.log?.(`cc-union control: could not record diverged paths in ${this.#opts.divergedRecord}: ${e.message}`);
+    });
+    this.#divergedWrites = run;
+    return run;
+  }
 
   // Set once `close()` starts. A handler that has already been dequeued must
   // not act on a mirror that is about to be removed: teardown deletes the run
@@ -798,7 +827,10 @@ export class ControlServer {
         // which is true exactly here. A failed `remove`, and a claimed path
         // whose mirror entry has vanished under cc, cannot honour that
         // sentence and are released as before.
-        this.#faults.set(p, { kind: 'diverged', detail: r.error, refuses: 'writes' });
+        this.#faults.set(p, { kind: 'diverged', detail: r.error, keptUnder: this.#opts.recoveredDir, refuses: 'writes' });
+        // ON DISK BEFORE THE WORKER SEES EIO: teardown copies the listed files'
+        // bytes out of the mirror before it reclaims the run directory.
+        await this.#persistDiverged();
         this.#opts.log?.(`cc-union control: DIRTY '${p}' failed: ${r.error}`);
         return encodeReply(CCU_STATUS.REFUSED, EIO);
       }
@@ -820,7 +852,7 @@ export class ControlServer {
       // §5.2. An `over-cap` fault is never cleared here either: it is not a
       // divergence but a statement that cc cannot carry the file at all, and
       // landing a push says nothing about that.
-      if (this.#faults.get(p)?.kind === 'diverged') this.#faults.delete(p);
+      if (this.#faults.get(p)?.kind === 'diverged') { this.#faults.delete(p); await this.#persistDiverged(); }
       await this.#adoptWriteMtime(p, dest);
     }
     // RELEASED once the handle is gone — for every branch that REACHES here.

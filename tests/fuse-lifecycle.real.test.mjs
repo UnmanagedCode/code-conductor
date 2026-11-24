@@ -309,6 +309,22 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       // at all, not how fast.
       assert.ok(elapsed < 120_000, `teardown took ${elapsed}ms`);
       console.log(`fuse gate: busy-mount teardown took ${elapsed}ms`);
+
+      // READ HERE, INSIDE THE TRY AND BEFORE THE HOLDER IS KILLED: the runtime
+      // sweep every teardown requests retries this dir, and once the holder is
+      // gone it would reclaim the very wedge this arm asserts on. While the
+      // holder lives, any retry re-wedges with the same record.
+      // THE VERDICT IS TAKEN FROM NAMESPACE MEMBERSHIP, and here that is the
+      // whole point: the holder is alive in the session's namespace at teardown
+      // time and NO record names it, so a verdict taken from the recorded pid set
+      // would have called this clean and destroyed the record over a live
+      // namespace. It must be a reported wedge whose record survives.
+      const kept = await readRecord(inst.id);
+      console.log(`fuse gate: busy-mount arm → ${kept ? `record kept, terminalState=${kept.terminalState}, survivingPids=${JSON.stringify(kept.survivingPids)}, residual=${JSON.stringify(kept.residualMounts)}` : 'teardown finished clean'}`);
+      assert.ok(kept, 'a live unrecorded namespace member did not keep the record');
+      assert.equal(kept.wedged, true, 'a kept record must say it is wedged');
+      assert.deepEqual(kept.survivingPids, [], 'a RECORDED pid survived, so this arm would pass for the wrong reason');
+      assert.ok(typeof kept.terminalState === 'string' && kept.terminalState.length > 0);
     } finally {
       if (holderPid && holderStart) {
         killPids([{ pid: holderPid, ident: holderStart }], { identOf: startOf });
@@ -321,23 +337,13 @@ describe('a worker inside a FUSE-union chroot: the lifecycle gate', { skip: !ENA
       if (instances.byId.has(inst.id)) await instances.remove(inst.id).catch(() => {});
     }
 
-    // THE VERDICT IS TAKEN FROM NAMESPACE MEMBERSHIP, and here that is the
-    // whole point: the holder is alive in the session's namespace at teardown
-    // time and NO record names it, so a verdict taken from the recorded pid set
-    // would have called this clean and destroyed the record over a live
-    // namespace. It must be a reported wedge whose record survives.
-    const kept = await readRecord(inst.id);
-    console.log(`fuse gate: busy-mount arm → ${kept ? `record kept, terminalState=${kept.terminalState}, survivingPids=${JSON.stringify(kept.survivingPids)}, residual=${JSON.stringify(kept.residualMounts)}` : 'teardown finished clean'}`);
-    assert.ok(kept, 'a live unrecorded namespace member did not keep the record');
-    assert.equal(kept.wedged, true, 'a kept record must say it is wedged');
-    assert.deepEqual(kept.survivingPids, [], 'a RECORDED pid survived, so this arm would pass for the wrong reason');
-    assert.ok(typeof kept.terminalState === 'string' && kept.terminalState.length > 0);
-
-    // …and the follow-up sweep, with the holder now dead, clears it.
-    const sweeper = await sh(process.execPath, ['--experimental-strip-types',
-      path.join(HERE, 'fixtures', 'fuseSweepProbe.mjs'), fuseRunRoot()]);
-    assert.ok(sweeper.ok, sweeper.stderr);
-    await assert.rejects(() => fs.stat(fuseRunDir(inst.id)), 'the sweep did not clear the wedged record');
+    // …and the NEXT TEARDOWN's runtime sweep, with the holder now dead, clears
+    // it: a second worker's `remove` ends in `requestFuseSweep`, which retries
+    // every dead run dir. This arm is the real-host proof of that retry; the
+    // fresh-process boot sweep is arm 4's.
+    const other = await spawnWorker();
+    await instances.remove(other.id);
+    await waitFor(() => !existsSync(fuseRunDir(inst.id)), { timeout: 30_000 });
     assertNoResidue(before, runRoot, record, 'arm 5');
   });
 

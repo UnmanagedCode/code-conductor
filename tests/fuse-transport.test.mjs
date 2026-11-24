@@ -479,6 +479,8 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
   await fs.mkdir(src, { recursive: true });
   await fs.mkdir(mirror, { recursive: true });
   const sys = handle({ log });
+  const divergedRecord = path.join(box, 'diverged.json');
+  const recoveredDir = path.join(box, 'recovered', 'rig');
   let server, sock;
   try {
     await sys.connect();
@@ -487,6 +489,7 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
       mirror,
       source: wrapSource(systemSource(sys)),
       tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
+      divergedRecord, recoveredDir,
     });
     sock = await new Promise((res, rej) => {
       const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
@@ -502,7 +505,8 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
       .filter(([k]) => k.startsWith('c2p:'))
       .reduce((n, [, v]) => n + v, 0);
     return await fn({ src, mirror, sock, server,
-      call: (op, flags, p) => call(sock, op, flags, p), reads, writes, wire });
+      call: (op, flags, p) => call(sock, op, flags, p), reads, writes, wire,
+      divergedRecord, recoveredDir });
   } finally {
     sock?.destroy();
     await server?.close();
@@ -1081,6 +1085,60 @@ describe("the write path — mode, faults and the double reconcile", () => {
         'a repaired path is still refused for writing');
     });
   });
+
+  // PINS: a failed push PERSISTS the diverged path set to the diverged record,
+  // BEFORE the worker sees EIO, so a teardown that never saw this server can
+  // copy the bytes out of the mirror. The record is the whole set, sorted.
+  // DIES UNDER: no write; writing only the current path (the second arm lists
+  // [p] instead of [p, q]); including `over-cap` faults (the third arm).
+  test('T12d — a failed push persists the diverged path set', async () => {
+    await rig(async ({ src, mirror, call, server, divergedRecord, recoveredDir }) => {
+      const listed = async () => JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths;
+      const fail = async (name) => {
+        const p = path.join(src, name);
+        await fs.writeFile(p, 'ORIGINAL');
+        assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+        await fs.writeFile(path.join(mirror, p), 'WORKER');
+        await wedgeSource(p);
+        assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.REFUSED);
+        return p;
+      };
+      const p = await fail('a.txt');
+      assert.deepEqual(await listed(), [p], 'the record is not on disk when the worker sees EIO');
+      assert.equal(server.faultAt(p).keptUnder, recoveredDir, 'the fault does not name where the bytes land');
+      const q = await fail('b.txt');
+      assert.deepEqual(await listed(), [p, q].sort(), 'the record holds only the latest path, not the set');
+
+      const big = path.join(src, 'huge.bin');
+      const fh = await fs.open(big, 'w');
+      try { await fh.truncate(MAX_FILE_BYTES + 1); } finally { await fh.close(); }
+      assert.equal((await call(CCU_OP.FETCH, 0, big)).err, 27);
+      assert.equal(server.faultAt(big).kind, 'over-cap');
+      await fail('c.txt');
+      assert.ok(!(await listed()).includes(big), 'an over-cap path (never materialised) was listed as diverged');
+    });
+  });
+
+  // PINS: a successful reconcile REMOVES the path from the record, so teardown
+  // does not copy out bytes that already landed.
+  // DIES UNDER: dropping the clear-side write (the record still lists the path).
+  test('T13d — a successful reconcile removes the path from the record', async () => {
+    await rig(async ({ src, mirror, call, server, divergedRecord }) => {
+      const p = path.join(src, 'repaired-rec.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, p), 'WORKER BYTES');
+      await wedgeSource(p);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.REFUSED);
+      assert.deepEqual(JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths, [p]);
+      await fs.rm(p, { recursive: true, force: true });
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(server.faultAt(p), null);
+      assert.deepEqual(JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths, [],
+        'a repaired path is still listed, so teardown would copy out bytes that landed');
+    });
+  });
+
 
   // PINS: AN ABANDONED CLAIM DOES NOT POISON THE PATH, and the discrimination
   // is the FRAME's rather than a guess about the state.

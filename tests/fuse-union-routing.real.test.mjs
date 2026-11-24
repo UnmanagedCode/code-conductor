@@ -30,7 +30,7 @@ import { promises as fs, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { waitFor } from './helpers.mjs';
 import { mkdtemp } from './tmpRegistry.mjs';
-import { fuseRunDir } from '../src/systems/fuse/plan.ts';
+import { fuseRecoveredDir, fuseRunDir } from '../src/systems/fuse/plan.ts';
 import { resolveTierEntry } from '../src/systems/fuse/tierTable.ts';
 import {
   ENABLED, setupFuseGate, spawnWorker, snapshot, readRecord, assertNoResidue,
@@ -591,12 +591,12 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
   test('R11 — a push that cannot land diverges the path, and the tool surface refuses it by name', async () => {
     const before = snapshot(runRoot);
     const inst = await spawnWorker();
+    const unionPath = path.join(box, 'app', 'r11-diverge.txt');
     try {
       const record = await readRecord(inst.id);
       const mark = inside(record, inst._fuse.plan.markPath);
       const onSystem = (rel) => path.join(fakeRemote, box, 'app', rel);
       const inChroot = (rel) => inside(record, path.join(box, 'app', rel));
-      const unionPath = path.join(box, 'app', 'r11-diverge.txt');
 
       await fs.writeFile(onSystem('r11-diverge.txt'), 'ORIGINAL\n');
 
@@ -629,6 +629,10 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
       const fault = inst._fuse.controlServer.faultAt(unionPath);
       assert.ok(fault, 'the push failed and the session recorded no fault');
       assert.equal(fault.kind, 'diverged');
+      // …AND PERSISTED, on disk, before the worker saw EIO: teardown reads this
+      // file, never the live server.
+      assert.deepEqual(JSON.parse(await fs.readFile(path.join(fuseRunDir(inst.id), 'diverged.json'), 'utf8')).paths,
+        [unionPath], 'the diverged path was not recorded for teardown');
 
       // 2. THE WORKER'S BYTES SURVIVE. The claim is kept, so cc's own cache
       //    management cannot re-shape the mirror entry away — and a marked
@@ -681,6 +685,13 @@ describe('a worker inside a FUSE-union chroot: unmarked path resolution', { skip
     } finally {
       await instances.remove(inst.id);
     }
+    // 7. AND THEY SURVIVE THE SESSION: teardown copied the mirror's bytes out
+    //    before it reclaimed the run directory. The operator deletes them.
+    const recovered = fuseRecoveredDir(inst.id);
+    try {
+      assert.equal(await fs.readFile(path.join(recovered, unionPath), 'utf8'), 'WORKER BYTES\n',
+        'teardown destroyed the only copy of what the worker wrote');
+    } finally { await fs.rm(recovered, { recursive: true, force: true }); }
     assertNoResidue(before, runRoot, null, 'R11');
   });
 

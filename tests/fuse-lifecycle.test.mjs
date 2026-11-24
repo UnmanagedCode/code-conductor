@@ -3990,6 +3990,29 @@ describe('the boot sweep', () => {
       `the operator line carries an unfiltered note: ${line3}`);
   });
 
+  // PINS: an orphaned run dir whose `diverged.json` lists a file is RESCUED by
+  // the boot sweep — the bytes reach `recovered/` before the reclaim — and the
+  // operator line is printed exactly once.
+  // DIES UNDER: the sweep path skipping the rescue (the bytes are gone); the
+  // line printing twice (the sweep's `cc-fuse: ` events filter picking up the
+  // `cc-fuse rescue:` note).
+  test('BS-rescue: an orphaned run dir with diverged.json is rescued, and said once', async () => {
+    const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const { fuseRecoveredDir } = await import('../src/systems/fuse/plan.ts');
+    const id = randomUUID();
+    const dir = await seedEntry(id);
+    await fs.mkdir(path.join(dir, 'mirror', 'srv', 'app'), { recursive: true });
+    await fs.writeFile(path.join(dir, 'mirror', 'srv', 'app', 'a.txt'), 'ONLY COPY');
+    await fs.writeFile(path.join(dir, 'diverged.json'), JSON.stringify({ schema: 1, paths: ['/srv/app/a.txt'] }));
+    const warned = [];
+    const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+    const report = reports.find(r => r.instanceId === id);
+    assert.equal(report.removedRunDir, true, JSON.stringify(report.notes));
+    assert.equal(await fs.readFile(path.join(fuseRecoveredDir(id), 'srv', 'app', 'a.txt'), 'utf8'), 'ONLY COPY');
+    assert.equal(warned.filter(w => w.includes('cc-fuse rescue:')).length, 1, warned.join(' | '));
+    await fs.rm(fuseRecoveredDir(id), { recursive: true, force: true });
+  });
+
   // PINS: a dead entry is reclaimed and reported. An instance id is a fresh
   // uuid per process, so everything here at boot is dead by construction.
   test('reclaims a dead record and says what it did', async () => {
@@ -4027,7 +4050,7 @@ describe('the boot sweep', () => {
     const live = await seedEntry(liveId);
     const dead = await seedEntry(deadId);
     const driver = fakeDriver();
-    const reports = await sweepFuseSessions({ driver, scan: emptyScan, liveIds: [liveId], log: { warn() {} } });
+    const reports = await sweepFuseSessions({ driver, scan: emptyScan, liveIds: () => [liveId], log: { warn() {} } });
     assert.deepEqual(reports.map(r => r.instanceId), [deadId], 'the wrong set of sessions was swept');
     await fs.stat(path.join(live, 'mount.json'));
     assert.equal(await fs.stat(dead).then(() => true, () => false), false, 'the dead session survived the sweep');
@@ -4091,6 +4114,453 @@ describe('the boot sweep', () => {
       assert.deepEqual(await sweepFuseSessions({ driver: fakeDriver(), log: { warn: (...a) => warned.push(a.join(' ')) } }), []);
       assert.deepEqual(warned, []);
     } finally { process.env.PROJECTS_ROOT = saved; }
+  });
+});
+
+// ── THE DIVERGED-BYTES RESCUE ───────────────────────────────────────────────
+// A failed push leaves the worker's only copy in `<rundir>/mirror/<p>` and the
+// control server lists `p` in `<rundir>/diverged.json`. Teardown copies those
+// bytes to `<store>/systems/fuse/recovered/<runDirName>/<p>` BEFORE it reclaims
+// the run directory — and keeps the directory (as a wedge) when a copy fails.
+describe('the diverged-bytes rescue', () => {
+  let prev;
+  before(async () => {
+    prev = process.env.PROJECTS_ROOT;
+    process.env.PROJECTS_ROOT = path.join(await mkdtemp('cc-fuse-rescue-'), 'projects');
+  });
+  after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
+
+  const plan = () => import('../src/systems/fuse/plan.ts');
+  // A run dir with a clean verdict (no live pids), mirror files and a record.
+  const seed = async ({ files = {}, listed = Object.keys(files), record = true } = {}) => {
+    const { rundir, record: rec } = await seedRun();
+    for (const [p, bytes] of Object.entries(files)) {
+      const f = path.join(rec.mirror, p);
+      await fs.mkdir(path.dirname(f), { recursive: true });
+      await fs.writeFile(f, bytes);
+    }
+    if (record) await fs.writeFile(path.join(rundir, 'diverged.json'), JSON.stringify({ schema: 1, paths: listed }));
+    return { rundir, rec, name: path.basename(rundir) };
+  };
+  const tree = async (dir, base = dir) => {
+    const out = [];
+    for (const e of await fs.readdir(dir, { withFileTypes: true }).catch(() => [])) {
+      const f = path.join(dir, e.name);
+      if (e.isDirectory()) out.push(...await tree(f, base));
+      else out.push(path.relative(base, f));
+    }
+    return out.sort();
+  };
+  const run = async (rundir, driver = fakeDriver()) => {
+    const warned = [], emitted = [];
+    const report = await runTeardown({
+      rundir, driver, scan: driver.scan,
+      log: { warn: (...a) => warned.push(a.join(' ')) }, emit: (ev) => emitted.push(ev),
+    });
+    return { report, warned, emitted };
+  };
+  const cleanStore = async () => {
+    const { fuseRecoveredRoot } = await plan();
+    await fs.rm(fuseRecoveredRoot(), { recursive: true, force: true });
+  };
+
+  // PINS: a clean teardown copies each LISTED diverged file out before the
+  // reclaim, says so on the report, the session stream and the operator log,
+  // and copies nothing else.
+  // DIES UNDER: no rescue (the file is absent); copying the whole mirror (b.txt
+  // appears); rescuing after the reclaim (the mirror is gone); omitting the log
+  // or the emit.
+  test('RS1: a clean teardown copies each listed diverged file out before reclaiming', async () => {
+    const { fuseRecoveredDir } = await plan();
+    const { rundir, name } = await seed({ files: { '/srv/app/a.txt': 'WORKER', '/srv/app/b.txt': 'NOT LISTED' }, listed: ['/srv/app/a.txt'] });
+    const { report, warned, emitted } = await run(rundir);
+    const at = path.join(fuseRecoveredDir(name), 'srv', 'app', 'a.txt');
+    assert.equal(await fs.readFile(at, 'utf8'), 'WORKER');
+    assert.deepEqual(await tree(fuseRecoveredDir(name)), [path.join('srv', 'app', 'a.txt')], 'something besides the listed file was copied');
+    assert.deepEqual(report.rescued, [{ path: '/srv/app/a.txt', at }]);
+    assert.deepEqual(report.rescueFailed, []);
+    assert.equal(report.removedRunDir, true, JSON.stringify(report.notes));
+    const note = report.notes.find(n => n.startsWith('cc-fuse rescue:'));
+    assert.ok(note && note.includes(fuseRecoveredDir(name)), JSON.stringify(report.notes));
+    assert.ok(warned.includes(note), 'the operator log did not get the rescue line');
+    assert.ok(emitted.some(e => e.data?.line === note), 'the session stream did not get the rescue line');
+    await cleanStore();
+  });
+
+  // PINS: no diverged record means nothing is created under `recovered/`.
+  // DIES UNDER: the rescue dir being created eagerly.
+  test('RS2: no record, and an empty record, create nothing under recovered/', async () => {
+    const { fuseRecoveredRoot } = await plan();
+    await cleanStore();
+    const a = await seed({ record: false });
+    assert.equal((await run(a.rundir)).report.removedRunDir, true);
+    const b = await seed({ listed: [] });
+    assert.equal((await run(b.rundir)).report.removedRunDir, true);
+    await assert.rejects(() => fs.stat(fuseRecoveredRoot()), { code: 'ENOENT' }, 'recovered/ was created with nothing to put in it');
+  });
+
+  // PINS: a copy that fails KEEPS the run dir as a wedge — the mirror holds the
+  // only copy — and the wedge record and line say why.
+  // DIES UNDER: reclaiming despite the failure (the mirror is gone); not
+  // setting `wedged` (no `wedged:true` record, no `not copied out`).
+  test('RS3: a failed copy keeps the run dir as a wedge', async () => {
+    const { fuseRecoveredRoot } = await plan();
+    await cleanStore();
+    await fs.mkdir(path.dirname(fuseRecoveredRoot()), { recursive: true });
+    await fs.writeFile(fuseRecoveredRoot(), 'a file where the directory should be');   // ENOTDIR on any uid
+    try {
+      const { rundir, rec } = await seed({ files: { '/srv/app/a.txt': 'WORKER' } });
+      const { report, warned } = await run(rundir);
+      assert.equal(report.wedged, true);
+      assert.equal(report.removedRunDir, false);
+      assert.equal(await fs.readFile(path.join(rec.mirror, 'srv', 'app', 'a.txt'), 'utf8'), 'WORKER', 'the only copy was destroyed');
+      assert.equal(JSON.parse(await fs.readFile(path.join(rundir, 'mount.json'), 'utf8')).wedged, true);
+      assert.deepEqual(report.rescueFailed.map(f => f.path), ['/srv/app/a.txt']);
+      assert.ok(warned.some(w => w.includes('not copied out')), warned.join(' | '));
+    } finally { await cleanStore(); }
+  });
+
+  // PINS: a WEDGED verdict attempts no rescue — the mirror stays where it is.
+  // DIES UNDER: the rescue running ahead of, or regardless of, the verdict.
+  test('RS4: a wedged verdict attempts no rescue', async () => {
+    const { fuseRecoveredRoot } = await plan();
+    await cleanStore();
+    const { rundir, rec } = await seed({ files: { '/srv/app/a.txt': 'WORKER' } });
+    const procs = { [DAEMON]: { starttime: DAEMON_START, state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' } };
+    const driver = fakeDriver({ procs, undead: new Set([DAEMON]) });
+    const { report } = await run(rundir, driver);
+    assert.equal(report.wedged, true);
+    await assert.rejects(() => fs.stat(fuseRecoveredRoot()), { code: 'ENOENT' });
+    assert.equal(await fs.readFile(path.join(rec.mirror, 'srv', 'app', 'a.txt'), 'utf8'), 'WORKER');
+  });
+
+  // PINS: a record entry can never read, or write, outside the mirror and the
+  // rescue dir; a symlink entry is reported by its target and never recreated.
+  // DIES UNDER: dropping the `withinPosix` check (the `..` entry copies
+  // OUTSIDE); dropping the ancestor `realpath` check (the outside `x` is
+  // copied); recreating symlinks (a link appears under recovered/).
+  test('RS5: path safety — no escape through `..`, a symlinked ancestor or a symlink entry', async () => {
+    const { fuseRecoveredDir } = await plan();
+    const { rundir, rec, name } = await seed({
+      files: { '/srv/app/ok.txt': 'FINE' },
+      listed: ['/../../escape.txt', '/srv/app/link/x', '/srv/app/sl', '/srv/app/ok.txt'],
+    });
+    await fs.writeFile(path.join(path.dirname(path.dirname(rec.mirror)), 'escape.txt'), 'OUTSIDE ESCAPE');
+    const outside = await mkdtemp('cc-fuse-outside-');
+    await fs.writeFile(path.join(outside, 'x'), 'OUTSIDE X');
+    await fs.symlink(outside, path.join(rec.mirror, 'srv', 'app', 'link'));
+    await fs.symlink('target', path.join(rec.mirror, 'srv', 'app', 'sl'));
+    const { report } = await run(rundir);
+    const copied = await tree(fuseRecoveredDir(name));
+    assert.deepEqual(copied, [path.join('srv', 'app', 'ok.txt')], `the rescue wrote ${JSON.stringify(copied)}`);
+    assert.deepEqual(report.rescueFailed.map(f => f.path).sort(), ['/../../escape.txt', '/srv/app/link/x']);
+    assert.equal(report.wedged, true, 'a refused entry must keep the run dir');
+    const note = report.notes.find(n => n.startsWith('cc-fuse rescue:') && n.includes('/srv/app/sl'));
+    assert.ok(note && note.includes('target'), `the symlink's target is not in the note: ${JSON.stringify(report.notes)}`);
+    assert.equal((await fs.lstat(path.join(fuseRecoveredDir(name), 'srv', 'app', 'sl')).catch(() => null)), null, 'a symlink was recreated');
+    await cleanStore();
+  });
+
+  // PINS: a copy NEVER overwrites. Same bytes already there → done, no suffix
+  // (a retry is idempotent); different bytes → `.1`, the original untouched.
+  // DIES UNDER: overwriting (the original changes); a skip that is not
+  // idempotent (a `.1` appears for the same bytes); never advancing past `.1`.
+  test('RS6: never overwrite — same bytes are done, different bytes take a suffix', async () => {
+    const { fuseRecoveredDir } = await plan();
+    const dstOf = (name) => path.join(fuseRecoveredDir(name), 'srv', 'app', 'a.txt');
+    const stage = async (existing) => {
+      const s = await seed({ files: { '/srv/app/a.txt': 'NEW' } });
+      await fs.mkdir(path.dirname(dstOf(s.name)), { recursive: true });
+      for (const [suffix, bytes] of Object.entries(existing)) await fs.writeFile(dstOf(s.name) + suffix, bytes);
+      return s;
+    };
+    const same = await stage({ '': 'NEW' });
+    const r1 = (await run(same.rundir)).report;
+    assert.deepEqual(r1.rescued.map(r => r.at), [dstOf(same.name)]);
+    assert.deepEqual(await tree(fuseRecoveredDir(same.name)), [path.join('srv', 'app', 'a.txt')], 'identical bytes produced a suffixed copy');
+
+    const diff = await stage({ '': 'OLD' });
+    const r2 = (await run(diff.rundir)).report;
+    assert.equal(await fs.readFile(dstOf(diff.name), 'utf8'), 'OLD', 'an existing copy was overwritten');
+    assert.equal(await fs.readFile(dstOf(diff.name) + '.1', 'utf8'), 'NEW');
+    assert.deepEqual(r2.rescued.map(r => r.at), [dstOf(diff.name) + '.1']);
+
+    const again = await stage({ '': 'OLD', '.1': 'OLDER' });
+    const r3 = (await run(again.rundir)).report;
+    assert.equal(await fs.readFile(dstOf(again.name) + '.2', 'utf8'), 'NEW');
+    assert.equal(await fs.readFile(dstOf(again.name) + '.1', 'utf8'), 'OLDER', 'an existing suffixed copy was overwritten');
+    assert.deepEqual(r3.rescued.map(r => r.at), [dstOf(again.name) + '.2']);
+    const retry = await stage({ '': 'OLD', '.1': 'NEW' });
+    assert.deepEqual((await run(retry.rundir)).report.rescued.map(r => r.at), [dstOf(retry.name) + '.1']);
+    assert.equal(await fs.stat(dstOf(retry.name) + '.2').catch(() => null), null, 'a retry made a further suffix');
+    await cleanStore();
+  });
+
+  // PINS: an unreadable mirror file is opened up and copied (the mirror is
+  // cc's own and about to be deleted).
+  // DIES UNDER: no chmod-and-retry (the copy fails and the run dir is kept).
+  test('RS7: a mode-0 mirror file is copied', {
+    skip: process.getuid?.() === 0 && 'root bypasses DAC, so mode 0 constrains nothing',
+  }, async () => {
+    const { fuseRecoveredDir } = await plan();
+    const { rundir, rec, name } = await seed({ files: { '/srv/app/a.txt': 'LOCKED' } });
+    await fs.chmod(path.join(rec.mirror, 'srv', 'app', 'a.txt'), 0);
+    const { report } = await run(rundir);
+    assert.equal(await fs.readFile(path.join(fuseRecoveredDir(name), 'srv', 'app', 'a.txt'), 'utf8'), 'LOCKED', JSON.stringify(report.notes));
+    assert.equal(report.removedRunDir, true);
+    await cleanStore();
+  });
+});
+
+// ── THE RUNTIME SWEEP ───────────────────────────────────────────────────────
+describe('the runtime sweep', () => {
+  let prev, runRoot;
+  before(async () => {
+    prev = process.env.PROJECTS_ROOT;
+    process.env.PROJECTS_ROOT = path.join(await mkdtemp('cc-fuse-rtsweep-'), 'projects');
+    const { fuseRunRoot } = await import('../src/systems/fuse/plan.ts');
+    runRoot = fuseRunRoot();
+  });
+  after(() => { if (prev === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prev; });
+
+  const emptyScan = async () => ({ ok: true, raw: '' });
+  const quiet = { warn() {} };
+  const seedDead = async (id, record = {}) => {
+    const dir = path.join(runRoot, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'mount.json'), JSON.stringify({
+      schema: 1, stage: 'mounted', instanceId: id, ccBootId: 'old', rundir: dir,
+      root: path.join(dir, 'root'), mirror: path.join(dir, 'mirror'), fusectl: path.join(dir, 'fusectl'),
+      nsMntId: NS, bootstrapPid: 0, bootstrapStart: '', anchorPid: 0, anchorStart: '',
+      daemonPid: 0, daemonStart: '', minor: '', spawnedAt: 1, mountedAt: 2, ...record,
+    }));
+    return dir;
+  };
+  const planFor = (id) => {
+    const rundir = path.join(runRoot, id);
+    return {
+      instanceId: id, rundir,
+      root: path.join(rundir, 'root'), mirror: path.join(rundir, 'mirror'),
+      fusectl: path.join(rundir, 'fusectl'), pinsPath: path.join(rundir, 'pins.txt'),
+      intentPath: path.join(rundir, 'intent.json'), recordPath: path.join(rundir, 'mount.json'),
+      daemonLog: path.join(rundir, 'daemon.log'),
+      planEnvPath: path.join(rundir, 'env.plan.sh'), workerEnvPath: path.join(rundir, 'env.worker.sh'),
+      eventLog: path.join(rundir, 'events.log'),
+      divergedRecordPath: path.join(rundir, 'diverged.json'), recoveredDir: path.join(rundir, '..', 'unused-recovered'),
+      controlSock: path.join(rundir, 'control.sock'),
+      markPath: '/usr/local/bin/claude', cwdInside: '/srv/app', mountOpts: 'o', tiers: [], pinsText: '# pins\n',
+      uid: 1000, gid: 1000, sourceOverrideRoot: '', tracePath: '',
+    };
+  };
+  const exists = (f) => fs.stat(f).then(() => true, () => false);
+  const tick = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
+  const wedgedShape = () => {
+    const procs = { 7101: { starttime: '710100', state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' } };
+    const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([7101]) });
+    return driver;
+  };
+
+  // PINS: a dead dir is reclaimed and a live one is left untouched.
+  // DIES UNDER: ignoring `liveIds` (the live dir is reported and removed).
+  test('RT1: a dead dir is reclaimed, a live one is not touched', async () => {
+    const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
+    const liveId = randomUUID(), deadId = randomUUID();
+    const live = await seedDead(liveId), dead = await seedDead(deadId);
+    const reports = await requestFuseSweep({ liveIds: () => [liveId], driver: fakeDriver(), scan: emptyScan, log: quiet });
+    assert.deepEqual(reports.map(r => r.instanceId), [deadId]);
+    assert.equal(await exists(dead), false);
+    assert.equal(await exists(path.join(live, 'mount.json')), true);
+    await fs.rm(live, { recursive: true, force: true });
+  });
+
+  // PINS: `liveIds` is read PER ENTRY, inside the run dir's lock — an instance
+  // registered after the readdir but before this entry's turn is still seen. The
+  // lock is held by the test so the sweep must wait; `liveIds` must not have been
+  // called while it waits.
+  // DIES UNDER: reading `liveIds` once before the readdir (the call count is
+  // non-zero while the sweep waits, and the stale read sweeps the dir).
+  test('RT1b: liveIds is read per entry, under the lock', async () => {
+    const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
+    const { fuseRunDirLock } = await import('../src/systems/fuse/session.ts');
+    const id = randomUUID();
+    const dir = await seedDead(id);
+    let live = [], calls = 0;
+    let release;
+    const held = fuseRunDirLock.run(dir, () => new Promise(r => { release = r; }));
+    const sweep = requestFuseSweep({ liveIds: () => { calls++; return live; }, driver: fakeDriver(), scan: emptyScan, log: quiet });
+    await tick(50);
+    assert.equal(calls, 0, 'liveIds was read before the entry had its turn');
+    live = [id];
+    release(); await held;
+    assert.deepEqual(await sweep, [], 'the entry registered while the sweep waited was swept');
+    assert.equal(await exists(path.join(dir, 'mount.json')), true);
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // PINS: a dir whose FuseSession has prepared is never swept, whatever
+  // `liveIds` says.
+  // DIES UNDER: dropping the `fuseRunDirActive` check (the dir is reported and
+  // its intent and socket are destroyed).
+  test('RT2: a prepared session’s dir is never swept', async () => {
+    const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
+    const id = randomUUID();
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: planFor(id), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    try {
+      await s.prepare();
+      const reports = await requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan: emptyScan, log: quiet });
+      assert.deepEqual(reports.filter(r => r.instanceId === id), []);
+      assert.equal(await exists(path.join(runRoot, id, 'intent.json')), true);
+      assert.equal(await exists(path.join(runRoot, id, 'control.sock')), true);
+    } finally { await s.teardown(); }
+  });
+
+  // PINS: the sweep and `prepare()` on ONE dir are mutually exclusive: a
+  // prepare that starts while the sweep is mid-teardown waits for it, so the
+  // sweep's reclaim cannot delete what prepare just made.
+  // DIES UNDER: `#exclusive` not taking `fuseRunDirLock`; the sweep's body
+  // running outside the lock (intent.json / control.sock are gone).
+  test('RT3: the sweep and prepare() on one dir are mutually exclusive', async () => {
+    const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
+    const id = randomUUID();
+    const dir = path.join(runRoot, id);
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, 'intent.json'), JSON.stringify({ schema: 1, instanceId: id, ccBootId: 'old', rundir: dir, root: path.join(dir, 'root'), mirror: path.join(dir, 'mirror'), fusectl: path.join(dir, 'fusectl'), spawnedAt: 1 }));
+    let enter, release;
+    const entered = new Promise(r => { enter = r; });
+    const gate = new Promise(r => { release = r; });
+    const scan = async () => { enter(); await gate; return { ok: true, raw: '' }; };
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: planFor(id), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    const sweep = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+    try {
+      await entered;
+      const prepared = s.prepare();
+      await tick();
+      release();
+      const [reports] = await Promise.all([sweep, prepared]);
+      assert.deepEqual(reports.map(r => r.instanceId), [id]);
+      assert.equal(await exists(path.join(dir, 'intent.json')), true, 'the sweep reclaimed what prepare() made');
+      assert.equal(await exists(path.join(dir, 'control.sock')), true);
+    } finally { release(); await s.teardown(); }
+  });
+
+  // PINS: a runtime sweep is never concurrent with the boot sweep, and requests
+  // made while one is queued share it.
+  // DIES UNDER: no shared tail (the runtime scan is called before the boot
+  // sweep is released); no coalescing (the two promises differ).
+  test('RT4: never concurrent with the boot sweep, and requests coalesce', async () => {
+    const { requestFuseSweep, sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const first = await seedDead(randomUUID());
+    let enter, release;
+    const entered = new Promise(r => { enter = r; });
+    const gate = new Promise(r => { release = r; });
+    const bootScan = async () => { enter(); await gate; return { ok: true, raw: '' }; };
+    const boot = sweepFuseSessions({ driver: fakeDriver(), scan: bootScan, log: quiet });
+    await entered;
+    const second = await seedDead(randomUUID());   // appears after the boot sweep's readdir
+    let runtimeScans = 0;
+    const scan = async () => { runtimeScans++; return { ok: true, raw: '' }; };
+    const a = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+    const b = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+    assert.equal(a, b, 'a request while one is queued did not join it');
+    await tick();
+    assert.equal(runtimeScans, 0, 'the runtime sweep ran while the boot sweep was still going');
+    release();
+    await boot; await a;
+    assert.ok(runtimeScans > 0, 'the runtime sweep never ran, so nothing above was a test');
+    assert.equal(await exists(first), false);
+    assert.equal(await exists(second), false);
+  });
+
+  // PINS: the orphan-process backstop does NOT run at runtime — it would
+  // SIGKILL a live session mid-handshake. The same input to the boot sweep does.
+  // DIES UNDER: the backstop running at runtime (a `signal` is recorded).
+  test('RT5: no orphan backstop at runtime, and the boot sweep has one', async () => {
+    const { requestFuseSweep, sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const id = randomUUID();
+    const rundir = path.join(runRoot, id);         // never created: the record pass has nothing here
+    await fs.mkdir(runRoot, { recursive: true });
+    const scan = async () => ({ ok: true, raw: `903\t999\tmnt:[9]\t${id}\t${rundir}` });
+    const mk = () => fakeDriver({ procs: { 903: { starttime: '999', state: 'S' } }, mounts: { 903: [] } });
+    const runtime = mk();
+    await requestFuseSweep({ liveIds: () => [], driver: runtime, scan, log: quiet });
+    assert.deepEqual(runtime.calls.filter(c => c[0] === 'signal'), [], 'the runtime sweep signalled an orphan');
+    const boot = mk();
+    await sweepFuseSessions({ driver: boot, scan, log: quiet });
+    assert.ok(boot.calls.some(c => c[0] === 'signal' && c[1] === 903), 'the control (boot sweep) never signalled, so the arm above is vacuous');
+  });
+
+  // PINS: the runtime sweep does not harvest events — each dir was harvested by
+  // its own teardown or the boot sweep, and a retry would append duplicates.
+  // DIES UNDER: `harvest` not passed through, or ignored (events.log appears).
+  test('RT6: no event harvest at runtime', async () => {
+    const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
+    const { fuseEventStore } = await import('../src/systems/fuse/plan.ts');
+    const id = randomUUID();
+    const dir = await seedDead(id, { daemonPid: 7101, daemonStart: '710100', minor: '5' });
+    await fs.writeFile(path.join(dir, 'events.log'), 'deny\tgetattr\t/lib/x/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n');
+    const driver = wedgedShape();
+    const reports = await requestFuseSweep({ liveIds: () => [], driver, scan: driver.scan, log: quiet });
+    assert.equal(reports.find(r => r.instanceId === id)?.wedged, true, 'the fixture is not wedged, so the arm proves nothing');
+    assert.equal(await exists(fuseEventStore()), false, 'the runtime sweep harvested a run dir');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // PINS: a persistent wedge is reported ONCE at runtime; the boot sweep still
+  // reports it.
+  // DIES UNDER: no dedupe (the second runtime sweep warns); the boot sweep
+  // deduping (it warns nothing).
+  test('RT7: a persistent wedge is reported once at runtime, and again at boot', async () => {
+    const { requestFuseSweep, sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
+    const id = randomUUID();
+    const dir = await seedDead(id, { daemonPid: 7101, daemonStart: '710100', minor: '5' });
+    const sweep = async (fn) => {
+      const warned = [];
+      const driver = wedgedShape();
+      await fn({ driver, scan: driver.scan, log: { warn: (...a) => warned.push(a.join(' ')) } });
+      return warned.filter(w => w.includes(id));
+    };
+    const one = await sweep((o) => requestFuseSweep({ liveIds: () => [], ...o }));
+    assert.ok(one.length > 0, 'the first runtime sweep said nothing about a wedge');
+    assert.deepEqual(await sweep((o) => requestFuseSweep({ liveIds: () => [], ...o })), [], 'the same wedge was reported again');
+    assert.ok((await sweep((o) => sweepFuseSessions(o))).length > 0, 'the boot sweep stayed quiet');
+    await fs.rm(dir, { recursive: true, force: true });
+  });
+
+  // PINS: `afterTeardown` fires once per REAL teardown, and after the run dir's
+  // lock is released (so the sweep it starts can take the same key).
+  // DIES UNDER: calling it on `alreadyTornDown` (count 2); calling it inside
+  // `#exclusive` (the lock is still held when it runs).
+  test('RT8: afterTeardown fires once per real teardown, after the lock is released', async () => {
+    const { fuseRunDirLock } = await import('../src/systems/fuse/session.ts');
+    const id = randomUUID();
+    const d = fakeDriver();
+    let count = 0, held = null, hook = null;
+    const s = new FuseSession({
+      plan: planFor(id), ccBootId: 'b', driver: d, scan: d.scan,
+      afterTeardown: () => { count++; held = fuseRunDirLock.size; hook = fuseRunDirLock.run(path.join(runRoot, id), async () => 'ran'); },
+    });
+    await s.teardown();
+    await s.teardown();
+    await tick();
+    assert.equal(count, 1, 'afterTeardown did not fire exactly once');
+    assert.equal(held, 0, 'afterTeardown ran while the run dir lock was still held');
+    assert.equal(await hook, 'ran');
+  });
+
+  // PINS: the manager's runtime sweep keys liveness on `byId`.
+  // DIES UNDER: the manager passing an empty or stale `liveIds`.
+  test('RT9: the manager’s runtime sweep spares the instances in byId', async () => {
+    const liveId = randomUUID(), deadId = randomUUID();
+    const live = await seedDead(liveId), dead = await seedDead(deadId);
+    const mgr = Object.create(InstanceManager.prototype);
+    Object.assign(mgr, { byId: new Map([[liveId, {}]]) });
+    const reports = await mgr._afterFuseTeardown({ driver: fakeDriver(), scan: emptyScan, log: quiet });
+    assert.deepEqual(reports.map(r => r.instanceId), [deadId]);
+    assert.equal(await exists(dead), false);
+    assert.equal(await exists(path.join(live, 'mount.json')), true);
+    await fs.rm(live, { recursive: true, force: true });
   });
 });
 
