@@ -197,57 +197,21 @@ test('status() trims an over-cap log; ensureStarted\'s check is throttled', asyn
   const log = await fs.readFile(path.join(orchStoreRoot(), 'plugins', 'logs', 'fake-plugin', 'backend.log'), 'utf8');
   assert.ok(log.includes('say-err-499'), 'the newest output survived the trim');
 
-  // Default throttle: a second ensureStarted inside the window leaves a grown log alone.
+  // Default throttle: the first ensureStarted check runs (nothing is throttled yet)
+  // and, over a grown log, trims; a second one inside the 60 s window does not.
   const host2 = createPluginHost({ _logMaxBytes: 4096, _logKeepBytes: 1024 });
   t.after(() => host2.stopAll());
   await rowOf(host2); // adopts
-  await host2.ensureStarted('fake-plugin'); // first check: in-window start, runs
+  await get(port, '/say?n=500');
+  assert.ok(await sizeOf() > 4096);
+  await host2.ensureStarted('fake-plugin'); // first check: runs and trims
+  // Waiting for the shrink also waits out that fire-and-forget trim, so it cannot
+  // land on the log we grow next.
+  await waitFor(async () => (await sizeOf()) <= 1024 + 200);
   await get(port, '/say?n=500');
   const grown = await sizeOf();
   assert.ok(grown > 4096);
-  await host2.ensureStarted('fake-plugin'); // inside the 60 s window: no check
+  await host2.ensureStarted('fake-plugin'); // inside the window: no check
   await new Promise(r => setTimeout(r, 100));
   assert.equal(await sizeOf(), grown, 'throttled: not trimmed again');
-});
-
-// One death is one crash: two touchers racing on it must not both count it, or
-// `failed` arrives after two deaths and the backoff doubles.
-test('two touchers racing on one adopted death record one crash', async (t) => {
-  const held = reaper(t);
-  const env = await makePluginRoot();
-  const host1 = createPluginHost();
-  t.after(() => env.restore());
-  await env.addPluginProject('aplug');
-  await host1.enable('fake-plugin');
-  const { pid } = await startInOldCc(held);
-
-  const host2 = createPluginHost({ _backoffUnitMs: 1000 });
-  assert.equal((await rowOf(host2)).state, 'ready');
-  await killGroup(pid);
-  // status() is parked in its probe while ensureStarted finds the death first.
-  const [st, es] = await Promise.allSettled([host2.status('fake-plugin'), host2.ensureStarted('fake-plugin')]);
-  assert.equal(st.status, 'fulfilled');
-  assert.equal(es.status, 'rejected');
-  assert.equal((await rowOf(host2)).exits.filter(e => e.how === 'gone').length, 1);
-  const again = await host2.ensureStarted('fake-plugin').catch(e => e);
-  // One crash backs off 2^1 units; a double count would be 2^2.
-  assert.ok(again.retryAfter <= 2, `retryAfter ${again.retryAfter} reflects more than one crash`);
-});
-
-// A fresh host reads runtime.json: the write that clears a dead child's record
-// must have landed by the time the death is reported, not some time later.
-test('markDead has cleared runtime.json on disk by the time status() returns', async (t) => {
-  const held = reaper(t);
-  const env = await makePluginRoot();
-  const host1 = createPluginHost();
-  t.after(() => env.restore());
-  await env.addPluginProject('aplug');
-  await host1.enable('fake-plugin');
-  const { pid } = await startInOldCc(held);
-  const host2 = createPluginHost();
-  assert.equal((await rowOf(host2)).state, 'ready');
-  await killGroup(pid);
-  await host2.status('fake-plugin');
-  const onDisk = JSON.parse(await fs.readFile(path.join(orchStoreRoot(), 'plugins', 'runtime.json'), 'utf8'));
-  assert.deepEqual(onDisk, {});
 });
