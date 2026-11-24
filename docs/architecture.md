@@ -245,7 +245,9 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   │   │                                     # <iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>
 │   │   │                                     #   \t<suggested list>\t<suggested entry>,
 │   │   │                                     # the last two for `deny`/`unpinned-fail-closed` rows only (a pin does
-│   │   │                                     # not fix an `unmarked-host-served` row). Append-only, never rotated.
+│   │   │                                     # not fix an `unmarked-host-served` row). Over fuseEventStoreMaxBytes() (CC_FUSE_EVENTS_MAX_BYTES)
+│   │   │                                     # it is renamed to events.log.1 before the next append.
+│   │   ├── events.log.1                      # the one rotated generation (fuseEventStoreRotated()), whole rows, overwritten by the next rotation
 │   │   └── run/<instanceId>/                 # ONE directory per session, named with the WHOLE instance id
 │   │       │                                 #   (`fuseRunDirName`) — an instance id is a fresh uuid per process, so
 │   │       │                                 #   anything here at boot is dead by construction.

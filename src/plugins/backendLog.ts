@@ -3,6 +3,7 @@ import path from 'node:path';
 import { orchStoreRoot } from '../projects.ts';
 import { isSlug } from '../identifiers.ts';
 import { errCode } from '../../shared/basics.ts';
+import { rotateFile } from '../logRotation.ts';
 
 // A plugin backend's stdout+stderr file. cc opens it and hands the descriptor to
 // the child as fds 1 and 2, so cc holds no pipe the child writes into: a backend
@@ -33,9 +34,7 @@ export function backendLogPaths(id: string): BackendLogPaths {
 
 // One generation is kept: the previous run's log is overwritten.
 export async function rotateBackendLog({ current, previous }: BackendLogPaths): Promise<void> {
-  await fs.mkdir(path.dirname(current), { recursive: true });
-  try { await fs.rename(current, previous); }
-  catch (e) { if (errCode(e) !== 'ENOENT') throw e; }
+  return rotateFile(current, previous);
 }
 
 // O_APPEND is load-bearing: the child's duplicated fds share this open file
@@ -74,46 +73,4 @@ export async function readLogTail(file: string, maxBytes: number, fromOffset = 0
   return { exists: true, size, text, truncated };
 }
 
-// Over `maxBytes`: keep the newest `keepBytes`, behind a marker line. Returns
-// whether it trimmed.
-//
-// Everything runs on ONE descriptor, opened 'r+' on the file as it is now:
-//  - single inode: size, tail read, truncate and rewrite all act on that one
-//    file. A start that rotates the log while a trim is in flight renames the
-//    file out from under the path, so the trim lands on the old run's file
-//    (now `backend.prev.log`) and can never truncate the new `backend.log` or
-//    put the old run's tail into it. Re-resolving the path between steps would
-//    reopen that window;
-//  - 'r+' rather than 'a+': it never creates (a missing file stays missing) and
-//    is write-capable, which truncation needs on Windows — libuv opens 'a'/'a+'
-//    with FILE_APPEND_DATA only, and SetEndOfFile requires write access.
-//
-// The child's own descriptors stay O_APPEND (openBackendLog), so after the
-// truncate its next write lands at the new end of file, never at a stale offset.
-// What our non-append fd gives up: the retained tail is written at offset 0, so
-// a line the child wrote in the gap between our truncate and our write is
-// overwritten (lost). Before, it would have survived ahead of the tail. A child
-// write racing a trim could always be lost or misplaced — a child cannot be asked
-// to cooperate — and this is the same class, with the same one-write window. A
-// racing child record longer than the rewrite can leave its suffix after the tail.
-export async function trimLog(file: string, { maxBytes, keepBytes }: { maxBytes: number; keepBytes: number }): Promise<boolean> {
-  let fh: fs.FileHandle;
-  try { fh = await fs.open(file, 'r+'); }
-  catch (e) { if (errCode(e) === 'ENOENT') return false; throw e; }
-  try {
-    const { size } = await fh.stat();
-    if (size <= maxBytes) return false;
-    const kept = Buffer.alloc(Math.min(keepBytes, size));
-    const { bytesRead } = await fh.read(kept, 0, kept.length, size - kept.length);
-    const tail = kept.subarray(0, bytesRead);
-    const marker = `[cc ${new Date().toISOString()}: log trimmed, ${size - tail.length} bytes dropped]\n`;
-    const out = Buffer.concat([Buffer.from(marker), tail]);
-    await fh.truncate(0);
-    // FileHandle.write may write less than asked: loop until the whole buffer is out.
-    for (let done = 0; done < out.length;) {
-      const { bytesWritten } = await fh.write(out, done, out.length - done, done);
-      done += bytesWritten;
-    }
-    return true;
-  } finally { await fh.close(); }
-}
+export { trimLog } from '../logRotation.ts';

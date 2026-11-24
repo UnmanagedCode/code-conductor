@@ -155,6 +155,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 - [`src/ttsModels.ts`](components/restart.md#srcttsmodelsts)
 - [`src/ttsInstall.ts`](components/restart.md#srcttsinstallts)
 - [`src/keyedQueue.ts`](components/restart.md#srckeyedqueuets)
+- [`src/logRotation.ts`](components/restart.md#srclogrotationts)
 
 ## [web.md](components/web.md) — project instructions, MCP, the web build and the web UI
 

@@ -27,7 +27,8 @@ import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import { removeOwnedTree } from './mirrorPerms.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
-import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseStoreChain } from './plan.ts';
+import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseEventStoreMaxBytes, fuseEventStoreRotated, fuseStoreChain } from './plan.ts';
+import { appendRotating } from '../../logRotation.ts';
 import { suggestPin } from './tierTable.ts';
 import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
@@ -293,10 +294,10 @@ function pinSuggestionFor(row: PolicyEventRow): { list: string; entry: string; n
   return { list: s.list ?? 'UNDECIDED', entry: s.entry, note: s.note };
 }
 
-async function harvestEvents(rundir: string, instanceId: string): Promise<PolicyEventRow[]> {
+async function harvestEvents(rundir: string, instanceId: string): Promise<{ rows: PolicyEventRow[]; notes: string[] }> {
   const text = await fsp.readFile(path.join(rundir, EVENT_LOG_NAME), 'latin1').catch(() => '');
   const rows = parsePolicyEvents(text);
-  if (rows.length === 0) return rows;
+  if (rows.length === 0) return { rows, notes: [] };
   const at = new Date().toISOString();
   const store = fuseEventStore();
   const body = rows.map((r) => {
@@ -307,12 +308,18 @@ async function harvestEvents(rundir: string, instanceId: string): Promise<Policy
     return [at, instanceId, r.kind, r.op, r.pathRaw, r.pid, r.tgid,
       r.comm.raw, r.cmdline.raw, s?.list ?? '', s?.entry ?? ''].join('\t');
   }).join('\n') + '\n';
-  await fsp.mkdir(path.dirname(store), { recursive: true }).catch(() => {});
+  const notes: string[] = [];
+  const { maxBytes, refused } = fuseEventStoreMaxBytes();
+  if (refused) notes.push(refused);
+  // Rotation happens before this append, so this session's rows are always in
+  // `fuseEventStore()` — the file `describePolicyEvents` names.
   // AS BYTES. `body` holds latin1 code units, and a string append would re-encode
   // every one past 0x7f as two UTF-8 bytes — undoing the byte fidelity the raw
   // columns exist for.
-  await fsp.appendFile(store, Buffer.from(body, 'latin1')).catch(() => {});
-  return rows;
+  try {
+    await appendRotating(store, Buffer.from(body, 'latin1'), { maxBytes, previous: fuseEventStoreRotated() });
+  } catch (e) { notes.push(`the event store could not be written: ${(e as Error).message}`); }
+  return { rows, notes };
 }
 
 // CAPPED, NEVER COUNTED, and the cap is the whole shape of the sentence: a bare
@@ -811,7 +818,8 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        `wedged` and falls through to here, and a session whose teardown threw
   //        is exactly one whose events a maintainer wants.
   try {
-    const rows = await harvestEvents(rundir, report.instanceId);
+    const { rows, notes: harvestNotes } = await harvestEvents(rundir, report.instanceId);
+    notes.push(...harvestNotes);
     report.eventPaths = [...new Set(rows.map(r => r.path))];
     const line = describePolicyEvents(rows);
     if (line) {
