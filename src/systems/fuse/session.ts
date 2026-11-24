@@ -833,8 +833,18 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        paths stay in `PENDING_DIVERGED` for the next teardown of this dir.
   const known = new Set([...(input.divergedPaths ?? []), ...(PENDING_DIVERGED.get(rundir) ?? [])]);
   if (known.size && await fsp.stat(rundir).then(() => true, () => false)) {
-    const recorded = await readDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME)).catch(() => [] as string[]);
-    if ([...known].some(p => !recorded.includes(p))) {
+    // ONLY A MISSING RECORD IS EMPTY. A present-but-unreadable one (corrupt,
+    // wrong schema, EIO) lists paths this machine cannot read back, and a rewrite
+    // with only `known` would destroy them: skip the write, park `known` in
+    // memory, and let 7c's read failure keep the dir.
+    let recorded: string[] | null = [];
+    try { recorded = await readDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME)); }
+    catch (e) {
+      recorded = null;
+      PENDING_DIVERGED.set(rundir, known);
+      notes.push(`the diverged record is unreadable and was not rewritten: ${(e as Error).message}`);
+    }
+    if (recorded && [...known].some(p => !recorded.includes(p))) {
       try {
         await writeDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME), [...recorded, ...known]);
         PENDING_DIVERGED.delete(rundir);
@@ -942,7 +952,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
         nsMntId: '', bootstrapPid: 0, bootstrapStart: '', anchorPid: 0, anchorStart: '',
         daemonPid: 0, daemonStart: '', minor: '', spawnedAt: 0, mountedAt: 0,
       } satisfies FuseMountRecord;
-      if (record || report.rescueFailed.length) {
+      if (record || report.rescueFailed.length || PENDING_DIVERGED.has(rundir)) {
         await writeJsonAtomic(recordPath, {
           ...base, wedged: true, terminalState: report.terminalState,
           residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
@@ -1140,13 +1150,28 @@ export class FuseSession {
     if (owner && owner.instanceId !== p.instanceId) {
       throw httpError(500, `FUSE_RUN_DIR_FOREIGN: ${p.rundir} belongs to instance ${owner.instanceId}, not to ${p.instanceId}; reusing it would give the two sessions ONE control socket, mirror and record set, and this launch would destroy the other's mount record`, { code: 'FUSE_RUN_DIR_FOREIGN' });
     }
+    // THE PREVIOUS LIFECYCLE'S DIVERGED PATHS ARE SECURED BEFORE ANYTHING TOUCHES
+    // THE MIRROR: the durable list and the process-level pending map are never
+    // discarded unrescued (a relaunch can reach here beside a non-wedged
+    // `mount.json` after a failed wedge write, or with the list only in memory).
+    // Copy their bytes out, then drop the list so it is not rescued twice; if the
+    // copy fails, REFUSE with the record, the pending entry and the mirror intact.
+    const pending = PENDING_DIVERGED.get(p.rundir);
+    if (pending || await fsp.lstat(p.divergedRecordPath).then(() => true, () => false)) {
+      const r = await rescueDiverged({ rundir: p.rundir, dest: p.recoveredDir, extraPaths: [...(pending ?? [])] });
+      if (r.failed.length) {
+        throw httpError(500, `FUSE_PREVIOUS_TEARDOWN_WEDGED: ${p.rundir} still holds diverged bytes that could not be copied out (${r.failed.map(x => `${x.path}: ${x.error}`).join(', ')}); refusing to reuse it`, { code: 'FUSE_PREVIOUS_TEARDOWN_WEDGED' });
+      }
+      if (r.rescued.length) {
+        try { this.#sinks.log?.warn(`cc-fuse rescue: ${r.rescued.length} diverged file(s) from the previous lifecycle of ${p.rundir} were copied to ${r.dir}: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}`); } catch { /* the log is not a reason to fail a launch */ }
+      }
+      PENDING_DIVERGED.delete(p.rundir);
+      await fsp.rm(p.divergedRecordPath, { force: true });
+    }
     // LIVE FROM HERE: past both refusals this session owns the directory, and
     // the runtime sweep must never reclaim it. Released by `#teardown`.
     ACTIVE.add(p.rundir);
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
-    // The previous lifecycle's diverged paths: its bytes were rescued or are the
-    // wedge's business (refused above), and a stale list would be rescued again.
-    await fsp.rm(p.divergedRecordPath, { force: true }).catch(() => {});
     this.record = null;
     this.#tornDown = false;
     // 0700, AND IT IS THE ENVIRONMENT FILES THAT MAKE IT MATTER. `env.plan.sh`

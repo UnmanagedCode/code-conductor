@@ -25,7 +25,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, createReadStream } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
@@ -1142,14 +1142,17 @@ describe("the write path — mode, faults and the double reconcile", () => {
       for (let i = 0; i < 400 && !server.faultAt(p); i++) await new Promise((r) => setTimeout(r, 5));
       // The reader opens in a `finally`, so a failing assertion still unblocks the
       // write and the rig's `server.close()` does not wait on it forever.
-      let text;
+      let text = '';
+      let reader = null;
+      const bounded = (pr, what) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), 5_000).unref())]);
       try {
         assert.ok(server.faultAt(p), 'the push never failed');
         assert.equal(replied, false, 'the worker was answered while the record write was still pending');
       } finally {
-        const fh = await fs.open(fifo, 'r');
-        try { text = await fh.readFile('utf8'); } finally { await fh.close(); }
+        reader = createReadStream(fifo, { encoding: 'utf8' });
+        reader.on('data', (c) => { text += c; });
       }
+      await bounded(new Promise((r, rej) => { reader.once('end', r); reader.once('error', rej); }), 'the record reaching the reader');
       assert.deepEqual(JSON.parse(text).paths, [p]);
       assert.equal((await reply).status, CCU_STATUS.REFUSED);
     });

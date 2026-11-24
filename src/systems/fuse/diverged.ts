@@ -97,9 +97,11 @@ export async function rescueDiverged(opts: { rundir: string; dest: string; extra
   const result: RescueResult = { dir: null, rescued: [], failed: [], skipped: [] };
   const record = path.join(rundir, DIVERGED_RECORD_NAME);
 
-  let paths: string[];
+  // An UNREADABLE record is still reported (so the caller keeps the dir) but
+  // does not stop the in-memory paths from being rescued.
+  let paths: string[] = [];
   try { paths = await readDivergedRecord(record); }
-  catch (e) { result.failed.push({ path: record, error: (e as Error).message }); return result; }
+  catch (e) { result.failed.push({ path: record, error: (e as Error).message }); }
   paths = [...new Set([...paths, ...(opts.extraPaths ?? [])])].sort();
 
   let realMirror: string | null | undefined;     // undefined: not resolved yet
