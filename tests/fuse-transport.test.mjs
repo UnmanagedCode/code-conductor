@@ -1123,11 +1123,11 @@ describe("the write path — mode, faults and the double reconcile", () => {
   // PINS: the diverged record is on disk BEFORE the worker sees EIO. The record
   // write's temp file is a FIFO, so the write blocks until the test reads it —
   // no production seam — and the REPLY must not arrive while it is blocked.
-  // DIES UNDER: replying before the record write completes (the reply resolves
-  // while the write is still blocked); not writing at all (the FIFO is never
-  // opened, so the read below hangs → the test's own timeout kills it).
+  // DIES UNDER: replying before the record write completes (`replied` is true
+  // while the write is still blocked); not writing at all (the FIFO read yields
+  // no record → the JSON parse fails, or the file's hang guard kills it).
   test('T12e — the diverged record is written before the REFUSED reply', async () => {
-    await rig(async ({ src, mirror, call, divergedRecord }) => {
+    await rig(async ({ src, mirror, call, server, divergedRecord }) => {
       const p = path.join(src, 'ordered.txt');
       await fs.writeFile(p, 'ORIGINAL');
       assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
@@ -1137,11 +1137,19 @@ describe("the write path — mode, faults and the double reconcile", () => {
       execFileSync('mkfifo', [fifo]);
       let replied = false;
       const reply = call(CCU_OP.DIRTY, 0, p).then((r) => { replied = true; return r; });
-      for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
-      assert.equal(replied, false, 'the worker was answered while the record write was still pending');
-      const fh = await fs.open(fifo, 'r');
+      // THE BARRIER: `#faults.set` runs synchronously before `await #persistDiverged()`,
+      // so once the fault is visible the handler is provably blocked on the FIFO write.
+      for (let i = 0; i < 400 && !server.faultAt(p); i++) await new Promise((r) => setTimeout(r, 5));
+      // The reader opens in a `finally`, so a failing assertion still unblocks the
+      // write and the rig's `server.close()` does not wait on it forever.
       let text;
-      try { text = await fh.readFile('utf8'); } finally { await fh.close(); }
+      try {
+        assert.ok(server.faultAt(p), 'the push never failed');
+        assert.equal(replied, false, 'the worker was answered while the record write was still pending');
+      } finally {
+        const fh = await fs.open(fifo, 'r');
+        try { text = await fh.readFile('utf8'); } finally { await fh.close(); }
+      }
       assert.deepEqual(JSON.parse(text).paths, [p]);
       assert.equal((await reply).status, CCU_STATUS.REFUSED);
     });

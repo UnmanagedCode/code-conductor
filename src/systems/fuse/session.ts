@@ -28,9 +28,9 @@ import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
 import { KeyedLock, removeOwnedTree } from './mirrorPerms.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
-import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseEventStoreMaxBytes, fuseEventStoreRotated, fuseRecoveredDir, fuseStoreChain, writeJsonAtomic } from './plan.ts';
+import { DIVERGED_RECORD_NAME, EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseEventStoreMaxBytes, fuseEventStoreRotated, fuseRecoveredDir, fuseStoreChain, writeJsonAtomic } from './plan.ts';
 import { appendRotating } from '../../logRotation.ts';
-import { rescueDiverged } from './diverged.ts';
+import { readDivergedRecord, rescueDiverged, writeDivergedRecord } from './diverged.ts';
 import { suggestPin } from './tierTable.ts';
 import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
@@ -49,6 +49,15 @@ export const fuseRunDirLock = new KeyedLock();
 // definition, so the runtime sweep never touches them whatever its liveness
 // source says.
 const ACTIVE = new Set<string>();
+
+// DIVERGED PATHS KNOWN ONLY IN MEMORY, per run dir: filled when a teardown learned
+// of them from the live control server but could not make them durable (the
+// `diverged.json` write failed) and has not yet rescued their bytes. A later
+// teardown of the same dir in this process — the boot or runtime sweep — unions
+// them in, so a kept dir is never reclaimed with an empty record. Cleared when
+// the durable write or the rescue succeeds. Lost with the process: a crash while
+// every durable write has failed is the one remaining way to lose the bytes.
+const PENDING_DIVERGED = new Map<string, Set<string>>();
 export function fuseRunDirActive(rundir: string): boolean { return ACTIVE.has(rundir); }
 
 export interface Deadlines {
@@ -816,6 +825,26 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     report.enumerated = false;
   }
 
+  // ── 7a. MAKE THE DIVERGED SET DURABLE, on every branch, before anything can
+  //        reclaim or keep the dir. The paths known from the live server (and
+  //        from an earlier failed attempt) may be missing from `diverged.json`
+  //        if its write failed; a best-effort rewrite means a KEPT dir carries
+  //        the list whenever any write succeeds. If it cannot be written the
+  //        paths stay in `PENDING_DIVERGED` for the next teardown of this dir.
+  const known = new Set([...(input.divergedPaths ?? []), ...(PENDING_DIVERGED.get(rundir) ?? [])]);
+  if (known.size && await fsp.stat(rundir).then(() => true, () => false)) {
+    const recorded = await readDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME)).catch(() => [] as string[]);
+    if ([...known].some(p => !recorded.includes(p))) {
+      try {
+        await writeDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME), [...recorded, ...known]);
+        PENDING_DIVERGED.delete(rundir);
+      } catch (e) {
+        PENDING_DIVERGED.set(rundir, known);
+        notes.push(`the diverged record could not be written: ${(e as Error).message}`);
+      }
+    }
+  }
+
   // ── 7b. HARVEST THE EVIDENCE BEFORE THE RECLAIM DESTROYS IT.
   //
   //        `rm -rf <rundir>` below takes the event log with it, and that log is
@@ -857,9 +886,11 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        The line's prefix is `cc-fuse rescue:` and NOT `cc-fuse: `, so the
   //        sweep's event-line filter does not print it a second time.
   if (!report.wedged) {
-    const r = await rescueDiverged({ rundir, dest: fuseRecoveredDir(path.basename(rundir)), extraPaths: input.divergedPaths });
+    const r = await rescueDiverged({ rundir, dest: fuseRecoveredDir(path.basename(rundir)), extraPaths: [...known] });
     report.rescued = r.rescued;
     report.rescueFailed = r.failed;
+    if (!r.failed.length) PENDING_DIVERGED.delete(rundir);
+    else if (known.size) PENDING_DIVERGED.set(rundir, known);
     if (r.rescued.length || r.skipped.length) {
       const line = `cc-fuse rescue: session ${report.instanceId} could not land ${r.rescued.length + r.skipped.length} file(s) on its system; `
         + (r.dir ? `their bytes are kept at ${r.dir} — delete them once handled: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}` : 'nothing was copied')
@@ -905,7 +936,12 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       // intent-only or record-less dir): `prepare()` refuses a relaunch on
       // `wedged`, and without this it would reuse the dir and truncate the kept
       // mirror.
-      const base = record ?? { schema: RECORD_SCHEMA, instanceId: report.instanceId, rundir };
+      const base = record ?? {
+        schema: RECORD_SCHEMA, stage: 'mounted' as const, instanceId: report.instanceId, ccBootId: '', rundir,
+        root: path.join(rundir, 'root'), mirror: path.join(rundir, 'mirror'), fusectl: path.join(rundir, 'fusectl'),
+        nsMntId: '', bootstrapPid: 0, bootstrapStart: '', anchorPid: 0, anchorStart: '',
+        daemonPid: 0, daemonStart: '', minor: '', spawnedAt: 0, mountedAt: 0,
+      } satisfies FuseMountRecord;
       if (record || report.rescueFailed.length) {
         await writeJsonAtomic(recordPath, {
           ...base, wedged: true, terminalState: report.terminalState,
