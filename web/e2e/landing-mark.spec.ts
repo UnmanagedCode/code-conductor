@@ -96,6 +96,8 @@ test('under reduced motion the assembly never appears and the mark has no animat
 for (const scheme of ['light', 'dark'] as const) {
   test(`the settled mark is pixel-identical to the reduced-motion mark in ${scheme} mode`, async ({ page, cc }) => {
     // Invariant: after the hand-over (its blink cancelled, the cursor shown) the mark is byte-for-byte the screenshot a reduced-motion load takes, in either theme.
+    // Both pages must run no animation when shot: a running or paused animation makes Chromium rasterise the whole mark
+    // differently (a one-pixel-edge difference, no visible one), so cancelling the blink is the normalisation, not a pause.
     const shot = async (p: Page) => mark(p).screenshot();
     const open = async (p: Page, cc_: Cc, reducedMotion: 'reduce' | 'no-preference') => {
       await p.emulateMedia({ colorScheme: scheme, reducedMotion });
@@ -116,3 +118,32 @@ for (const scheme of ['light', 'dark'] as const) {
     expect(Buffer.compare(settled, reduced)).toBe(0);
   });
 }
+
+test('the legs grow downward from their tops', async ({ page }) => {
+  // Invariant: frozen mid-grow, each leg's top edge is where its settled top is (within 0.5px) and its height is smaller than settled: the grow pivots on the leg's top, not its middle.
+  await page.emulateMedia({ reducedMotion: 'no-preference' });
+  await recordAssembly(page);
+  // Every painted shape's box in document order, with its part while assembling (the hand-over drops the attribute, the order stays).
+  const boxes = () => page.evaluate(() => [...document.querySelectorAll('[data-empty-state] svg[data-logo="mark"] path')]
+    .filter((el) => !el.closest('mask')).map((el) => { const r = el.getBoundingClientRect(); return { part: el.getAttribute('data-logo-part'), top: r.top, height: r.height }; }));
+  await page.goto('/');
+  await awaitHandOver(page);
+  const settled = await boxes();
+
+  await page.reload();
+  await page.waitForSelector('[data-logo-assemble]');
+  // Each leg's grow, paused a third of the way through its own duration.
+  await page.evaluate(() => document.getAnimations().forEach((a) => {
+    a.pause();
+    const t = a.effect!.getTiming();
+    a.currentTime = (a as CSSAnimation).animationName === 'logo-grow' ? Number(t.delay) + Number(t.duration) / 3 : Number(t.delay) + Number(t.duration);
+  }));
+  const mid = await boxes();
+  expect(mid.length, 'the same shapes before and after the hand-over').toBe(settled.length);
+  const legs = mid.flatMap((m, i) => (m.part?.startsWith('leg') ? [{ ...m, i }] : []));
+  expect(legs.length, 'fixture check: seven legs').toBe(7);
+  for (const leg of legs) {
+    expect(Math.abs(leg.top - settled[leg.i].top), `${leg.part} keeps its top`).toBeLessThanOrEqual(0.5);
+    expect(leg.height, `${leg.part} is still growing`).toBeLessThan(settled[leg.i].height);
+  }
+});

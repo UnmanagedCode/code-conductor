@@ -1,9 +1,8 @@
 // The logo's renderers on the real arts: only a blinking mark animates, and only
 // its cursor; no variant (the lockup included) ships a <style>; the pictures are named. Knockout
 // structure is pinned on a synthetic art in logoArt.test.tsx.
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render } from '@testing-library/react';
-import { vi } from 'vitest';
 import { LogoLockup, LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
 
 /** Every element under `root` (itself included) whose class names an animation. */

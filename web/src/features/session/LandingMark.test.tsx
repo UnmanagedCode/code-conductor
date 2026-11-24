@@ -17,7 +17,7 @@ const cursor = (c: HTMLElement) => svgOf(c).querySelector('[data-logo-cursor]')!
 const blinking = (c: HTMLElement) => cursor(c).classList.contains('animate-cursor-blink');
 const setConnection = (connection: 'connecting' | 'open' | 'reconnecting') => act(() => appStore.set({ connection }));
 /** The svg's markup with the per-instance mask ids (React useId) normalised. */
-const norm = (svg: Element) => svg.outerHTML.replace(/[:«»\w-]*k(\d+)/g, 'k$1').replace(/mask-id-\w+/g, '');
+const norm = (svg: Element) => svg.outerHTML.replace(/[:«»\w-]*k(\d+)/g, 'k$1');
 const END = (c: HTMLElement, animationName: string) => fireEvent.animationEnd(svgOf(c).querySelector('[data-logo-part="baton"]')!, { animationName });
 
 beforeEach(() => {
