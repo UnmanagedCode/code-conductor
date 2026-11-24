@@ -63,6 +63,7 @@ export const ENV_VARS: Readonly<Record<string, EnvVar>> = {
   CC_LOCAL_SYSTEM_REMOTE_ID: { kind: 'knob', default: null, purpose: 'Target the local provider is bound to.' },
   CC_FUSE_SOURCE_OVERRIDE_ROOT: { kind: 'knob', default: null, purpose: 'Overrides the source root the FUSE union draws from.' },
   CC_FUSE_TRACE: { kind: 'knob', default: null, purpose: '=1 turns on the FUSE daemon trace.' },
+  CC_FUSE_EVENTS_MAX_BYTES: { kind: 'knob', default: 'FUSE_EVENT_STORE_MAX_BYTES', purpose: 'Size past which the store-wide FUSE events.log rotates to events.log.1 before the next harvest.' },
   CLAUDE_BIN: { kind: 'knob', default: "'claude'", purpose: 'The claude CLI binary.' },
   CLAUDE_CODE_AUTO_COMPACT_WINDOW: { kind: 'knob', default: null, purpose: 'Compact-window override seeded onto the conductor session.' },
   CLAUDE_CODE_GIT_BASH_PATH: { kind: 'knob', default: null, purpose: 'Git for Windows bash path, searched before the default roots.' },

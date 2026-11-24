@@ -65,6 +65,28 @@ export function fuseEventStore(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', EVENT_LOG_NAME);
 }
 
+// The store's cap, checked before each harvest appends; over it, the store rotates to
+// fuseEventStoreRotated(). Tunable with CC_FUSE_EVENTS_MAX_BYTES; read per call, like the store path.
+export const FUSE_EVENT_STORE_MAX_BYTES = 8 * 1024 * 1024;
+
+// A bad value never costs a harvest its rows: it falls back to the default, and `refused`
+// carries the sentence the teardown notes, so the misconfiguration stays loud.
+export function fuseEventStoreMaxBytes(): { maxBytes: number; refused: string | null } {
+  const raw = process.env.CC_FUSE_EVENTS_MAX_BYTES;
+  if (raw === undefined || raw === '') return { maxBytes: FUSE_EVENT_STORE_MAX_BYTES, refused: null };
+  const n = Number(raw);
+  if (Number.isSafeInteger(n) && n > 0) return { maxBytes: n, refused: null };
+  return {
+    maxBytes: FUSE_EVENT_STORE_MAX_BYTES,
+    refused: `CC_FUSE_EVENTS_MAX_BYTES='${raw}' is not a positive whole number of bytes; the event store used the default cap FUSE_EVENT_STORE_MAX_BYTES (${FUSE_EVENT_STORE_MAX_BYTES})`,
+  };
+}
+
+// The one rotated generation, overwritten by the next rotation.
+export function fuseEventStoreRotated(): string {
+  return path.join(orchStoreRoot(), 'systems', 'fuse', `${EVENT_LOG_NAME}.1`);
+}
+
 export function fuseBinDir(): string {
   return path.join(orchStoreRoot(), 'systems', 'fuse', 'bin');
 }

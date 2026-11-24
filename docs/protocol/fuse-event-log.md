@@ -9,14 +9,19 @@ A **file format with real readers**, which is why it is here and not only in [co
 | | path | row |
 |---|---|---|
 | per session | `<rundir>/events.log`, written by the daemon (`CC_UNION_EVENTS`, `policy_event` in `policy.h`) | `<kind>\t<op>\t<path>\t<reason>\t<pid>\t<tgid>\t<comm>\t<cmdline>` |
-| store-wide | `orchStoreRoot()/systems/fuse/events.log` (`fuseEventStore()`), appended by `runTeardown` immediately before the run directory is reclaimed | `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>\t<suggested list>\t<suggested entry>` |
+| store-wide | `orchStoreRoot()/systems/fuse/events.log` (`fuseEventStore()`) and its one rotated generation `…/events.log.1` (`fuseEventStoreRotated()`), appended by `runTeardown` immediately before the run directory is reclaimed | `<iso8601>\t<instanceId>\t<kind>\t<op>\t<path>\t<pid>\t<tgid>\t<comm>\t<cmdline>\t<suggested list>\t<suggested entry>` |
 
 **A `#` HEADER LINE IS WRITTEN ONCE**, when the daemon opens the session log (`main()`), naming the columns and the sampling caveat. **It contains tabs**, so a parser that only tests for N non-empty fields will read it as a row: `parsePolicyEvents` (`session.ts`) and the real gate's `eventsOf` both skip lines beginning with `#`.
 
 - **Deduped on `(path, reason, tgid)`**, never on the op and never on the kind, in the daemon and in the harvest — the two keys are the same by design, or the artifacts stop being comparable. **The tgid is load-bearing**: without it the first caller to reach a path wins the row and every later one is silently dropped, so the identity columns would answer *who asked* with *whoever happened to be first*. The kind is left out because it is a **function of the reason** (set-compared against both C sources in both directions by `tests/fuse-union-policy.test.mjs`), so on any emission the daemon can produce the two keys partition identically and that choice is **unobservable**. **What that costs, named:** a defect emitting one reason under *both* kinds would collapse to a single row rather than showing two — acceptable only because the one-kind-per-reason property is checked at the **call sites**, where it is decidable, and never inferred from a row count here.
 - **The last two store columns are for `deny`/`unpinned-fail-closed` rows only** and are empty otherwise: a pin does not fix an `unmarked-host-served` row, whose path already came from the host. `suggestPin` (`src/systems/fuse/tierTable.ts`) is the mapping.
 - **PATHS ONLY, never content.** A credential path may appear in either; a credential never does.
-- **Append-only, never rotated.** The store-wide file is the only record that outlives a session.
+- **Size-capped, one rotated generation.** Before each harvest appends, a store already over `fuseEventStoreMaxBytes()` (`CC_FUSE_EVENTS_MAX_BYTES`, default `FUSE_EVENT_STORE_MAX_BYTES`) is renamed to `events.log.1`, overwriting the previous one.
+  - Rotation only happens between whole harvests, so both files start and end on whole rows: no marker line, no header. The live file can go over the cap by one harvest's rows.
+  - To read everything retained, read `events.log.1` then `events.log`; rows older than `.1` are gone. The store is still the only record that outlives a session.
+  - Concurrent teardowns in one cc are serialised per path by `appendRotating` (`src/logRotation.ts`), and the projects-root lock means one cc per store. A restart handover's brief overlap of two servers is not serialised; its worst case is a lost `.1` generation, never a split row.
+  - An invalid `CC_FUSE_EVENTS_MAX_BYTES` falls back to `FUSE_EVENT_STORE_MAX_BYTES` with a teardown note naming the variable; the rows are still stored.
+  - Any other store write failure (mkdir, stat, rename, append) becomes the teardown note `the event store could not be written: …`. That teardown's rows are then missing from the store, but its report and stderr sentence still carry them.
 - **Unstable by design**, like the rest of cc's surface: `enum ev_kind` and the reason set change with their callers.
 
 ### The identity columns

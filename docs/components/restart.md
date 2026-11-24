@@ -324,4 +324,14 @@ TTS-specific config + re-exports over `installRunner.ts` (`bin/install-piper.sh`
 
 ## `src/keyedQueue.ts`
 
-`createKeyedQueue()` returns `run(key, fn)`: a per-key promise chain, in-process. Calls on one key run one at a time in call order; different keys run concurrently; a rejection goes to its own caller and never blocks the next call; a key's entry is dropped once its tail settles. Used by `src/projectClaudeMd.ts` (one project's `CONVENTIONS.md` writes) and `src/worktrees.ts` (one project's merge hooks).
+`createKeyedQueue()` returns `run(key, fn)`: a per-key promise chain, in-process. Calls on one key run one at a time in call order; different keys run concurrently; a rejection goes to its own caller and never blocks the next call; a key's entry is dropped once its tail settles. Used by `src/projectClaudeMd.ts` (one project's `CONVENTIONS.md` writes) `src/worktrees.ts` (one project's merge hooks) and `src/logRotation.ts` (appends to one log file).
+
+## `src/logRotation.ts`
+
+Generic file mechanisms for cc-owned logs; callers own the policy (paths, caps).
+
+- `rotateFile(current, previous)`: one generation, `previous` is overwritten; creates `current`'s parent; a missing `current` is tolerated (ENOENT).
+- `trimLog(file, { maxBytes, keepBytes })`: the plugin backend log's keep-newest trim behind a marker line, on one `r+` descriptor, never creating a file.
+- `appendRotating(file, data, { maxBytes, previous })`: the size check happens before the append, `>` means strictly over, then the file is renamed to `previous` and restarts at this call's first byte. Serialised per resolved path through `createKeyedQueue`; a failure rejects to its own caller.
+- Users: `src/plugins/backendLog.ts` (`rotateBackendLog`, the `trimLog` re-export) and `harvestEvents` in `src/systems/fuse/session.ts`.
+- Pinned by `tests/log-rotation.test.mjs`.

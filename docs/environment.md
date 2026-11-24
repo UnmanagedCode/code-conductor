@@ -63,6 +63,7 @@ The registry is `ENV_VARS` in `src/env.ts`. `tests/env-registry.test.mjs` fails 
 | `WHISPER_INSTALL_SCRIPT` / `PIPER_INSTALL_SCRIPT` | Override the installer script for whisper / Piper (`scriptEnvVar` in `src/whisperInstall.ts` / `src/ttsInstall.ts`, read by `src/installRunner.ts`). |
 | `CC_FUSE_SOURCE_OVERRIDE_ROOT` | Selects the source root the FUSE union draws from instead of the session's own (`src/instances.ts`). |
 | `CC_FUSE_TRACE` | `=1` turns on the FUSE plan trace (`resolveTraceEnabled` in `src/systems/fuse/plan.ts`). |
+| `CC_FUSE_EVENTS_MAX_BYTES` | Byte size past which the store-wide FUSE event log (`fuseEventStore()`) is rotated to `events.log.1` before the next harvest appends (`fuseEventStoreMaxBytes()` in `src/systems/fuse/plan.ts`; default `FUSE_EVENT_STORE_MAX_BYTES`, 8 MiB). Read per harvest. A value that is not a positive whole number falls back to the default. The rows are still stored, and that teardown's notes name the variable. Contract: [protocol/fuse-event-log.md](protocol/fuse-event-log.md). |
 | `CC_LOCAL_SYSTEM_REMOTE_ID` | Target the `CC_LOCAL_SYSTEM_PROVIDER` provider is bound to (`LOCAL_REMOTE_ENV` in `src/systems/registry.ts`). |
 | `CLAUDE_CODE_GIT_BASH_PATH` | Git for Windows bash path, searched before the default roots (`src/platform/win32.ts`). |
 | `CLAUDE_SHELL_ENV_TIMEOUT_MS` | Timeout for capturing the user shell environment (default in `src/claudeShellEnv.ts`). |

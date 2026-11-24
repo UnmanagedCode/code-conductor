@@ -2156,6 +2156,185 @@ describe('the policy event harvest', () => {
   });
 });
 
+describe('the policy event store rotation', () => {
+  let prevRoot, prevCap;
+  before(async () => {
+    prevRoot = process.env.PROJECTS_ROOT;
+    prevCap = process.env.CC_FUSE_EVENTS_MAX_BYTES;
+    process.env.PROJECTS_ROOT = path.join(await mkdtemp('cc-fuse-rotate-'), 'projects');
+  });
+  after(() => {
+    if (prevRoot === undefined) delete process.env.PROJECTS_ROOT; else process.env.PROJECTS_ROOT = prevRoot;
+    if (prevCap === undefined) delete process.env.CC_FUSE_EVENTS_MAX_BYTES; else process.env.CC_FUSE_EVENTS_MAX_BYTES = prevCap;
+  });
+
+  // The new exports are loaded dynamically: a static named import of one that
+  // does not exist yet would fail the whole file rather than these tests.
+  const loadPlan = () => import('../src/systems/fuse/plan.ts');
+  // `fuseEventStoreRotated` is asserted by the first test; the rest only need the
+  // path, so a missing export reds them for their own reason, not a TypeError.
+  const rotated = (plan) => plan.fuseEventStoreRotated?.() ?? `${plan.fuseEventStore()}.1`;
+  async function resetStore() {
+    const plan = await loadPlan();
+    await fs.rm(plan.fuseEventStore(), { force: true, recursive: true });
+    await fs.rm(rotated(plan), { force: true, recursive: true });
+    return plan;
+  }
+  // A session event log in the daemon's own shape: header + deny rows.
+  const sessionEvents = (tag, n = 2) => [
+    '# cc-union events v2\tkind\top\tpath\treason\tpid\ttgid\tcomm\tcmdline',
+    ...Array.from({ length: n }, (_, i) => `deny\tgetattr\t/rot/${tag}/f${i}\tunpinned-fail-closed\t42\t42\tclaude\tclaude\\0--print`),
+  ].join('\n') + '\n';
+  const sessionPaths = (tag, n = 2) => Array.from({ length: n }, (_, i) => `/rot/${tag}/f${i}`);
+  // A store row (11 columns) as an earlier harvest wrote it.
+  const storeRow = (i) => `2026-01-01T00:00:00.000Z\told-${i}\tdeny\topen\t/old/p${i}\t1\t1\tsh\tsh\t\t\n`;
+  async function teardown(tag, n = 2) {
+    const { rundir, record } = await seedRun();
+    await fs.writeFile(path.join(rundir, 'events.log'), sessionEvents(tag, n));
+    const driver = fakeDriver({ procs: {}, nsMounts: [], conns: [] });
+    const report = await runTeardown({ rundir, driver, scan: driver.scan, log: { warn() {} } });
+    return { report, record };
+  }
+  const cols = (line) => line.split('\t');
+
+  // PINS: the cap is read per call; unset/empty is the default, a positive whole
+  // number is taken, and anything else falls back to the default WITH a refusal
+  // sentence naming the variable.
+  // DIES UNDER: reading the env once at module load; dropping validation; `>= 0`
+  // for `> 0`; a fallback other than the default; `refused: null` for a bad value.
+  test('fuseEventStoreMaxBytes: unset or empty is the default; a positive integer is taken; anything else falls back to the default with a refusal naming the variable', async () => {
+    const plan = await loadPlan();
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+    assert.deepEqual(plan.fuseEventStoreMaxBytes(), { maxBytes: plan.FUSE_EVENT_STORE_MAX_BYTES, refused: null });
+    process.env.CC_FUSE_EVENTS_MAX_BYTES = '';
+    assert.deepEqual(plan.fuseEventStoreMaxBytes(), { maxBytes: plan.FUSE_EVENT_STORE_MAX_BYTES, refused: null });
+    process.env.CC_FUSE_EVENTS_MAX_BYTES = '1024';
+    assert.deepEqual(plan.fuseEventStoreMaxBytes(), { maxBytes: 1024, refused: null });
+    for (const raw of ['0', '-5', '1.5', 'abc', '1e400']) {
+      process.env.CC_FUSE_EVENTS_MAX_BYTES = raw;
+      const got = plan.fuseEventStoreMaxBytes();
+      assert.equal(got.maxBytes, plan.FUSE_EVENT_STORE_MAX_BYTES, raw);
+      assert.match(got.refused ?? '', new RegExp(`CC_FUSE_EVENTS_MAX_BYTES='${raw.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`), raw);
+    }
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+  });
+
+  // PINS: a harvest into a store over the cap rotates it to events.log.1 FIRST,
+  // so the live store holds this session's whole rows from their first byte.
+  // DIES UNDER: not wiring appendRotating into the harvest; the wrong rotated
+  // path; ignoring the env cap; rotating after the append.
+  test('a harvest into a store over the cap rotates it to events.log.1 first; the live store holds this session\'s whole rows', async () => {
+    const plan = await resetStore();
+    process.env.CC_FUSE_EVENTS_MAX_BYTES = '512';
+    const seed = Buffer.from(Array.from({ length: 12 }, (_, i) => storeRow(i)).join(''), 'latin1');
+    assert.ok(seed.length > 512, 'the seed must be over the cap');
+    await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
+    await fs.writeFile(plan.fuseEventStore(), seed);
+    const { record } = await teardown('f2', 3);
+    assert.deepEqual(await fs.readFile(rotated(plan)), seed);
+    const live = (await fs.readFile(plan.fuseEventStore(), 'latin1'));
+    assert.match(live, /^\d{4}-\d\d-\d\dT/);
+    const lines = live.split('\n').filter(Boolean);
+    assert.equal(lines.length, 3);
+    for (const l of lines) { assert.equal(cols(l).length, 11, l); assert.equal(cols(l)[1], record.instanceId); }
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+  });
+
+  // PINS: under the default cap a harvest appends in place and creates no
+  // events.log.1. NOT a red-first test: it is green before the change and guards
+  // the default cap and the no-rotation path.
+  // DIES UNDER: a default cap that is tiny or 0; rotating unconditionally.
+  test('a harvest under the cap appends in place and creates no events.log.1', async () => {
+    const plan = await resetStore();
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+    const seed = storeRow(1) + storeRow(2);
+    await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
+    await fs.writeFile(plan.fuseEventStore(), seed);
+    const { record } = await teardown('f3', 2);
+    const live = await fs.readFile(plan.fuseEventStore(), 'latin1');
+    assert.ok(live.startsWith(seed), 'the seed must stay at the head');
+    const added = live.slice(seed.length).split('\n').filter(Boolean);
+    assert.equal(added.length, 2);
+    for (const l of added) assert.equal(cols(l)[1], record.instanceId);
+    await assert.rejects(fs.access(rotated(plan)), { code: 'ENOENT' });
+  });
+
+  // PINS: concurrent teardowns across one rotation store every row exactly
+  // once, none split. The serialisation killer is the keyed-queue test in
+  // tests/log-rotation.test.mjs; this is its end-to-end form.
+  // DIES UNDER: unserialised store appends (a lost or split row).
+  test('concurrent teardowns across one rotation store every row exactly once', async () => {
+    const plan = await resetStore();
+    // Large enough that the three sessions' rows together stay under the cap, so
+    // exactly ONE rotation happens.
+    const seed = Buffer.from(Array.from({ length: 20 }, (_, i) => storeRow(i)).join(''), 'latin1');
+    process.env.CC_FUSE_EVENTS_MAX_BYTES = String(seed.length - 1);
+    await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
+    await fs.writeFile(plan.fuseEventStore(), seed);
+    const runs = await Promise.all(['a', 'b', 'c'].map((t) => teardown(`f4${t}`, 2)));
+    assert.deepEqual(await fs.readFile(rotated(plan)), seed);
+    const lines = (await fs.readFile(plan.fuseEventStore(), 'latin1')).split('\n').filter(Boolean);
+    for (const l of lines) assert.equal(cols(l).length, 11, l);
+    const got = lines.map((l) => `${cols(l)[1]} ${cols(l)[4]}`).sort();
+    const want = runs.flatMap(({ record }, i) => sessionPaths(`f4${'abc'[i]}`, 2).map((p) => `${record.instanceId} ${p}`)).sort();
+    assert.deepEqual(got, want);
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+  });
+
+  // PINS: a bad cap value never costs a harvest its rows — it falls back to the
+  // DEFAULT cap (arm a: a store just over the default rotates, so the fallback
+  // is neither uncapped nor huge; arm b: a small store does not, so it is not
+  // 0/1/NaN) and the teardown notes name the variable.
+  // DIES UNDER: a bad value that drops the append; a fallback of 0/1/NaN (arm b
+  // rotates); an uncapped or Infinity fallback (arm a does not rotate); dropping
+  // the note.
+  test('an invalid CC_FUSE_EVENTS_MAX_BYTES falls back to the default cap, stores the rows, and says so in the teardown notes', async () => {
+    const plan = await resetStore();
+    process.env.CC_FUSE_EVENTS_MAX_BYTES = 'abc';
+    const row = storeRow(7);
+    const big = Buffer.from(row.repeat(Math.floor(plan.FUSE_EVENT_STORE_MAX_BYTES / row.length) + 1), 'latin1');
+    assert.ok(big.length > plan.FUSE_EVENT_STORE_MAX_BYTES);
+    await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
+    await fs.writeFile(plan.fuseEventStore(), big);
+    const a = await teardown('f5a', 2);
+    assert.deepEqual(await fs.readFile(rotated(plan)), big);
+    const liveA = (await fs.readFile(plan.fuseEventStore(), 'latin1')).split('\n').filter(Boolean);
+    assert.deepEqual(liveA.map((l) => cols(l)[4]), sessionPaths('f5a', 2));
+    assert.ok(a.report.notes.some((n) => /CC_FUSE_EVENTS_MAX_BYTES='abc'/.test(n)), JSON.stringify(a.report.notes));
+    assert.ok(!a.report.notes.some((n) => /could not be written/.test(n)), JSON.stringify(a.report.notes));
+    assert.deepEqual([...a.report.eventPaths].sort(), sessionPaths('f5a', 2).sort());
+
+    await resetStore();
+    const small = storeRow(1) + storeRow(2);
+    await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
+    await fs.writeFile(plan.fuseEventStore(), small);
+    const b = await teardown('f5b', 2);
+    await assert.rejects(fs.access(rotated(plan)), { code: 'ENOENT' });
+    const liveB = await fs.readFile(plan.fuseEventStore(), 'latin1');
+    assert.ok(liveB.startsWith(small));
+    assert.equal(liveB.slice(small.length).split('\n').filter(Boolean).length, 2);
+    assert.ok(b.report.notes.some((n) => /CC_FUSE_EVENTS_MAX_BYTES='abc'/.test(n)), JSON.stringify(b.report.notes));
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+  });
+
+  // PINS: a store write failure is CONTAINED (the report still carries the rows,
+  // the run dir is reclaimed) and LOUD (a teardown note), not swallowed. The
+  // store path is made a directory so the append fails EISDIR, as root too.
+  // DIES UNDER: swallowing the store error; letting it escape the harvest (the
+  // outer "could not be harvested" note, eventPaths undefined).
+  test('a store write failure is a teardown note, and the harvest still reports its rows', async () => {
+    const plan = await resetStore();
+    delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
+    await fs.mkdir(plan.fuseEventStore(), { recursive: true });
+    const { report } = await teardown('f6', 2);
+    assert.ok(report.notes.some((n) => /^the event store could not be written: /.test(n)), JSON.stringify(report.notes));
+    assert.deepEqual([...report.eventPaths].sort(), sessionPaths('f6', 2).sort());
+    assert.equal(report.removedRunDir, true);
+    assert.ok(!report.notes.some((n) => /could not be harvested/.test(n)), JSON.stringify(report.notes));
+    await fs.rm(plan.fuseEventStore(), { force: true, recursive: true });
+  });
+});
+
 describe('the mount literals', () => {
   // A16 — PINS the sha pin as a DELIBERATE-EDIT LATCH. Editing a build source
   // without regenerating the pin in the same commit is the undisclosed drift
