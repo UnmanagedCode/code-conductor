@@ -1030,3 +1030,31 @@ test('GET /api/plugins/:id/log serves the current and the previous run; 400 for 
     assert.equal((await api(boot.baseUrl, 'GET', '/api/plugins/nope/log')).status, 404);
   } finally { await boot.close(); }
 });
+
+// The documented cap is 64 KiB (docs/plugins/rest.md). The literal is deliberate: importing
+// DOCUMENTED_LOG_TAIL_BYTES would let a changed cap carry this expectation along with it. A larger log
+// is served as its newest bytes only, cut at a line boundary, flagged truncated, whole size reported.
+const DOCUMENTED_LOG_TAIL_BYTES = 64 * 1024;
+test('GET /api/plugins/:id/log serves only the newest 64 KiB of a larger log', async () => {
+  const boot = await setup();
+  try {
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    // 70-byte lines so the cut can be checked exactly against the file.
+    const lines = Math.ceil((DOCUMENTED_LOG_TAIL_BYTES * 3) / 70);
+    const file = path.join(orchStoreRoot(), 'plugins', 'logs', 'fake-plugin', 'backend.log');
+    const body = Array.from({ length: lines }, (_, i) => `line-${String(i).padStart(6, '0')} ${'x'.repeat(70 - 13)}\n`).join('');
+    await fs.writeFile(file, body);
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.truncated, true);
+    assert.equal(r.body.size, Buffer.byteLength(body));
+    assert.ok(r.body.text.length <= DOCUMENTED_LOG_TAIL_BYTES, `text is ${r.body.text.length} bytes`);
+    // Newest bytes only, cut at a line boundary: at most one (partial) line short of the cap.
+    assert.ok(body.endsWith(r.body.text));
+    assert.ok(r.body.text.length > DOCUMENTED_LOG_TAIL_BYTES - 70, 'not cut shorter than the cap allows');
+    assert.ok(r.body.text.startsWith('line-'), 'starts on a whole line');
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/stop');
+    await waitFor(() => !pidAlive(st.body.pid));
+  } finally { await boot.close(); }
+});
