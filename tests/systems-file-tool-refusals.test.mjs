@@ -714,7 +714,7 @@ describe('the four file-tool refusals', () => {
 // rules (`neverClaimsAbsence`, `namesBashOnTheSystem`) rather than a second
 // transcription of them.
 describe('the fault refusals — divergence and over-cap', () => {
-  const DIVERGED = { kind: 'diverged', detail: 'writeFile EACCES', refuses: 'writes' };
+  const DIVERGED = { kind: 'diverged', detail: 'writeFile EACCES', keptUnder: '/store/systems/fuse/recovered/inst-1', refuses: 'writes' };
   const OVER_CAP = { kind: 'over-cap', size: MAX_FILE_BYTES + 7, cap: MAX_FILE_BYTES, refuses: 'all' };
   const P = '/srv/app/src/main.js';
 
@@ -754,6 +754,12 @@ describe('the fault refusals — divergence and over-cap', () => {
     // change can be landed by hand on the system.
     assert.match(reason, /local copy is intact and readable/);
     assert.match(reason, /`sed -i`/);
+    // THE RECOVERY LOCATION, for the operator: the directory the bytes are
+    // copied to if the session ends first, named as being on the orchestrator
+    // so the worker does not try to Read it.
+    // DIES UNDER: the wording dropping the recovery location.
+    assert.ok(reason.includes(`'${DIVERGED.keptUnder}'`), 'the refusal does not name where the bytes are kept');
+    assert.match(reason, /bytes on the orchestrator into/);
     // NEVER "cannot" FOR THE ACT ITSELF. `will not` is the whole distinction
     // between a refusal and a failure, and a model acts differently on each.
     assert.doesNotMatch(reason, /^cc cannot/);

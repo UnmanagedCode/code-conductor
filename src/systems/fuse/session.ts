@@ -1,9 +1,10 @@
 // One session's mount record and THE teardown state machine.
 //
 // There is exactly one implementation of teardown, it is here, and it is the
-// same code the boot sweep runs. `bootstrap.sh` owns none of it: it execs into
-// `claude` and ceases to exist as a supervisor, and a shell trap cannot survive
-// SIGKILL, so a copy there would be a second, weaker one.
+// same code the boot sweep and the runtime sweep (sweep.ts) run. `bootstrap.sh`
+// owns none of it: it execs into `claude` and ceases to exist as a supervisor,
+// and a shell trap cannot survive SIGKILL, so a copy there would be a second,
+// weaker one.
 //
 // TWO RECORDS, both atomic tmp+rename:
 //   intent.json  written by cc BEFORE spawn — what makes a crash between spawn
@@ -25,10 +26,11 @@ import path from 'node:path';
 import { promises as fsp, writeFileSync, chmodSync } from 'node:fs';
 import type { MountDriver } from './driver.ts';
 import { realMountDriver } from './driver.ts';
-import { removeOwnedTree } from './mirrorPerms.ts';
+import { KeyedLock, removeOwnedTree } from './mirrorPerms.ts';
 import type { FuseIntent, FuseMountRecord, FusePlan } from './plan.ts';
-import { EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseEventStoreMaxBytes, fuseEventStoreRotated, fuseStoreChain } from './plan.ts';
+import { DIVERGED_RECORD_NAME, EVENT_LOG_NAME, RECORD_SCHEMA, fuseEventStore, fuseEventStoreMaxBytes, fuseEventStoreRotated, fuseRecoveredDir, fuseStoreChain, writeJsonAtomic } from './plan.ts';
 import { appendRotating } from '../../logRotation.ts';
+import { readDivergedRecord, rescueDiverged, writeDivergedRecord } from './diverged.ts';
 import { suggestPin } from './tierTable.ts';
 import { httpError } from '../../httpError.ts';
 import { wrapLaunch, type LaunchWrap } from './wrap.ts';
@@ -37,6 +39,26 @@ import { reclaimProcess, type OrphanReclaim } from './orphans.ts';
 import { ControlServer } from './control.ts';
 import { type RemoteSource } from './remoteSource.ts';
 import type { UiEvent } from '../../../shared/uiEvent.ts';
+
+// ONE LOCK PER RUN DIRECTORY, module-wide: `prepare()` and `teardown()` of the
+// session that owns a directory and the runtime sweep (sweep.ts) all take it, so
+// none of them can run against a directory another is mid-way through.
+export const fuseRunDirLock = new KeyedLock();
+
+// Run directories between a session's `prepare()` and its `teardown()` — live by
+// definition, so the runtime sweep never touches them whatever its liveness
+// source says.
+const ACTIVE = new Set<string>();
+
+// DIVERGED PATHS KNOWN ONLY IN MEMORY, per run dir: filled when a teardown learned
+// of them from the live control server but could not make them durable (the
+// `diverged.json` write failed) and has not yet rescued their bytes. A later
+// teardown of the same dir in this process — the boot or runtime sweep — unions
+// them in, so a kept dir is never reclaimed with an empty record. Cleared when
+// the durable write or the rescue succeeds. Lost with the process: a crash while
+// every durable write has failed is the one remaining way to lose the bytes.
+const PENDING_DIVERGED = new Map<string, Set<string>>();
+export function fuseRunDirActive(rundir: string): boolean { return ACTIVE.has(rundir); }
 
 export interface Deadlines {
   // Per-step bounds. Every one of them is a BOUND, not a wait: a step that
@@ -99,6 +121,10 @@ export interface TeardownReport {
   // entries is not a count of live daemons.
   strayConnections: number;
   wedged: boolean;
+  // Diverged files whose bytes were copied out of the mirror before the reclaim,
+  // and those whose copy FAILED (a failure keeps the run dir as a wedge).
+  rescued: { path: string; at: string }[];
+  rescueFailed: { path: string; error: string }[];
   removedRunDir: boolean;
   // THE DAEMON'S POLICY EVENTS, harvested from `<rundir>/events.log`
   // IMMEDIATELY BEFORE the run directory is reclaimed — the reclaim is what used
@@ -411,22 +437,17 @@ export interface TeardownInput extends Sinks {
   // graceful close is the cheapest way for the CLI to go, and it costs nothing
   // when it does not work.
   closeStdin?: () => void;
+  // false only from the runtime sweep, whose dirs were already harvested by
+  // their own teardown or the boot sweep.
+  harvest?: boolean;
+  // Diverged paths the live control server still held when it closed, unioned
+  // with `diverged.json` for the rescue.
+  divergedPaths?: string[];
 }
 
 async function readJson<T>(file: string): Promise<T | null> {
   try { return JSON.parse(await fsp.readFile(file, 'utf8')) as T; }
   catch { return null; }
-}
-
-// Deliberately does NOT create the parent directory: the wedge write must not
-// be able to RESURRECT a run directory a concurrent clean pass has just
-// reclaimed — that would leave an orphan record for a session that no longer
-// exists. The only other caller, prepare(), has already created the directory;
-// absence is an ENOENT the caller decides about, not a silent mkdir.
-export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
-  const tmp = `${file}.tmp.${process.pid}`;
-  await fsp.writeFile(tmp, JSON.stringify(value, null, 2));
-  await fsp.rename(tmp, file);
 }
 
 // A pid is "ours" only while /proc/<pid>/stat field 22 still equals what was
@@ -502,7 +523,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     unmounted: [], lazyUnmounted: [],
     abort: 'skipped', minor: null,
     residualMounts: [], strayConnections: 0,
-    wedged: false, removedRunDir: false, eventPaths: [], notes,
+    wedged: false, removedRunDir: false, eventPaths: [], notes, rescued: [], rescueFailed: [],
   };
 
   // THE MACHINE NEVER REJECTS. Every step below is bounded and has a failure
@@ -804,6 +825,36 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     report.enumerated = false;
   }
 
+  // ── 7a. MAKE THE DIVERGED SET DURABLE, on every branch, before anything can
+  //        reclaim or keep the dir. The paths known from the live server (and
+  //        from an earlier failed attempt) may be missing from `diverged.json`
+  //        if its write failed; a best-effort rewrite means a KEPT dir carries
+  //        the list whenever any write succeeds. If it cannot be written the
+  //        paths stay in `PENDING_DIVERGED` for the next teardown of this dir.
+  const known = new Set([...(input.divergedPaths ?? []), ...(PENDING_DIVERGED.get(rundir) ?? [])]);
+  if (known.size && await fsp.stat(rundir).then(() => true, () => false)) {
+    // ONLY A MISSING RECORD IS EMPTY. A present-but-unreadable one (corrupt,
+    // wrong schema, EIO) lists paths this machine cannot read back, and a rewrite
+    // with only `known` would destroy them: skip the write, park `known` in
+    // memory, and let 7c's read failure keep the dir.
+    let recorded: string[] | null = [];
+    try { recorded = await readDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME)); }
+    catch (e) {
+      recorded = null;
+      PENDING_DIVERGED.set(rundir, known);
+      notes.push(`the diverged record is unreadable and was not rewritten: ${(e as Error).message}`);
+    }
+    if (recorded && [...known].some(p => !recorded.includes(p))) {
+      try {
+        await writeDivergedRecord(path.join(rundir, DIVERGED_RECORD_NAME), [...recorded, ...known]);
+        PENDING_DIVERGED.delete(rundir);
+      } catch (e) {
+        PENDING_DIVERGED.set(rundir, known);
+        notes.push(`the diverged record could not be written: ${(e as Error).message}`);
+      }
+    }
+  }
+
   // ── 7b. HARVEST THE EVIDENCE BEFORE THE RECLAIM DESTROYS IT.
   //
   //        `rm -rf <rundir>` below takes the event log with it, and that log is
@@ -817,7 +868,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        OUTSIDE THE try/catch ABOVE ON PURPOSE: the contained-throw path sets
   //        `wedged` and falls through to here, and a session whose teardown threw
   //        is exactly one whose events a maintainer wants.
-  try {
+  if (input.harvest !== false) try {
     const { rows, notes: harvestNotes } = await harvestEvents(rundir, report.instanceId);
     notes.push(...harvestNotes);
     report.eventPaths = [...new Set(rows.map(r => r.path))];
@@ -832,6 +883,39 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     notes.push(`the event log could not be harvested: ${(e as Error).message}`);
   }
 
+  // ── 7c. RESCUE THE DIVERGED BYTES BEFORE THE RECLAIM DESTROYS THEM.
+  //
+  //        A path whose push failed lives ONLY in `<rundir>/mirror` (the refusal
+  //        tells the worker its content is not lost), and `diverged.json` lists
+  //        them. Reached by every teardown — the session's own, the boot sweep
+  //        and the runtime sweep. ONLY ON THE CLEAN BRANCH: a wedged directory
+  //        keeps its mirror anyway, and this copy is a precondition of the
+  //        irreversible delete below, nothing more. A copy that FAILS makes the
+  //        verdict a wedge — deleting would destroy the only copy.
+  //
+  //        The line's prefix is `cc-fuse rescue:` and NOT `cc-fuse: `, so the
+  //        sweep's event-line filter does not print it a second time.
+  if (!report.wedged) {
+    const r = await rescueDiverged({ rundir, dest: fuseRecoveredDir(path.basename(rundir)), extraPaths: [...known] });
+    report.rescued = r.rescued;
+    report.rescueFailed = r.failed;
+    if (!r.failed.length) PENDING_DIVERGED.delete(rundir);
+    else if (known.size) PENDING_DIVERGED.set(rundir, known);
+    if (r.rescued.length || r.skipped.length) {
+      const line = `cc-fuse rescue: session ${report.instanceId} could not land ${r.rescued.length + r.skipped.length} file(s) on its system; `
+        + (r.dir ? `their bytes are kept at ${r.dir} — delete them once handled: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}` : 'nothing was copied')
+        + (r.skipped.length ? `; not copied: ${r.skipped.map(x => `${x.path} (${x.why})`).join(', ')}` : '');
+      notes.push(line);
+      try { input.emit?.({ kind: 'system', subtype: 'stderr', data: { line } }); } catch { /* the session may already be gone */ }
+      try { (input.log ?? console).warn(line); } catch { /* the operator log is not a reason to fail a teardown */ }
+    }
+    if (r.failed.length) {
+      notes.push(`cc-fuse rescue: session ${report.instanceId} could NOT copy diverged bytes out, so ${rundir} is kept: `
+        + r.failed.map(x => `${x.path} (${x.error})`).join(', '));
+      report.wedged = true;
+    }
+  }
+
   // ── 8. reclaim, or KEEP THE RECORD so the next boot sweep re-reports the
   //       wedge rather than silently rediscovering it.
   if (report.wedged) {
@@ -840,7 +924,8 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
       + (report.survivingPids.length ? `, still alive: ${report.survivingPids.join(', ')}` : '')
       + (report.namespaceMembers.length ? `, namespace members still running: ${report.namespaceMembers.join(', ')}` : '')
       + (report.enumerated ? '' : ', AND THE PROCESS SCAN COULD NOT RUN — this verdict is "unknown", not "clean"')
-      + (report.residualMounts.length ? `, mounts still present: ${report.residualMounts.join(' ')}` : '');
+      + (report.residualMounts.length ? `, mounts still present: ${report.residualMounts.join(' ')}` : '')
+      + (report.rescueFailed.length ? `, diverged file(s) not copied out (kept in ${rundir}/mirror): ${report.rescueFailed.map(f => f.path).join(', ')}` : '');
     // Both surfaces on purpose: the event stream is what an operator watching
     // this session is already looking at, and console.warn survives the
     // session's death and lands in the orchestrator log.
@@ -856,11 +941,23 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     // landing between the two simply makes the write ENOENT rather than
     // resurrecting the directory. The window is closed by the mechanism, not
     // narrowed by the check.
-    if (record && await fsp.stat(rundir).then(() => true, () => false)) {
-      await writeJsonAtomic(recordPath, {
-        ...record, wedged: true, terminalState: report.terminalState,
-        residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
-      }).catch((e: Error) => notes.push(`the wedge record could not be written: ${e.message}`));
+    if (await fsp.stat(rundir).then(() => true, () => false)) {
+      // A MINIMAL RECORD when none is readable (a rescue failure on an
+      // intent-only or record-less dir): `prepare()` refuses a relaunch on
+      // `wedged`, and without this it would reuse the dir and truncate the kept
+      // mirror.
+      const base = record ?? {
+        schema: RECORD_SCHEMA, stage: 'mounted' as const, instanceId: report.instanceId, ccBootId: '', rundir,
+        root: path.join(rundir, 'root'), mirror: path.join(rundir, 'mirror'), fusectl: path.join(rundir, 'fusectl'),
+        nsMntId: '', bootstrapPid: 0, bootstrapStart: '', anchorPid: 0, anchorStart: '',
+        daemonPid: 0, daemonStart: '', minor: '', spawnedAt: 0, mountedAt: 0,
+      } satisfies FuseMountRecord;
+      if (record || report.rescueFailed.length || PENDING_DIVERGED.has(rundir)) {
+        await writeJsonAtomic(recordPath, {
+          ...base, wedged: true, terminalState: report.terminalState,
+          residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
+        }).catch((e: Error) => notes.push(`the wedge record could not be written: ${e.message}`));
+      }
     }
   } else {
     // Reached only when the namespace enumeration RAN and came back empty, no
@@ -925,12 +1022,14 @@ export class FuseSession {
   // that no longer exists.
   #control: ControlServer | null = null;
   readonly #source: RemoteSource;
+  // Called once after each real (not latched) teardown, outside the run dir's lock.
+  readonly #afterTeardown: (() => void) | undefined;
 
   // `source` IS REQUIRED, and that is the point: a default would silently mount
   // a local directory as the remote — the worst outcome this file can produce,
   // because every read succeeds and every one of them is about the wrong
   // machine. A forgotten source fails to typecheck instead.
-  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source: RemoteSource } & Sinks) {
+  constructor(opts: { plan: FusePlan; ccBootId: string; driver?: MountDriver; scan?: RawScan; deadlines?: Partial<Deadlines>; source: RemoteSource; afterTeardown?: () => void } & Sinks) {
     this.plan = opts.plan;
     this.#ccBootId = opts.ccBootId;
     this.#driver = opts.driver ?? realMountDriver;
@@ -938,6 +1037,7 @@ export class FuseSession {
     this.#sinks = { emit: opts.emit, log: opts.log };
     this.#deadlines = { ...DEFAULT_DEADLINES, ...opts.deadlines };
     this.#source = opts.source;
+    this.#afterTeardown = opts.afterTeardown;
   }
 
   get ccBootId(): string { return this.#ccBootId; }
@@ -1005,12 +1105,11 @@ export class FuseSession {
   // the next boot sweep. A generation stamp would fix the latch and still let
   // the two halves interleave; excluding them is what makes the sequential
   // reasoning that the rest of this class relies on true.
-  #gate: Promise<unknown> = Promise.resolve();
-
+  //
+  // KEYED BY RUN DIRECTORY AND MODULE-WIDE (`fuseRunDirLock`), so the runtime
+  // sweep excludes itself from prepare/teardown on the same directory too.
   #exclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.#gate.then(fn, fn);
-    this.#gate = run.catch(() => {});
-    return run;
+    return fuseRunDirLock.run(this.plan.rundir, fn);
   }
 
   prepare(): Promise<void> {
@@ -1051,6 +1150,31 @@ export class FuseSession {
     if (owner && owner.instanceId !== p.instanceId) {
       throw httpError(500, `FUSE_RUN_DIR_FOREIGN: ${p.rundir} belongs to instance ${owner.instanceId}, not to ${p.instanceId}; reusing it would give the two sessions ONE control socket, mirror and record set, and this launch would destroy the other's mount record`, { code: 'FUSE_RUN_DIR_FOREIGN' });
     }
+    // THE PREVIOUS LIFECYCLE'S DIVERGED PATHS ARE SECURED BEFORE ANYTHING TOUCHES
+    // THE MIRROR: the durable list and the process-level pending map are never
+    // discarded unrescued (a relaunch can reach here beside a non-wedged
+    // `mount.json` after a failed wedge write, or with the list only in memory).
+    // Copy their bytes out, then drop the list so it is not rescued twice; if the
+    // copy fails, REFUSE with the record, the pending entry and the mirror intact.
+    const pending = PENDING_DIVERGED.get(p.rundir);
+    if (pending || await fsp.lstat(p.divergedRecordPath).then(() => true, () => false)) {
+      const r = await rescueDiverged({ rundir: p.rundir, dest: p.recoveredDir, extraPaths: [...(pending ?? [])] });
+      if (r.failed.length) {
+        // An UNREADABLE `diverged.json` lands here too (it is reported as a failed
+        // entry) and blocks every relaunch of this dir until an operator copies
+        // the mirror's files out by hand and deletes the record: cc cannot tell
+        // which paths it listed, so it never guesses.
+        throw httpError(500, `FUSE_PREVIOUS_TEARDOWN_WEDGED: ${p.rundir} still holds diverged bytes that could not be copied out (${r.failed.map(x => `${x.path}: ${x.error}`).join(', ')}); refusing to reuse it`, { code: 'FUSE_PREVIOUS_TEARDOWN_WEDGED' });
+      }
+      if (r.rescued.length) {
+        try { (this.#sinks.log ?? console).warn(`cc-fuse rescue: ${r.rescued.length} diverged file(s) from the previous lifecycle of ${p.rundir} were copied to ${r.dir}: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}`); } catch { /* the log is not a reason to fail a launch */ }
+      }
+      PENDING_DIVERGED.delete(p.rundir);
+      await fsp.rm(p.divergedRecordPath, { force: true });
+    }
+    // LIVE FROM HERE: past both refusals this session owns the directory, and
+    // the runtime sweep must never reclaim it. Released by `#teardown`.
+    ACTIVE.add(p.rundir);
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
     this.record = null;
     this.#tornDown = false;
@@ -1095,6 +1219,8 @@ export class FuseSession {
       // the control server too, or cc would materialise paths the daemon
       // refuses and the two would disagree about what the session may see.
       tiers: p.tiers,
+      divergedRecord: p.divergedRecordPath,
+      recoveredDir: p.recoveredDir,
       log: (line) => this.#sinks.log?.warn(line),
     });
     const intent: FuseIntent = {
@@ -1133,7 +1259,11 @@ export class FuseSession {
   // Idempotent: the crash path (_handleExit) and the commanded path (kill())
   // both reach it, and on a normal kill_instance both fire.
   teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
-    return this.#exclusive(() => this.#teardown(closeStdin));
+    const run = this.#exclusive(() => this.#teardown(closeStdin));
+    // AFTER THE LOCK IS RELEASED (the run settled), so the runtime sweep this
+    // starts can take the same run directory's key. Not on a latched repeat.
+    void run.then((r) => { if (!('alreadyTornDown' in r)) this.#afterTeardown?.(); }, () => {});
+    return run;
   }
 
   async #teardown(closeStdin?: () => void): Promise<TeardownReport | AlreadyTornDown> {
@@ -1152,17 +1282,23 @@ export class FuseSession {
     // `Instance.kill()`'s no-process arm together with `remove()` going through
     // `kill()` at all; before that pair, `remove()` skipped `kill()` entirely,
     // so kill's own fix was unreachable from there.
-    await this.#control?.close().catch(() => {});
+    const ctl = this.#control;
+    await ctl?.close().catch(() => {});
     this.#control = null;
     if (this.#tornDown) return { alreadyTornDown: true };
+    // Read AFTER close(), whose drain lets in-flight DIRTYs record their faults.
+    const divergedPaths = ctl?.divergedPaths() ?? [];
     this.#tornDown = true;
-    return runTeardown({
-      rundir: this.plan.rundir,
-      driver: this.#driver,
-      scan: this.#scan,
-      deadlines: this.#deadlines,
-      closeStdin,
-      ...this.#sinks,
-    });
+    try {
+      return await runTeardown({
+        rundir: this.plan.rundir,
+        driver: this.#driver,
+        scan: this.#scan,
+        deadlines: this.#deadlines,
+        closeStdin,
+        divergedPaths,
+        ...this.#sinks,
+      });
+    } finally { ACTIVE.delete(this.plan.rundir); }
   }
 }

@@ -70,6 +70,9 @@ import { resolveMirrorScope, type MirrorScope } from './systems/mirror.ts';
 import { EVENT_LOG_NAME, buildFusePlan, fuseRunDir } from './systems/fuse/plan.ts';
 import { buildTierTable, resolveOnPath, type LocalRoot } from './systems/fuse/tierTable.ts';
 import { FuseSession, describePolicyEvents, parsePolicyEvents } from './systems/fuse/session.ts';
+import { requestFuseSweep } from './systems/fuse/sweep.ts';
+import type { MountDriver } from './systems/fuse/driver.ts';
+import type { RawScan } from './systems/fuse/procScan.ts';
 import { localDirSource } from './systems/fuse/remoteSource.ts';
 import { systemSource } from './systems/fuse/systemSource.ts';
 import { assertFuseAvailable, realProbes } from './systems/fuse/preflight.ts';
@@ -5946,6 +5949,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
             }),
           ccBootId: BOOT_ID,
           emit: (ev) => inst._emitUi(ev),
+          afterTeardown: () => { void this._afterFuseTeardown(); },
         }));
       }
     }
@@ -6282,6 +6286,14 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     }
     this.emit('list_changed');
     return inst;
+  }
+
+  // After any FuseSession teardown: retry the run dirs an earlier teardown could
+  // not reclaim. `byId` is the liveness source — a dir is created only by
+  // `prepare()`, and every `launch()` acts on an instance that is already in it.
+  // The seams are the unit test's; production passes none.
+  _afterFuseTeardown(seams: { driver?: MountDriver; scan?: RawScan; log?: { warn: (...args: unknown[]) => void } } = {}) {
+    return requestFuseSweep({ liveIds: () => this.byId.keys(), ...seams });
   }
 
   async remove(id: string, { actor }: { actor?: Actor } = {}): Promise<void> {

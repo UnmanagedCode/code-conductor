@@ -25,7 +25,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { promises as fs } from 'node:fs';
+import { promises as fs, constants as fsConstants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
@@ -44,6 +44,7 @@ const probeCount = async (log) =>
 import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE,
   CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
@@ -479,6 +480,8 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
   await fs.mkdir(src, { recursive: true });
   await fs.mkdir(mirror, { recursive: true });
   const sys = handle({ log });
+  const divergedRecord = path.join(box, 'diverged.json');
+  const recoveredDir = path.join(box, 'recovered', 'rig');
   let server, sock;
   try {
     await sys.connect();
@@ -487,6 +490,7 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
       mirror,
       source: wrapSource(systemSource(sys)),
       tiers: buildTierTable(tierFixtureInput({ systemPath: src, mirrorRoot: src })),
+      divergedRecord, recoveredDir,
     });
     sock = await new Promise((res, rej) => {
       const c = net.connect(server.socketPath, () => res(c)); c.once('error', rej);
@@ -502,7 +506,8 @@ async function rig(fn, { wrapSource = (s) => s } = {}) {
       .filter(([k]) => k.startsWith('c2p:'))
       .reduce((n, [, v]) => n + v, 0);
     return await fn({ src, mirror, sock, server,
-      call: (op, flags, p) => call(sock, op, flags, p), reads, writes, wire });
+      call: (op, flags, p) => call(sock, op, flags, p), reads, writes, wire,
+      divergedRecord, recoveredDir });
   } finally {
     sock?.destroy();
     await server?.close();
@@ -1081,6 +1086,112 @@ describe("the write path — mode, faults and the double reconcile", () => {
         'a repaired path is still refused for writing');
     });
   });
+
+  // PINS: a failed push PERSISTS the diverged path set to the diverged record
+  // (the whole set, sorted), readable once the reply has arrived. The ORDER —
+  // on disk before the worker sees EIO — is T12e's.
+  // DIES UNDER: no write; writing only the current path (the second arm lists
+  // [p] instead of [p, q]); including `over-cap` faults (the third arm).
+  test('T12d — a failed push persists the diverged path set', async () => {
+    await rig(async ({ src, mirror, call, server, divergedRecord, recoveredDir }) => {
+      const listed = async () => JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths;
+      const fail = async (name) => {
+        const p = path.join(src, name);
+        await fs.writeFile(p, 'ORIGINAL');
+        assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+        await fs.writeFile(path.join(mirror, p), 'WORKER');
+        await wedgeSource(p);
+        assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.REFUSED);
+        return p;
+      };
+      const p = await fail('a.txt');
+      assert.deepEqual(await listed(), [p], 'the record is not on disk when the worker sees EIO');
+      assert.equal(server.faultAt(p).keptUnder, recoveredDir, 'the fault does not name where the bytes land');
+      const q = await fail('b.txt');
+      assert.deepEqual(await listed(), [p, q].sort(), 'the record holds only the latest path, not the set');
+
+      const big = path.join(src, 'huge.bin');
+      const fh = await fs.open(big, 'w');
+      try { await fh.truncate(MAX_FILE_BYTES + 1); } finally { await fh.close(); }
+      assert.equal((await call(CCU_OP.FETCH, 0, big)).err, 27);
+      assert.equal(server.faultAt(big).kind, 'over-cap');
+      await fail('c.txt');
+      assert.ok(!(await listed()).includes(big), 'an over-cap path (never materialised) was listed as diverged');
+    });
+  });
+
+  // PINS: the diverged record is on disk BEFORE the worker sees EIO. The record
+  // write's temp file is a FIFO, so the write blocks until the test reads it —
+  // no production seam — and the REPLY must not arrive while it is blocked.
+  // DIES UNDER: replying before the record write completes (`replied` is true
+  // while the write is still blocked); not writing at all (the FIFO read yields
+  // no record → the JSON parse fails, or the file's hang guard kills it).
+  test('T12e — the diverged record is written before the REFUSED reply', async () => {
+    await rig(async ({ src, mirror, call, server, divergedRecord }) => {
+      const p = path.join(src, 'ordered.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, p), 'WORKER');
+      await wedgeSource(p);
+      const fifo = `${divergedRecord}.tmp.${process.pid}`;
+      execFileSync('mkfifo', [fifo]);
+      let replied = false;
+      const reply = call(CCU_OP.DIRTY, 0, p).then((r) => { replied = true; return r; });
+      // THE BARRIER: `#faults.set` runs synchronously before `await #persistDiverged()`,
+      // so once the fault is visible the handler is provably blocked on the FIFO write.
+      for (let i = 0; i < 400 && !server.faultAt(p); i++) await new Promise((r) => setTimeout(r, 5));
+      // The reader opens in a `finally`, so a failing assertion still unblocks the
+      // write and the rig's `server.close()` does not wait on it forever.
+      let text = '';
+      let fh = null;
+      try {
+        assert.ok(server.faultAt(p), 'the push never failed');
+        assert.equal(replied, false, 'the worker was answered while the record write was still pending');
+      } finally {
+        // NON-BLOCKING open: it succeeds on a FIFO with no writer (a plain
+        // O_RDONLY open would block a threadpool thread forever and hang the
+        // process when nothing ever writes the record), and it is what unblocks a
+        // writer that IS waiting.
+        fh = await fs.open(fifo, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
+      }
+      try {
+        // Poll until the record has arrived and the writer has closed (a
+        // non-blocking read returns 0 with no writer, so 0 after data = done).
+        const buf = Buffer.alloc(4096);
+        const deadline = Date.now() + 5_000;
+        for (;;) {
+          const n = await fh.read(buf, 0, buf.length, null).then((r) => r.bytesRead, (e) => (e.code === 'EAGAIN' ? -1 : Promise.reject(e)));
+          if (n > 0) text += buf.toString('utf8', 0, n);
+          else if (n === 0 && text) break;
+          if (Date.now() > deadline) throw new Error('timed out: the record never reached the FIFO');
+          if (n <= 0) await new Promise((r) => setTimeout(r, 5));
+        }
+      } finally { await fh.close(); }
+      assert.deepEqual(JSON.parse(text).paths, [p]);
+      assert.equal((await reply).status, CCU_STATUS.REFUSED);
+    });
+  });
+
+  // PINS: a successful reconcile REMOVES the path from the record, so teardown
+  // does not copy out bytes that already landed.
+  // DIES UNDER: dropping the clear-side write (the record still lists the path).
+  test('T13d — a successful reconcile removes the path from the record', async () => {
+    await rig(async ({ src, mirror, call, server, divergedRecord }) => {
+      const p = path.join(src, 'repaired-rec.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, p), 'WORKER BYTES');
+      await wedgeSource(p);
+      assert.equal((await call(CCU_OP.DIRTY, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.REFUSED);
+      assert.deepEqual(JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths, [p]);
+      await fs.rm(p, { recursive: true, force: true });
+      assert.equal((await call(CCU_OP.DIRTY, 0, p)).status, CCU_STATUS.READY);
+      assert.equal(server.faultAt(p), null);
+      assert.deepEqual(JSON.parse(await fs.readFile(divergedRecord, 'utf8')).paths, [],
+        'a repaired path is still listed, so teardown would copy out bytes that landed');
+    });
+  });
+
 
   // PINS: AN ABANDONED CLAIM DOES NOT POISON THE PATH, and the discrimination
   // is the FRAME's rather than a guess about the state.

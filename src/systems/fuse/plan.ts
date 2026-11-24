@@ -9,6 +9,7 @@
 // sweepSessionTmpDirs).
 
 import path from 'node:path';
+import { promises as fsp } from 'node:fs';
 import { orchStoreRoot } from '../../projects.ts';
 import { withinPosix } from '../mirror.ts';
 import { httpError } from '../../httpError.ts';
@@ -55,6 +56,35 @@ export function fuseRunDir(instanceId: string): string {
 // it: `buildFusePlan` (the daemon's `CC_UNION_EVENTS`), `runTeardown`'s harvest,
 // and the boot sweep reading a crashed session's copy.
 export const EVENT_LOG_NAME = 'events.log';
+
+// THE PER-SESSION DIVERGED-PATH RECORD (`diverged.ts` owns its format): the
+// paths whose push failed, written by the control server so a teardown that
+// never saw the server can still copy their bytes out of the mirror.
+export const DIVERGED_RECORD_NAME = 'diverged.json';
+
+// WHERE A TEARDOWN COPIES DIVERGED BYTES BEFORE IT RECLAIMS THE MIRROR. A
+// sibling of `run/`, so it outlives every run directory; under the same
+// host-pinned store root, so the worker cannot read it. Only the operator
+// deletes from here.
+export function fuseRecoveredRoot(): string {
+  return path.join(orchStoreRoot(), 'systems', 'fuse', 'recovered');
+}
+
+export function fuseRecoveredDir(runDirName: string): string {
+  return path.join(fuseRecoveredRoot(), runDirName);
+}
+
+// Deliberately does NOT create the parent directory: the wedge write must not
+// be able to RESURRECT a run directory a concurrent clean pass has just
+// reclaimed — that would leave an orphan record for a session that no longer
+// exists. The other callers (prepare(), the diverged record) write into a
+// directory that already exists; absence is an ENOENT the caller decides
+// about, not a silent mkdir.
+export async function writeJsonAtomic(file: string, value: unknown): Promise<void> {
+  const tmp = `${file}.tmp.${process.pid}`;
+  await fsp.writeFile(tmp, JSON.stringify(value, null, 2));
+  await fsp.rename(tmp, file);
+}
 
 // THE STORE-WIDE EVENT LOG — where a session's rows are appended before its run
 // directory is reclaimed. A SIBLING of `run/`, deliberately: `run/<id>` is
@@ -176,6 +206,9 @@ export interface FusePlan {
   // `fuseEventStore()` by `runTeardown` immediately before the run directory is
   // reclaimed, because the reclaim would otherwise destroy the evidence.
   eventLog: string;
+  // The diverged-path record, and where its bytes are copied at teardown.
+  divergedRecordPath: string;
+  recoveredDir: string;
   // The cwd the bootstrap `cd`s to INSIDE the chroot. A host-pinned path keeps
   // its exact spelling, which is why this is simply the CLI's cwd.
   cwdInside: string;
@@ -366,6 +399,8 @@ export function buildFusePlan(input: FusePlanInput): FusePlan {
     planEnvPath: path.join(rundir, 'env.plan.sh'),
     workerEnvPath: path.join(rundir, 'env.worker.sh'),
     eventLog: path.join(rundir, EVENT_LOG_NAME),
+    divergedRecordPath: path.join(rundir, DIVERGED_RECORD_NAME),
+    recoveredDir: fuseRecoveredDir(fuseRunDirName(input.instanceId)),
     controlSock,
     markPath: input.markPath,
     cwdInside: input.cwdInside,
