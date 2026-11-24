@@ -50,8 +50,8 @@ import { errCode, errMsg } from '../../shared/basics.ts';
 // that see an ADOPTED child (one with no exit event) are: the boot adopt pass,
 // the status() probe, a proxy upstream failure, and the ensureStarted fast path
 // (every proxied request and MCP call). Each records a death it finds as a
-// 'gone' exit and bumps `lastAliveAt` when it finds the pid alive, which bounds
-// when a later-found death happened. The same touches trim an over-cap log.
+// 'gone' exit; adoption, status() and the fast path also bump `lastAliveAt`
+// when they find the pid alive, which bounds when a later-found death happened. The same touches trim an over-cap log.
 
 const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 60_000;
@@ -330,6 +330,7 @@ export function createPluginHost(opts: {
         // adoptable (disabled, undiscovered, not answering) is cleared unrecorded.
         if (!pidAlive(rec.pid)) {
           await store.recordExit(id, goneRecord(rec, null));
+          await tailFromLog(id);
           return false;
         }
         const entry = byId.get(id);
@@ -375,6 +376,14 @@ export function createPluginHost(opts: {
     recordCrash(id, `${info.error}\n${(info.output ?? '').slice(-2000)}`);
   }
 
+  // The backend's own last log lines become the row's crash tail (when it wrote any).
+  async function tailFromLog(id: string): Promise<void> {
+    try {
+      const log = await readLogTail(backendLogPaths(id).current, 2000);
+      if (log.text.trim()) runtimeState(id).tail = log.text;
+    } catch (e) { console.warn(`plugins: could not read ${id}'s backend log: ${errMsg(e)}`); }
+  }
+
   // The exit record of a backend cc did not spawn and found dead: its exit code
   // and signal are unknowable (cc is not its parent), so both are null.
   function goneRecord(rec: RuntimeRecord, lastAliveAt: string | null) {
@@ -385,23 +394,27 @@ export function createPluginHost(opts: {
   }
 
   // A dead child discovered passively (status probe, proxy upstream error,
-  // ensureStarted on an adopted child). The state flips synchronously, before
-  // the first await, so a concurrent toucher sees `crashed` and not a second
-  // death; the crash tail then becomes the backend's own last log lines. An
+  // ensureStarted on an adopted child). Idempotent per death: only the
+  // transition out of `ready` counts, so a toucher that checked `ready` before
+  // an await (status() parked in its probe) and arrives after another has
+  // flipped the state does nothing — a second recordCrash would count one death
+  // twice toward `failed` and double the backoff. The flip happens before the
+  // first await; the crash tail then becomes the backend's own last log lines. An
   // adopted child gets its 'gone' record here (a spawned child's exit event
   // records its own — guarding on `adopted` prevents a double record when a
   // probe sees the dead pid before that event lands).
   async function markDead(id: string, reason: string): Promise<void> {
     const s = runtimeState(id);
+    if (s.status !== 'ready') return;
     const rec = store.runtimeRecord(id);
     const wasAdopted = s.adopted;
-    store.clearRuntimeDetached(id);
+    const cleared = store.clearRuntimeDetached(id);
     recordCrash(id, reason);
-    try {
-      const log = await readLogTail(backendLogPaths(id).current, 2000);
-      if (log.text.trim()) s.tail = log.text;
-    } catch (e) { console.warn(`plugins: could not read ${id}'s backend log: ${errMsg(e)}`); }
+    await tailFromLog(id);
     if (wasAdopted && rec) await store.recordExit(id, goneRecord(rec, s.lastAliveAt));
+    // The runtime record is gone from disk before the death is reported, so a
+    // host that starts right after (a cc restart) cannot adopt or re-record it.
+    await cleared;
   }
 
   // Bounds a running backend's log on a passive touch (there is no timer). The

@@ -216,7 +216,12 @@ export function createSupervisor({
       if (c.status === 'starting') {
         detectReady(manifest, port, c, log).then(
           () => settle(c, 'ready'),
-          (e) => settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`),
+          // Only `readyWhen` reads the log while polling: refresh here so a child that
+          // stayed alive but never became healthy still reports what it printed.
+          async (e) => {
+            await refreshOutput(c, log);
+            settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`);
+          },
         );
       }
       const gitHead = await headSha(cwd, platform);

@@ -126,8 +126,14 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     await writeFileAtomic(registryFile(), JSON.stringify(persisted, null, 2) + '\n');
   }
 
-  async function saveRuntimeRecords(): Promise<void> {
-    await writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n');
+  // runtime.json saves chain like exits.json: the passive death paths write it
+  // detached, and a later write (or a fresh host's load) must never see an older
+  // state land after a newer one.
+  let runtimeSaving: Promise<void> = Promise.resolve();
+  function saveRuntimeRecords(): Promise<void> {
+    const next = runtimeSaving.catch(() => {}).then(() => writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n'));
+    runtimeSaving = next;
+    return next;
   }
 
   function saveExits(): Promise<void> {
@@ -145,8 +151,26 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
     if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
     runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
-    exitRecords = (await loadJson(exitsFile(), {})) as Record<string, ExitRecord[]>;
-    if (typeof exitRecords !== 'object' || exitRecords === null || Array.isArray(exitRecords)) exitRecords = {};
+    exitRecords = sanitizeExits(await loadJson(exitsFile(), {}));
+  }
+
+  // A hand-edited or damaged exits.json must not throw at every reader of a
+  // row: keep the well-formed entries per id, drop the rest, and say so.
+  function sanitizeExits(raw: unknown): Record<string, ExitRecord[]> {
+    if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+      loadNotices.push({ file: 'exits.json', reason: 'not an object keyed by plugin id; ignored', backup: null });
+      return {};
+    }
+    const out: Record<string, ExitRecord[]> = {};
+    let dropped = 0;
+    for (const [id, v] of Object.entries(raw)) {
+      const list = Array.isArray(v) ? v : [];
+      const ok = list.filter(e => typeof e === 'object' && e !== null && !Array.isArray(e)) as ExitRecord[];
+      dropped += (Array.isArray(v) ? list.length - ok.length : 1);
+      if (ok.length) out[id] = ok;
+    }
+    if (dropped) loadNotices.push({ file: 'exits.json', reason: `${dropped} malformed exit entr${dropped === 1 ? 'y' : 'ies'} ignored`, backup: null });
+    return out;
   }
 
   // ── registry.json ───────────────────────────────────────────────────
@@ -223,12 +247,13 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     catch (e) { console.warn(`plugins: exits.json write failed: ${errMsg(e)}`); }
   }
 
-  // Fire-and-forget variant for the two passive death paths (a supervisor exit
-  // event, a dead pid noticed by a probe): neither has anything to await into,
-  // so the write is detached and a failure is warned rather than thrown.
-  function clearRuntimeDetached(id: string): void {
+  // Variant for the two passive death paths (a supervisor exit event, a dead pid
+  // noticed by a probe): the record is dropped synchronously and a failed write
+  // is warned rather than thrown. The returned promise settles when the write
+  // has landed, for a caller that wants the file current before it reports.
+  function clearRuntimeDetached(id: string): Promise<void> {
     delete runtimeRecords[id];
-    saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
+    return saveRuntimeRecords().catch(e => console.warn(`plugins: runtime.json write failed: ${errMsg(e)}`));
   }
 
   // Adopt-don't-drain, persistence half. The caller supplies the liveness

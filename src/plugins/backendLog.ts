@@ -74,20 +74,30 @@ export async function readLogTail(file: string, maxBytes: number, fromOffset = 0
   return { exists: true, size, text, truncated };
 }
 
-// Over `maxBytes`: keep the newest `keepBytes`, behind a marker line. Truncate
-// then append through an O_APPEND handle (see openBackendLog). A child write
-// racing the truncate can be lost or land before the retained tail — a child
-// cannot be asked to cooperate. Returns whether it trimmed.
+// Over `maxBytes`: keep the newest `keepBytes`, behind a marker line. Returns
+// whether it trimmed.
+//
+// Everything runs on ONE descriptor, opened O_APPEND|O_RDWR on the file as it is
+// now: the size, the tail read, the truncate and the append all act on that one
+// inode. A start that rotates the log while a trim is in flight renames the
+// file out from under the path, so the trim ends up on the old run's file
+// (now `backend.prev.log`) and can never truncate the new `backend.log` or put
+// the old run's tail into it. Re-resolving the path between steps would reopen
+// that window. A child write racing the truncate can still be lost or land
+// before the retained tail — a child cannot be asked to cooperate.
 export async function trimLog(file: string, { maxBytes, keepBytes }: { maxBytes: number; keepBytes: number }): Promise<boolean> {
-  let size: number;
-  try { size = (await fs.stat(file)).size; }
+  let fh: fs.FileHandle;
+  try { fh = await fs.open(file, 'a+'); }
   catch (e) { if (errCode(e) === 'ENOENT') return false; throw e; }
-  if (size <= maxBytes) return false;
-  const kept = await readRange(file, size - keepBytes, keepBytes);
-  const marker = `[cc ${new Date().toISOString()}: log trimmed, ${size - kept.length} bytes dropped]\n`;
-  await fs.truncate(file, 0);
-  const fh = await fs.open(file, 'a');
-  try { await fh.appendFile(Buffer.concat([Buffer.from(marker), kept])); }
-  finally { await fh.close(); }
-  return true;
+  try {
+    const { size } = await fh.stat();
+    if (size <= maxBytes) return false;
+    const kept = Buffer.alloc(Math.min(keepBytes, size));
+    const { bytesRead } = await fh.read(kept, 0, kept.length, size - kept.length);
+    const tail = kept.subarray(0, bytesRead);
+    const marker = `[cc ${new Date().toISOString()}: log trimmed, ${size - tail.length} bytes dropped]\n`;
+    await fh.truncate(0);
+    await fh.appendFile(Buffer.concat([Buffer.from(marker), tail]));
+    return true;
+  } finally { await fh.close(); }
 }

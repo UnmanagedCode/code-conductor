@@ -251,9 +251,9 @@ A backend's output and the way each run ended are kept by cc, not by the process
 
 `stopRequested` is true when cc asked for the exit (Stop, Restart, Disable, a version switch). For `gone`, the death lies in `(lastAliveAt ?? startedAt, at]`; the reason is normally in `backend.log` (the dying process's last output), which also becomes `crashTail`.
 
-**What detects an adopted backend's death** (the passive touches; each bumps in-memory `lastAliveAt` when it finds the pid alive):
+**What detects an adopted backend's death** (the passive touches; each records the death it finds, and adoption, `status()` and the `ensureStarted` fast path also bump in-memory `lastAliveAt` when they find the pid alive — the proxy's upstream-failure hook only records):
 
-- the boot adopt pass: a recorded pid already dead is recorded as `gone` with `lastAliveAt: null` (a live record that is merely not adoptable, such as disabled, undiscovered or not answering, is cleared unrecorded);
+- the boot adopt pass: a recorded pid already dead is recorded as `gone` with `lastAliveAt: null` and the row's `crashTail` is the log's last lines (a live record that is merely not adoptable, such as disabled, undiscovered or not answering, is cleared unrecorded);
 - `status()` and the proxy's upstream-failure hook;
 - the `ensureStarted` fast path, i.e. every proxied request and MCP call: one `kill(pid, 0)`; a dead pid is recorded and the call gets the same `503 crashed` a dead upstream gets.
 
