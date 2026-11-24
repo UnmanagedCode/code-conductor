@@ -9,6 +9,7 @@ vi.mock('@shared/ws', () => ({ bus: new EventTarget(), connect: () => {}, send: 
 
 import { StrictMode } from 'react';
 import { appStore } from '@/state/app';
+import { ErrorBoundary } from '@/ui/ErrorBoundary';
 import { LogoMark } from '@/components/logo/Logo';
 import { LandingMark, landingAssembly } from './LandingMark';
 
@@ -64,8 +65,24 @@ describe('LandingMark', () => {
   });
 
   it('StrictMode keeps the first landing assembling', () => {
-    // Invariant: the double-invoked initialiser and the simulated remount do not use up the page load's play.
+    // Invariant: the first landing still assembles under StrictMode (its double render and simulated remount). It does not pin when the play is recorded: StrictMode reuses hook state, so that is the next test's.
     const { container } = render(<StrictMode><LandingMark /></StrictMode>);
+    expect(svgOf(container).hasAttribute('data-logo-assemble')).toBe(true);
+  });
+
+  it('a landing render discarded before commit leaves the play unused', () => {
+    // Invariant: the page load's play is used up only when the landing commits: a LandingMark that renders beside a child that throws (so its boundary discards the tree) leaves `played` false, and the next mount still assembles.
+    const Thrower = (): never => { throw new Error('discarded before commit'); };
+    const quiet = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const { container } = render(
+        <ErrorBoundary fallback={() => <p>crashed</p>}><LandingMark /><Thrower /></ErrorBoundary>,
+      );
+      expect(container.textContent, 'fixture check: the boundary discarded the tree').toBe('crashed');
+      expect(container.querySelector('svg[data-logo="mark"]'), 'fixture check: no mark committed').toBeNull();
+    } finally { quiet.mockRestore(); }
+    expect(landingAssembly.get().played).toBe(false);
+    const { container } = render(<LandingMark />);
     expect(svgOf(container).hasAttribute('data-logo-assemble')).toBe(true);
   });
 
