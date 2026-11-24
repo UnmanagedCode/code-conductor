@@ -97,7 +97,7 @@ for (const scheme of ['light', 'dark'] as const) {
   test(`the settled mark is pixel-identical to the reduced-motion mark in ${scheme} mode`, async ({ page, cc }) => {
     // Invariant: after the hand-over (its blink cancelled, the cursor shown) the mark is byte-for-byte the screenshot a reduced-motion load takes, in either theme.
     // Both pages must run no animation when shot: a running or paused animation makes Chromium rasterise the whole mark
-    // differently (a one-pixel-edge difference, no visible one), so cancelling the blink is the normalisation, not a pause.
+    // differently (a sub-pixel edge / anti-aliasing difference across the whole mark, about 1.6k pixels, none visible), so cancelling the blink is the normalisation, not a pause.
     const shot = async (p: Page) => mark(p).screenshot();
     const open = async (p: Page, cc_: Cc, reducedMotion: 'reduce' | 'no-preference') => {
       await p.emulateMedia({ colorScheme: scheme, reducedMotion });
@@ -124,21 +124,28 @@ test('the legs grow downward from their tops', async ({ page }) => {
   await page.emulateMedia({ reducedMotion: 'no-preference' });
   await recordAssembly(page);
   // Every painted shape's box in document order, with its part while assembling (the hand-over drops the attribute, the order stays).
-  const boxes = () => page.evaluate(() => [...document.querySelectorAll('[data-empty-state] svg[data-logo="mark"] path')]
-    .filter((el) => !el.closest('mask')).map((el) => { const r = el.getBoundingClientRect(); return { part: el.getAttribute('data-logo-part'), top: r.top, height: r.height }; }));
+  // With `freeze`, each leg's grow is first paused a third of the way through its own duration and every other animation is paused where
+  // it is, never seeked: seeking the baton's lift to its end would fire the real animationend, whose hand-over strips the parts. The
+  // freeze and the read share one evaluate, so nothing can run between them.
+  const boxes = (freeze: boolean) => page.evaluate((freezing) => {
+    if (freezing) {
+      document.getAnimations().forEach((a) => {
+        a.pause();
+        if ((a as CSSAnimation).animationName !== 'logo-grow') return;
+        const t = a.effect!.getTiming();
+        a.currentTime = Number(t.delay) + Number(t.duration) / 3;
+      });
+    }
+    return [...document.querySelectorAll('[data-empty-state] svg[data-logo="mark"] path')]
+      .filter((el) => !el.closest('mask')).map((el) => { const r = el.getBoundingClientRect(); return { part: el.getAttribute('data-logo-part'), top: r.top, height: r.height }; });
+  }, freeze);
   await page.goto('/');
   await awaitHandOver(page);
-  const settled = await boxes();
+  const settled = await boxes(false);
 
   await page.reload();
   await page.waitForSelector('[data-logo-assemble]');
-  // Each leg's grow, paused a third of the way through its own duration.
-  await page.evaluate(() => document.getAnimations().forEach((a) => {
-    a.pause();
-    const t = a.effect!.getTiming();
-    a.currentTime = (a as CSSAnimation).animationName === 'logo-grow' ? Number(t.delay) + Number(t.duration) / 3 : Number(t.delay) + Number(t.duration);
-  }));
-  const mid = await boxes();
+  const mid = await boxes(true);
   expect(mid.length, 'the same shapes before and after the hand-over').toBe(settled.length);
   const legs = mid.flatMap((m, i) => (m.part?.startsWith('leg') ? [{ ...m, i }] : []));
   expect(legs.length, 'fixture check: seven legs').toBe(7);
