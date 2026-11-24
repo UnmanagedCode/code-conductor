@@ -23,6 +23,7 @@ export const ANDROID_SPECS = [
   'header-dot.spec.ts',
   'image-zoom.spec.ts',
   'keyboard-focus.spec.ts',
+  'landing-mark.spec.ts',
   'page-scroll.spec.ts',
   'paged-call-usage.spec.ts',
   'paged-plan-card.spec.ts',

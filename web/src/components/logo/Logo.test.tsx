@@ -1,8 +1,8 @@
 // The logo's renderers on the real arts: only a blinking mark animates, and only
 // its cursor; no variant (the lockup included) ships a <style>; the pictures are named. Knockout
 // structure is pinned on a synthetic art in logoArt.test.tsx.
-import { afterEach, describe, expect, it } from 'vitest';
-import { render } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { fireEvent, render } from '@testing-library/react';
 import { LogoLockup, LogoMark, LogoSmall, LogoTile, Wordmark } from './Logo';
 
 /** Every element under `root` (itself included) whose class names an animation. */
@@ -27,16 +27,56 @@ describe('Logo', () => {
   });
 
   it.each(VARIANTS)('%s carries no animation class anywhere', (_, el) => {
-    // Invariant: a static placement has no animation at all, not one that reduced motion switches off.
+    // Invariant: a static placement has no animation at all, not one that reduced motion switches off; and no assembly attribute (data-logo-part / data-logo-assemble), the non-assembling mark included.
     const { container } = render(el);
     expect(container.querySelector('svg[data-logo]'), 'fixture check: the variant renders').not.toBeNull();
     expect(animated(container)).toEqual([]);
+    expect(container.querySelectorAll('[data-logo-part], [data-logo-assemble]').length).toBe(0);
+  });
+
+  describe('assembling', () => {
+    /** Every shape that carries a part: the painted ones and the masks' cut shapes (a mask's white backdrop rect is not one). */
+    const shapes = (svg: Element) => [...svg.querySelectorAll('path, rect')].filter((e) => !(e.tagName === 'rect' && e.closest('mask')));
+
+    it('tags the svg, every painted shape and every mask shape with its part, and never blinks the cursor', () => {
+      // Invariant: an assembling mark carries data-logo-assemble; each painted shape and each mask shape carries a data-logo-part; a mask's shape names the same part as the shape its cut belongs to (the next painted one); the cursor has no animation class even with blink.
+      const { container } = render(<LogoMark assemble blink />);
+      const svg = container.querySelector('svg[data-logo="mark"]')!;
+      expect(svg.hasAttribute('data-logo-assemble')).toBe(true);
+      const drawn = shapes(svg);
+      expect(drawn.length, 'fixture check: shapes render').toBeGreaterThan(20);
+      expect(drawn.filter((e) => !e.getAttribute('data-logo-part')).length).toBe(0);
+      const painted = drawn.filter((e) => !e.closest('mask'));
+      const masks = [...svg.querySelectorAll('mask')];
+      expect(masks.length, 'fixture check: the mark has knockouts').toBeGreaterThan(0);
+      for (const m of masks) {
+        const cut = [...m.querySelectorAll('path')][0];
+        const g = svg.querySelector(`g[mask="url(#${m.id})"]`)!;
+        // The cut moves with the first painted shape after the group it masks, in document order.
+        const owner = painted.find((p) => (g.compareDocumentPosition(p) & Node.DOCUMENT_POSITION_FOLLOWING) && !g.contains(p))!;
+        expect(owner, 'fixture check: a shape follows every mask group').toBeTruthy();
+        expect(cut.getAttribute('data-logo-part')).toBe(owner.getAttribute('data-logo-part'));
+      }
+      expect(svg.querySelector('[data-logo-cursor]')!.getAttribute('class')).toBeNull();
+      expect(animated(svg)).toEqual([]);
+    });
+
+    it('hands over once, on the end marker alone', () => {
+      // Invariant: onAssembled fires on an animationend named logo-baton-lift bubbling from the baton, once; another animation's end from the same element does not fire it.
+      const onAssembled = vi.fn();
+      const { container } = render(<LogoMark assemble onAssembled={onAssembled} />);
+      const baton = container.querySelector('[data-logo-part="baton"]')!;
+      fireEvent.animationEnd(baton, { animationName: 'logo-fade' });
+      expect(onAssembled).not.toHaveBeenCalled();
+      fireEvent.animationEnd(baton, { animationName: 'logo-baton-lift' });
+      expect(onAssembled).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('no variant carries a <style> element', () => {
     // Invariant: the keyframes live in index.css; an SVG's own <style> would apply page-wide.
-    const { container } = render(<>{VARIANTS.map(([name, el]) => <div key={name}>{el}</div>)}<LogoMark blink /></>);
-    expect(container.querySelectorAll('svg[data-logo]').length, 'fixture check: every variant renders').toBe(VARIANTS.length + 1);
+    const { container } = render(<>{VARIANTS.map(([name, el]) => <div key={name}>{el}</div>)}<LogoMark blink /><LogoMark assemble /></>);
+    expect(container.querySelectorAll('svg[data-logo]').length, 'fixture check: every variant renders').toBe(VARIANTS.length + 2);
     expect(container.querySelectorAll('style').length).toBe(0);
   });
 

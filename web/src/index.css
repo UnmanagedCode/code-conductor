@@ -137,6 +137,31 @@
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }
 
+/* The landing mark's assembly: LogoMark's `assemble` mode tags every shape (and each knockout's mask shape) with
+   its part. Each keyframe has only a `from`, so every part rests at its static frame and dropping
+   [data-logo-assemble] at the hand-over changes no pixel. The baton's lift ends last: its `animationend` is
+   the hand-over. Reduced motion is decided in JS (LandingMark), not here: the rule above shortens durations
+   but keeps delays. */
+@keyframes logo-fade { from { opacity: 0; } }
+@keyframes logo-drop { from { transform: translateY(-26px); } }
+@keyframes logo-grow { from { transform: scale(1, 0.001); } }
+@keyframes logo-baton-lift { from { transform: translateY(9px); } }
+[data-logo-assemble] [data-logo-part^='leg'] { transform-box: view-box; transform-origin: 0 29px; }
+[data-logo-assemble] [data-logo-part='body']   { animation: logo-fade .12s linear both, logo-drop .4s cubic-bezier(.33,1,.68,1) both; }
+[data-logo-assemble] [data-logo-part='screen'] { animation: logo-fade .12s linear .3s both, logo-drop .4s cubic-bezier(.33,1,.68,1) both; }
+[data-logo-assemble] [data-logo-part='c1']     { animation: logo-fade .001s linear .5s both; }
+[data-logo-assemble] [data-logo-part='c2']     { animation: logo-fade .001s linear .62s both; }
+[data-logo-assemble] [data-logo-part='cursor'] { animation: logo-fade .001s linear .74s both; }
+[data-logo-assemble] [data-logo-part='leg1']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .62s both; }
+[data-logo-assemble] [data-logo-part='leg2']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .69s both; }
+[data-logo-assemble] [data-logo-part='leg3']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .76s both; }
+[data-logo-assemble] [data-logo-part='leg4']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .83s both; }
+[data-logo-assemble] [data-logo-part='leg5']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .9s both; }
+[data-logo-assemble] [data-logo-part='leg6']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) .97s both; }
+[data-logo-assemble] [data-logo-part='leg7']   { animation: logo-grow .33s cubic-bezier(.33,1,.68,1) 1.04s both; }
+[data-logo-assemble] [data-logo-part='arm']    { animation: logo-fade .15s linear 1.1s both; }
+[data-logo-assemble] [data-logo-part='baton']  { animation: logo-fade .1s linear 2.2593s both, logo-baton-lift .3s cubic-bezier(.33,1,.68,1) 2.2593s both; }
+
 /* "Show mid-turn statistics" off: per-call usage lines stay rendered but hidden. */
 [data-call-usage='hidden'] [data-call-usage-line] { display: none; }
 

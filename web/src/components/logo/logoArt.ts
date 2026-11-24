@@ -10,6 +10,9 @@
 
 export type Ink = 'coral' | 'deep' | 'ink' | 'screen' | 'tile';
 
+/** The landing assembly's parts, in paint order: the back legs, the body, the screen, the prompt, the front legs, the arm, the baton. */
+export type Part = 'leg1' | 'leg2' | 'leg3' | 'body' | 'screen' | 'c1' | 'c2' | 'cursor' | 'leg4' | 'leg5' | 'leg6' | 'leg7' | 'arm' | 'baton';
+
 export type LogoElement = {
   tag: 'path' | 'rect';
   /** SVG attribute names and values, `fill` excluded. */
@@ -21,6 +24,8 @@ export type LogoElement = {
   stroke?: true;
   /** The prompt's `_`, the one part that blinks. */
   cursor?: true;
+  /** The landing assembly's part this shape belongs to; a knockout belongs to the part drawn right after it and moves with it. Only an assembling `LogoMark` reads it. */
+  part?: Part;
 };
 
 export type Art = {
@@ -54,44 +59,53 @@ const path = (d: string, ink?: Ink): LogoElement => (ink ? { tag: 'path', attrs:
 const ko = (d: string) => path(d);
 const under = (transform: string, els: LogoElement[]): LogoElement[] => els.map((e) => ({ ...e, attrs: { ...e.attrs, transform } }));
 
+const inPart = (part: Part, ...els: LogoElement[]): LogoElement[] => els.map((e) => ({ ...e, part }));
+
 const BODY_D = 'M0 8A8 8 0 0 1 8 0L32 0A8 8 0 0 1 40 8L40 30L0 30Z';
 const SCREEN_D = 'M4 10A2 2 0 0 1 6 8L34 8A2 2 0 0 1 36 10L36 24A2 2 0 0 1 34 26L6 26A2 2 0 0 1 4 24Z';
 
 const BACK_LEGS = [
-  ko('M6 30L6 34A8 8 0 0 1 -2 42L-6 42L-6 34L-2 34L-2 30Z'),
-  path('M4 29L4 34A6 6 0 0 1 -2 40L-2 40A2 2 0 0 1 -4 38L-4 38A2 2 0 0 1 -2 36L-2 36A2 2 0 0 0 0 34L0 29Z', 'deep'),
-  ko('M42 30L42 34L46 34L46 42L42 42A8 8 0 0 1 34 34L34 30Z'),
-  path('M40 29L40 34A2 2 0 0 0 42 36L42 36A2 2 0 0 1 44 38L44 38A2 2 0 0 1 42 40L42 40A6 6 0 0 1 36 34L36 29Z', 'deep'),
-  ko('M24 30L24 44L16 44L16 30Z'),
-  path('M22 29L22 40A2 2 0 0 1 20 42L20 42A2 2 0 0 1 18 40L18 29Z', 'deep'),
+  ...inPart('leg1',
+    ko('M6 30L6 34A8 8 0 0 1 -2 42L-6 42L-6 34L-2 34L-2 30Z'),
+    path('M4 29L4 34A6 6 0 0 1 -2 40L-2 40A2 2 0 0 1 -4 38L-4 38A2 2 0 0 1 -2 36L-2 36A2 2 0 0 0 0 34L0 29Z', 'deep')),
+  ...inPart('leg2',
+    ko('M42 30L42 34L46 34L46 42L42 42A8 8 0 0 1 34 34L34 30Z'),
+    path('M40 29L40 34A2 2 0 0 0 42 36L42 36A2 2 0 0 1 44 38L44 38A2 2 0 0 1 42 40L42 40A6 6 0 0 1 36 34L36 29Z', 'deep')),
+  ...inPart('leg3',
+    ko('M24 30L24 44L16 44L16 30Z'),
+    path('M22 29L22 40A2 2 0 0 1 20 42L20 42A2 2 0 0 1 18 40L18 29Z', 'deep')),
 ];
-const BAND_KO = ko('M-2 22L42 22L42 32L-2 32Z');
-const BODY = path(BODY_D, 'coral');
+const [BAND_KO] = inPart('body', ko('M-2 22L42 22L42 32L-2 32Z'));
+const [BODY] = inPart('body', path(BODY_D, 'coral'));
 /** The body with the screen as a second subpath, for the sizes that drop the screen ring. */
 const BODY_WITH_SCREEN = path(BODY_D + SCREEN_D, 'coral');
-const SCREEN_RING_KO = ko('M2 10A4 4 0 0 1 6 6L34 6A4 4 0 0 1 38 10L38 24A4 4 0 0 1 34 28L6 28A4 4 0 0 1 2 24Z');
-const SCREEN = path(SCREEN_D, 'ink');
+const [SCREEN_RING_KO] = inPart('screen', ko('M2 10A4 4 0 0 1 6 6L34 6A4 4 0 0 1 38 10L38 24A4 4 0 0 1 34 28L6 28A4 4 0 0 1 2 24Z'));
+const [SCREEN] = inPart('screen', path(SCREEN_D, 'ink'));
 /** The same face in white, drawn only by the tile and the 16px favicon. */
 const WHITE_SCREEN = path(SCREEN_D, 'screen');
 const GLYPHS = [
-  path('M14.5 12L10.75 12A3.75 3.75 0 0 0 7 15.75L7 18.25A3.75 3.75 0 0 0 10.75 22L14.5 22L14.5 19.5L10.75 19.5A1.25 1.25 0 0 1 9.5 18.25L9.5 15.75A1.25 1.25 0 0 1 10.75 14.5L14.5 14.5Z', 'coral'),
-  path('M24.5 12L20.75 12A3.75 3.75 0 0 0 17 15.75L17 18.25A3.75 3.75 0 0 0 20.75 22L24.5 22L24.5 19.5L20.75 19.5A1.25 1.25 0 0 1 19.5 18.25L19.5 15.75A1.25 1.25 0 0 1 20.75 14.5L24.5 14.5Z', 'coral'),
+  ...inPart('c1', path('M14.5 12L10.75 12A3.75 3.75 0 0 0 7 15.75L7 18.25A3.75 3.75 0 0 0 10.75 22L14.5 22L14.5 19.5L10.75 19.5A1.25 1.25 0 0 1 9.5 18.25L9.5 15.75A1.25 1.25 0 0 1 10.75 14.5L14.5 14.5Z', 'coral')),
+  ...inPart('c2', path('M24.5 12L20.75 12A3.75 3.75 0 0 0 17 15.75L17 18.25A3.75 3.75 0 0 0 20.75 22L24.5 22L24.5 19.5L20.75 19.5A1.25 1.25 0 0 1 19.5 18.25L19.5 15.75A1.25 1.25 0 0 1 20.75 14.5L24.5 14.5Z', 'coral')),
 ];
-const CURSOR = path('M27 19.5L33 19.5L33 22L27 22Z', 'coral');
+const [CURSOR] = inPart('cursor', path('M27 19.5L33 19.5L33 22L27 22Z', 'coral'));
 const FRONT_LEGS = [
-  ko('M12 30L12 40A8 8 0 0 1 4 48L0 48L0 40L4 40L4 30Z'),
-  path('M10 29L10 40A6 6 0 0 1 4 46L4 46A2 2 0 0 1 2 44L2 44A2 2 0 0 1 4 42L4 42A2 2 0 0 0 6 40L6 29Z', 'coral'),
-  ko('M36 30L36 40L40 40L40 48L36 48A8 8 0 0 1 28 40L28 30Z'),
-  path('M34 29L34 40A2 2 0 0 0 36 42L36 42A2 2 0 0 1 38 44L38 44A2 2 0 0 1 36 46L36 46A6 6 0 0 1 30 40L30 29Z', 'coral'),
-  ko('M18 30L18 52L10 52L10 30Z'),
-  path('M16 29L16 48A2 2 0 0 1 14 50L14 50A2 2 0 0 1 12 48L12 29Z', 'coral'),
-  ko('M30 30L30 52L22 52L22 30Z'),
-  path('M28 29L28 48A2 2 0 0 1 26 50L26 50A2 2 0 0 1 24 48L24 29Z', 'coral'),
+  ...inPart('leg4',
+    ko('M12 30L12 40A8 8 0 0 1 4 48L0 48L0 40L4 40L4 30Z'),
+    path('M10 29L10 40A6 6 0 0 1 4 46L4 46A2 2 0 0 1 2 44L2 44A2 2 0 0 1 4 42L4 42A2 2 0 0 0 6 40L6 29Z', 'coral')),
+  ...inPart('leg5',
+    ko('M36 30L36 40L40 40L40 48L36 48A8 8 0 0 1 28 40L28 30Z'),
+    path('M34 29L34 40A2 2 0 0 0 36 42L36 42A2 2 0 0 1 38 44L38 44A2 2 0 0 1 36 46L36 46A6 6 0 0 1 30 40L30 29Z', 'coral')),
+  ...inPart('leg6',
+    ko('M18 30L18 52L10 52L10 30Z'),
+    path('M16 29L16 48A2 2 0 0 1 14 50L14 50A2 2 0 0 1 12 48L12 29Z', 'coral')),
+  ...inPart('leg7',
+    ko('M30 30L30 52L22 52L22 30Z'),
+    path('M28 29L28 48A2 2 0 0 1 26 50L26 50A2 2 0 0 1 24 48L24 29Z', 'coral')),
 ];
-const ARM = path('M38 18L40 18A2 2 0 0 0 42 16L42 8A2 2 0 0 1 44 6L44 6A2 2 0 0 1 46 8L46 16A6 6 0 0 1 40 22L38 22Z', 'coral');
+const [ARM] = inPart('arm', path('M38 18L40 18A2 2 0 0 0 42 16L42 8A2 2 0 0 1 44 6L44 6A2 2 0 0 1 46 8L46 16A6 6 0 0 1 40 22L38 22Z', 'coral'));
 /** The baton, its whole stick lowered `drop` art units (the shapes drawn after it cover its foot). */
 const batonAt = (drop: number) => path(`M42.75 ${4.5 + drop}L42.75 ${-7.25 + drop}A1.25 1.25 0 0 1 44 ${-8.5 + drop}L44 ${-8.5 + drop}A1.25 1.25 0 0 1 45.25 ${-7.25 + drop}L45.25 ${4.5 + drop}Z`, 'ink');
-const BATON = batonAt(0);
+const [BATON] = inPart('baton', batonAt(0));
 
 /** The prompt, legs, arm and baton: everything drawn over the screen. */
 const overScreen = (cursor: LogoElement) => [...GLYPHS, cursor, ...FRONT_LEGS, ARM, BATON];
