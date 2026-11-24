@@ -64,7 +64,11 @@ test('appendRotating: creates a missing parent dir and file; a missing file is n
 test('appendRotating: concurrent calls on one file run one at a time, in call order', async () => {
   const { file, previous } = await tmp();
   // Odd calls spell the SAME file differently, so a raw-string key splits the queue.
-  const spell = (i) => (i % 2 ? path.join(path.dirname(file), '..', 'sub', path.basename(file)) : file);
+  // Built by string concatenation: path.join would normalise the `..` away and
+  // hand back the identical string.
+  const spell = (i) => (i % 2 ? `${path.dirname(file)}/../sub/${path.basename(file)}` : file);
+  assert.notEqual(spell(0), spell(1));
+  assert.equal(path.resolve(spell(0)), path.resolve(spell(1)));
   await Promise.all(Array.from({ length: 8 }, (_, i) => appendRotating(spell(i), B(`row-${i}\n`), { maxBytes: 1, previous })));
   assert.equal(await read(file), 'row-7\n');
   assert.equal(await read(previous), 'row-6\n');
