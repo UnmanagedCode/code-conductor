@@ -855,10 +855,12 @@ test('onChildExit fires for a stopped child with stopRequested, and for a crash 
 // never reads the log on its own).
 test('a healthPath child that never becomes healthy has its output in the crash tail', async (t) => {
   const port = await reservedPort();
-  const sup = createSupervisor({ _readyTimeoutMs: 500, _allocatePort: () => Promise.resolve(port) });
+  // A shell echo then a long sleep: the marker is out within milliseconds of the
+  // spawn, far inside the bound, so the bound cannot race the child's startup.
+  const sup = createSupervisor({ _readyTimeoutMs: 1500, _allocatePort: () => Promise.resolve(port) });
   const { rt } = await startAndSettle(t, sup, {
     id: 'fake-plugin',
-    manifest: manifest({ start: `node -e "console.log('STARTUP-OUTPUT-MARKER'); setInterval(() => {}, 1000)"`, healthPath: '/health' }),
+    manifest: manifest({ start: 'echo STARTUP-OUTPUT-MARKER; exec sleep 30', healthPath: '/health' }),
     cwd: FAKE_PLUGIN_DIR,
   });
   assert.equal(rt.status, 'crashed');

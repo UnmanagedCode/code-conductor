@@ -71,3 +71,12 @@ test('backendLogPaths refuses a non-slug id', () => {
   assert.ok(ok.current.endsWith(path.join('plugins', 'logs', 'fake-plugin', 'backend.log')));
   assert.ok(ok.previous.endsWith(path.join('plugins', 'logs', 'fake-plugin', 'backend.prev.log')));
 });
+
+// A passive touch on a backend that has no log file (started before logs existed)
+// must not conjure an empty one: GET /log would flip to exists:true, size:0.
+test('trimLog on a missing file does nothing and does not create it', async () => {
+  const p = await tmpPaths();
+  await fs.mkdir(path.dirname(p.current), { recursive: true });
+  assert.equal(await trimLog(p.current, { maxBytes: 10, keepBytes: 5 }), false);
+  await assert.rejects(fs.stat(p.current), { code: 'ENOENT' });
+});
