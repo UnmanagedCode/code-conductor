@@ -1160,10 +1160,14 @@ export class FuseSession {
     if (pending || await fsp.lstat(p.divergedRecordPath).then(() => true, () => false)) {
       const r = await rescueDiverged({ rundir: p.rundir, dest: p.recoveredDir, extraPaths: [...(pending ?? [])] });
       if (r.failed.length) {
+        // An UNREADABLE `diverged.json` lands here too (it is reported as a failed
+        // entry) and blocks every relaunch of this dir until an operator copies
+        // the mirror's files out by hand and deletes the record: cc cannot tell
+        // which paths it listed, so it never guesses.
         throw httpError(500, `FUSE_PREVIOUS_TEARDOWN_WEDGED: ${p.rundir} still holds diverged bytes that could not be copied out (${r.failed.map(x => `${x.path}: ${x.error}`).join(', ')}); refusing to reuse it`, { code: 'FUSE_PREVIOUS_TEARDOWN_WEDGED' });
       }
       if (r.rescued.length) {
-        try { this.#sinks.log?.warn(`cc-fuse rescue: ${r.rescued.length} diverged file(s) from the previous lifecycle of ${p.rundir} were copied to ${r.dir}: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}`); } catch { /* the log is not a reason to fail a launch */ }
+        try { (this.#sinks.log ?? console).warn(`cc-fuse rescue: ${r.rescued.length} diverged file(s) from the previous lifecycle of ${p.rundir} were copied to ${r.dir}: ${r.rescued.map(x => `${x.path} → ${x.at}`).join(', ')}`); } catch { /* the log is not a reason to fail a launch */ }
       }
       PENDING_DIVERGED.delete(p.rundir);
       await fsp.rm(p.divergedRecordPath, { force: true });

@@ -4493,9 +4493,9 @@ describe('the diverged-bytes rescue', () => {
 
   // PINS: a path known ONLY in memory (every write of the record fails)
   // survives a teardown that wedges for unrelated residue: a later runtime
-  // sweep, once the write could succeed again but nothing re-reads memory,
-  // rescues the bytes from the PROCESS-LEVEL pending map — there is no durable
-  // record to read.
+  // sweep's step 7a rewrites `diverged.json` FROM the process-level pending map
+  // (the write could succeed again), and 7c rescues from that record — there is
+  // no durable record before the sweep.
   // DIES UNDER: no `PENDING_DIVERGED` (the sweep reads no record and reclaims the
   // mirror).
   test('RS12: a failed record write plus an unrelated wedge — a later runtime sweep rescues from the pending map', async () => {
@@ -4517,8 +4517,9 @@ describe('the diverged-bytes rescue', () => {
   });
 
   // PINS: the same when the teardown's own rescue FAILS (recovered/ is blocked):
-  // the dir is kept, and a later BOOT sweep — the blockers gone — rescues from the
-  // pending map and reclaims. Never reclaimed with an empty record.
+  // the dir is kept, and a later BOOT sweep — the blockers gone — has 7a rewrite
+  // `diverged.json` from the pending map, then 7c rescues and the dir is
+  // reclaimed. Never reclaimed with an empty record.
   // DIES UNDER: dropping the pending entry on a failed rescue.
   test('RS13: a failed record write plus a failed rescue — a later boot sweep rescues from the pending map', async () => {
     const { fuseRecoveredDir, fuseRecoveredRoot } = await plan();
@@ -4654,8 +4655,15 @@ describe('the diverged-bytes rescue', () => {
     assert.equal(out.wedged, true);
     assert.deepEqual(out.rescueFailed, [], 'the fixture reached 7c, so the pending condition is not what wrote the record');
     assert.equal(JSON.parse(await fs.readFile(base.recordPath, 'utf8')).wedged, true);
+    // CLEAN UP the pending entry this leaves: with the blocker gone and a scan that
+    // runs, a second teardown writes the record, rescues and reclaims — which
+    // clears the entry.
     await unblock();
-    await fs.rm(base.rundir, { recursive: true, force: true });
+    const d2 = fakeDriver();
+    const again = await runTeardown({ rundir: base.rundir, driver: d2, scan: d2.scan, log: { warn() {} } });
+    assert.equal(again.removedRunDir, true, JSON.stringify(again.notes));
+    assert.equal(again.rescued.length, 1, 'the pending path was not rescued, so its entry is not cleared');
+    await cleanStore();
   });
 });
 
