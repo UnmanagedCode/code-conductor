@@ -11,7 +11,7 @@
   "backend": {                  // OPTIONAL (manifest-only/library plugins omit)
     "start": "npm start",       // bash -lc, cwd = active checkout, $PORT injected
     "healthPath": "/api/health",// optional readiness probe + on-demand liveness probe
-    "readyWhen": "listening"    // optional stdout/stderr regex (precedence: readyWhen → healthPath → TCP)
+    "readyWhen": "listening"    // optional regex over this run's stdout/stderr (the backend log file) (precedence: readyWhen → healthPath → TCP)
   },
   "frontend": {                 // OPTIONAL, requires backend
     "path": "/",                // default "/"
@@ -213,6 +213,7 @@ Child env:
 
 - `$PORT` — conductor-allocated; default your own port when absent so the plugin stays standalone-runnable.
 - `CONDUCTOR_PLUGIN_ID`.
+- **stdout and stderr** are one append-mode file, `<PROJECTS_ROOT>/.code-conductor/plugins/logs/<id>/backend.log` (`backendLogPaths`, `src/plugins/backendLog.ts`), never a pipe: a backend that outlives the cc that started it keeps a valid stdout/stderr, and its output survives restarts. `readyWhen` is matched against this run's output in that file. Details: [runtime.md → Backend output and exit history](runtime.md#backend-output-and-exit-history).
 - `CONDUCTOR_URL` — `http://127.0.0.1:<conductor-port>`.
 - `CONDUCTOR_MCP_URL` — `$CONDUCTOR_URL/mcp`: cc's MCP server, anonymous, JSON by default — call any core tool by JSON-RPC or the REST alias (`POST $CONDUCTOR_MCP_URL/tools/<name>`); contract in [mcp-applications.md](../mcp-applications.md). Set together with `CONDUCTOR_URL`; never inherited from the conductor's own env.
 - `PROJECTS_ROOT` — the conductor's *resolved* projects root, injected explicitly, so it carries the default even when the conductor's own env never set the var.

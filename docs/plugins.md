@@ -9,7 +9,7 @@ Building a plugin's UI (the host contract, security advisories, an optional refe
 
 - [Manifest — `conductor.plugin.json` at the plugin project root](plugins/manifest.md#manifest--conductorpluginjson-at-the-plugin-project-root)
 
-## [runtime.md](plugins/runtime.md) — reverse proxy, bridge, host exec and terminal, theme, auto-start
+## [runtime.md](plugins/runtime.md) — reverse proxy, bridge, host exec and terminal, theme, auto-start, backend logs and exit history
 
 - [Reverse proxy — `/plugins/<id>/*`](plugins/runtime.md#reverse-proxy--pluginsid)
 - [Bridge protocol — `/pluginBridge.js`](plugins/runtime.md#bridge-protocol--pluginbridgejs)
@@ -18,6 +18,7 @@ Building a plugin's UI (the host contract, security advisories, an optional refe
 - [Theme stylesheet — `/pluginTheme.css`](plugins/runtime.md#theme-stylesheet--pluginthemecss)
 - [Authoring playbooks from a plugin](plugins/runtime.md#authoring-playbooks-from-a-plugin)
 - [Auto-start](plugins/runtime.md#auto-start)
+- [Backend output and exit history](plugins/runtime.md#backend-output-and-exit-history)
 
 ## [rest.md](plugins/rest.md) — `/api/plugins`, the Plugin Library and its catalogs
 

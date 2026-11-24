@@ -16,6 +16,7 @@ import { createPluginHost, WORKSPACE_AUTO_ASSIGN } from '../src/plugins/registry
 // surface and pins nothing.
 const PUBLIC_MEMBERS = [
   'autoStartAll',
+  'backendLog',
   'claudePluginDirs',
   'conventions',
   'disable',

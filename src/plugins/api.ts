@@ -20,6 +20,7 @@ export interface PluginHostApiLike {
   stop(id: string): Promise<unknown>;
   restart(id: string): Promise<unknown>;
   status(id: string): Promise<unknown>;
+  backendLog(id: string, which: 'current' | 'previous'): Promise<unknown>;
   setActiveVersion(id: string, input: unknown): Promise<unknown>;
   setAutoStart(id: string, value: unknown): Promise<unknown>;
   // Non-ENOENT load failures from the last init pass — see registry.ts loadJson.
@@ -152,6 +153,17 @@ export function buildPluginApi({ pluginHost, pluginLibrary }: { pluginHost?: Plu
   // Live probe: also flips a silently-dead child to crashed.
   r.get('/:id/status', async (req, res, next) => {
     try { res.json(await host.status(req.params.id)); } catch (e) { next(e); }
+  });
+
+  // The tail of the backend's stdout+stderr file: this run's, or the previous run's.
+  r.get('/:id/log', async (req, res, next) => {
+    try {
+      const file = req.query.file ?? 'current';
+      if (file !== 'current' && file !== 'previous') {
+        return res.status(400).json({ error: "'file' must be 'current' or 'previous'" });
+      }
+      res.json({ file, ...(await host.backendLog(req.params.id, file) as object) });
+    } catch (e) { next(e); }
   });
 
   // {type:'main'} | {type:'worktree', name} — restarts the child if running.

@@ -23,6 +23,7 @@ const ROW_FIELDS = [
   'crashTail',
   'enabled',
   'errors',
+  'exits',
   'frontendKeepAlive',
   'frontendPath',
   'gitHead',
@@ -95,6 +96,7 @@ test('a running row carries the same field set, with the UI-read fields populate
     assert.ok(row.port, 'port is populated while running');
     assert.equal(row.stale, false);
     assert.equal(row.crashTail, null, 'a healthy row reports no crash tail');
+    assert.deepEqual(row.exits, [], 'a fresh row has no exit history');
   } finally {
     await host.stopAll();
     await env.restore();

@@ -4,12 +4,17 @@ import { allocatePort, tcpOpen } from './ports.ts';
 import { killProcessGroup, GROUP_OUTPUT_CAP } from '../groupedCommand.ts';
 import type { PluginBackend } from './manifest.ts';
 import { hostPlatform, type Platform } from '../platform/index.ts';
+import { openBackendLog, readLogTail, rotateBackendLog, type BackendLogPaths } from './backendLog.ts';
 
 // Plugin child-process supervisor — a port of code-hub's src/runner.js.
 // Each child is the manifest's blocking `backend.start` command spawned in
 // its OWN process group (detached ⇒ pgid === pid) with $PORT injected, so
 // children survive the conductor's self-respawn (adopt-don't-drain) and a
-// stop can kill the whole tree via the group. NOT InstanceManager — plugin
+// stop can kill the whole tree via the group. The child's stdout and stderr are
+// ONE append-mode log file cc opens (src/plugins/backendLog.ts) and passes as
+// fds 1 and 2 — never a pipe cc holds, so an adopted child keeps writing the
+// same file after the spawning cc is gone. Readiness (`readyWhen`) and the crash
+// tail are read back from that file. NOT InstanceManager — plugin
 // children speak plain HTTP, not the claude stream-json protocol.
 
 const GRACE_MS = 3000;        // SIGTERM → SIGKILL grace period
@@ -26,6 +31,11 @@ interface ChildRecord {
   status: ChildStatus;
   error: string | null;
   output: string;
+  // Byte offset in the log where THIS attempt's output begins: an EADDRINUSE
+  // retry appends to the same file, and must not read the failed attempt's lines.
+  logOffset: number;
+  startedAt: string;
+  stopRequested: boolean;
 }
 
 export interface ChildRuntime {
@@ -39,6 +49,19 @@ export interface SupervisorStartInput {
   manifest: { backend: PluginBackend };
   cwd: string;
   env?: Record<string, string>;
+  // The backend's stdout+stderr file, and where the previous run's goes.
+  log: BackendLogPaths;
+}
+
+// Every observed exit of a spawned child, whatever settled it: the durable
+// exit-history feed (a stopped child and an EADDRINUSE retry included).
+export interface ChildExitInfo {
+  pid: number;
+  startedAt: string;
+  code: number | null;
+  signal: string | null;
+  at: string;
+  stopRequested: boolean;
 }
 
 export interface StartedChild {
@@ -57,6 +80,7 @@ export interface StartedChild {
 // clock (see docs/testing.md on the 400 ms window).
 export function createSupervisor({
   onExit,
+  onChildExit,
   _allocatePort = allocatePort,
   _readyTimeoutMs = READY_TIMEOUT_MS,
   _settleMs = SPAWN_SETTLE_MS,
@@ -64,6 +88,7 @@ export function createSupervisor({
   platform = hostPlatform,
 }: {
   onExit?: (id: string, runtime: ChildRuntime) => void;
+  onChildExit?: (id: string, info: ChildExitInfo) => void;
   _allocatePort?: () => Promise<number>;
   _readyTimeoutMs?: number;
   _settleMs?: number;
@@ -71,8 +96,9 @@ export function createSupervisor({
   platform?: Platform;
 } = {}) {
   // id → { proc, pgid, status, error, output }. Children adopted after a
-  // conductor restart have no entry here (their stdout can't be recaptured);
-  // the registry tracks those via the persisted runtime record only.
+  // conductor restart have no entry here (their exit events went with the old
+  // process; they keep appending to the same log file); the registry tracks
+  // those via the persisted runtime record only.
   const children = new Map<string, ChildRecord>();
 
   function runtime(id: string): ChildRuntime | null {
@@ -81,9 +107,12 @@ export function createSupervisor({
     return { status: c.status, error: c.error, output: c.output };
   }
 
-  function appendOutput(c: ChildRecord, chunk: string): void {
-    c.output += chunk;
-    if (c.output.length > OUTPUT_CAP) c.output = c.output.slice(-OUTPUT_CAP);
+  // Re-read this attempt's output from the log file. Everything the child wrote
+  // is in the file by the time it exits, so there is no stream-drain race.
+  async function refreshOutput(c: ChildRecord, log: BackendLogPaths): Promise<string> {
+    try { c.output = (await readLogTail(log.current, OUTPUT_CAP, c.logOffset)).text; }
+    catch (e) { console.warn(`[plugins] could not read ${log.current}: ${(e as Error).message}`); }
+    return c.output;
   }
 
   function settle(c: ChildRecord, status: ChildStatus, error: string | null = null): void {
@@ -92,7 +121,7 @@ export function createSupervisor({
     c.error = error;
   }
 
-  function spawnChild({ id, manifest, cwd, env }: SupervisorStartInput, port: number): ChildRecord {
+  async function spawnChild({ id, manifest, cwd, env, log }: SupervisorStartInput, port: number): Promise<ChildRecord> {
     const { command, args } = platform.commandFor({ shell: manifest.backend.start });
     // An outer cc's CONDUCTOR_MCP_URL / CONDUCTOR_URL and session identity
     // (this server running as some cc's worker) must never reach a plugin: only
@@ -103,30 +132,46 @@ export function createSupervisor({
       CC_SESSION_ID: _outerSid, CC_SESSION_KIND: _outerKind,
       ...inherited
     } = process.env;
-    const proc = _spawn(command, args, {
-      ...platform.spawnOptions('daemon'),
-      cwd,
-      env: { ...inherited, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    const c: ChildRecord = { proc, pgid: proc.pid ?? 0, status: 'starting', error: null, output: '' };
+    const fh = await openBackendLog(log.current);
+    let c: ChildRecord;
+    try {
+      const logOffset = (await fh.stat()).size;
+      const proc = _spawn(command, args, {
+        ...platform.spawnOptions('daemon'),
+        cwd,
+        env: { ...inherited, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
+        stdio: ['ignore', fh.fd, fh.fd],
+      });
+      c = {
+        proc, pgid: proc.pid ?? 0, status: 'starting', error: null, output: '',
+        logOffset, startedAt: new Date().toISOString(), stopRequested: false,
+      };
+      // Listeners go on in the same tick as the spawn: a child that exits at once
+      // must not do so before anyone listens, which the awaited close below allows.
+      attachExitHandlers(c, id, log);
+    } finally {
+      // spawn duplicated the descriptor synchronously; cc's copy is closed so
+      // cc holds nothing the child writes into.
+      await fh.close();
+    }
+    return c;
+  }
 
-    const onData = (d: Buffer) => appendOutput(c, d.toString());
-    proc.stdout.on('data', onData);
-    proc.stderr.on('data', onData);
-
-    proc.on('exit', (code, signal) => {
+  function attachExitHandlers(c: ChildRecord, id: string, log: BackendLogPaths): void {
+    const { proc } = c;
+    proc.on('exit', async (code, signal) => {
+      const at = new Date().toISOString();
+      await refreshOutput(c, log);
       // Exit before readiness = crash; after = the plugin stopped on its own.
       if (c.status === 'starting') settle(c, 'crashed', `start command exited (code=${code}, signal=${signal})\n${c.output.slice(-2000)}`);
       else if (c.status === 'ready') { c.status = 'exited'; c.error = `exited (code=${code}, signal=${signal})`; }
+      onChildExit?.(id, { pid: proc.pid ?? 0, startedAt: c.startedAt, code, signal, at, stopRequested: c.stopRequested });
       if (children.get(id) === c) onExit?.(id, { status: c.status, error: c.error, output: c.output });
     });
     proc.on('error', (e) => {
       settle(c, 'crashed', e.message);
       if (children.get(id) === c) onExit?.(id, { status: c.status, error: c.error, output: c.output });
     });
-
-    return c;
   }
 
   // Resolve once the child settles (crashes) or `ms` elapses, whichever
@@ -148,10 +193,12 @@ export function createSupervisor({
   // immediately with EADDRINUSE (the allocated port got claimed before this
   // bind), retry on a new port a bounded number of times.
   async function start(input: SupervisorStartInput): Promise<StartedChild> {
-    const { id, manifest, cwd, env } = input;
+    const { id, manifest, cwd, env, log } = input;
+    // Once per start, not per EADDRINUSE attempt: a retry appends to the same run's log.
+    await rotateBackendLog(log);
     let port = await _allocatePort();
     for (let attempt = 1; ; attempt++) {
-      const c = spawnChild({ id, manifest, cwd, env }, port);
+      const c = await spawnChild({ id, manifest, cwd, env, log }, port);
       children.set(id, c);
 
       await raceSettle(c, _settleMs);
@@ -167,23 +214,28 @@ export function createSupervisor({
       }
 
       if (c.status === 'starting') {
-        detectReady(manifest, port, c).then(
+        detectReady(manifest, port, c, log).then(
           () => settle(c, 'ready'),
-          (e) => settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`),
+          // Only `readyWhen` reads the log while polling: refresh here so a child that
+          // stayed alive but never became healthy still reports what it printed.
+          async (e) => {
+            await refreshOutput(c, log);
+            settle(c, 'crashed', `${(e as Error).message}\n${c.output.slice(-2000)}`);
+          },
         );
       }
       const gitHead = await headSha(cwd, platform);
-      return { pid: c.proc.pid ?? 0, pgid: c.proc.pid ?? 0, port, startedAt: new Date().toISOString(), gitHead };
+      return { pid: c.proc.pid ?? 0, pgid: c.proc.pid ?? 0, port, startedAt: c.startedAt, gitHead };
     }
   }
 
   // ONE poll for all three readiness modes — the branch picks the predicate,
   // not the loop. Single-sourcing the loop is what single-sources the abort
   // below: there is no per-branch cancellation to forget.
-  function detectReady(manifest: { backend: PluginBackend }, port: number, c: ChildRecord): Promise<void> {
+  function detectReady(manifest: { backend: PluginBackend }, port: number, c: ChildRecord, log: BackendLogPaths): Promise<void> {
     const { readyWhen, healthPath } = manifest.backend;
     const re = readyWhen ? new RegExp(readyWhen) : null;
-    const pred = re ? () => re.test(c.output)
+    const pred = re ? async () => re.test(await refreshOutput(c, log))
       : healthPath ? () => httpOk(port, healthPath)
       : () => tcpOpen(port);
     // A child that dies before readiness ends the probing — the deadline is NOT
@@ -214,6 +266,8 @@ export function createSupervisor({
   // entry. The grace is far longer than the one-shot default — a plugin backend
   // is an HTTP server that deserves time to drain, not a script to cut off.
   function stop({ id, pgid }: { id: string; pgid: number }): void {
+    const c = children.get(id);
+    if (c) c.stopRequested = true; // the exit event that follows carries it
     children.delete(id);
     killProcessGroup(pgid, { graceMs: GRACE_MS, platform });
   }

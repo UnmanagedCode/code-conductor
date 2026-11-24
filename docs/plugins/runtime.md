@@ -222,3 +222,39 @@ A plugin that lets users edit playbooks (rather than ship them) works against th
 - **Each start goes through `start()`** — the Start button's path — all in parallel.
 - **A failure blocks nothing:** it shows on the row as `crashed` + **Crash output** (a refusal such as an undiscovered plugin shows only in the log), plus one server log line `plugins: auto-start of '<id>' failed: <error>`. `autoStartAll()` returns `{started, failed:[{id, error}]}` and never rejects except through init.
 - **Not a crash supervisor:** a backend that dies later is not restarted; the lazy start on its next proxied request or MCP call still applies.
+
+## Backend output and exit history
+
+A backend's output and the way each run ended are kept by cc, not by the process that started the backend, so both survive a cc restart.
+
+**Files** (cc-owned, under `<PROJECTS_ROOT>/.code-conductor/plugins/`; the plugin-owned `data/<id>/` is never touched):
+
+| Path | Holds |
+|---|---|
+| `logs/<id>/backend.log` | stdout+stderr of the current run, one append-mode file |
+| `logs/<id>/backend.prev.log` | the previous run's file (one generation) |
+| `exits.json` | `{<id>: ExitRecord[]}`, newest first, `EXIT_HISTORY` per id (`src/plugins/store.ts`); independent of `runtime.json`, so a later start overwriting the runtime record loses nothing |
+
+- **No pipe.** cc opens `backend.log` (`O_APPEND`) and passes it as the child's fds 1 and 2, then closes its own copy. A backend adopted after a cc restart therefore keeps writing the same file; a direct `process.stdout.write` cannot die on a dead pipe.
+- **Rotation:** once per `start()` (not per EADDRINUSE retry), `backend.log` becomes `backend.prev.log`, overwriting the older one. A child stopped by cc but still in its SIGTERM grace when the next start rotates writes its last lines into `backend.prev.log` (the descriptor follows the file).
+- **Trimming while running:** a log over `LOG_MAX_BYTES` is cut to its newest `LOG_KEEP_BYTES` behind a `[cc <time>: log trimmed, <n> bytes dropped]` line, on a **passive touch** only: the `ensureStarted` fast path (at most once per minute per plugin) and `status()`. There is no timer. The trim works on one open descriptor (never creating a missing file), so a restart rotating the log mid-trim cannot make it touch the new run's file; a child write racing the trim's rewrite can be lost, or leave its suffix after the retained tail.
+- **Limits:** a long-running backend's log can grow without bound between starts while nothing touches it (no proxied request, MCP call or status probe), and by whatever it writes between touches. A backend started by a cc that predates the log file keeps the pipes it was given until it is restarted once from Settings → Plugins; until then its output is lost after a cc restart and it can die on EPIPE.
+- **Reading:** `GET /api/plugins/:id/log` ([rest.md](rest.md)); `readyWhen` and `crashTail` are read from the same file.
+
+**Exit records** (`ExitRecord`, `how`):
+
+| `how` | Meaning | `code` / `signal` | `at` |
+|---|---|---|---|
+| `exit` | a child cc spawned, from its `exit` event (EADDRINUSE retries and stopped children included) | exact | the exit time |
+| `gone` | a backend cc did **not** spawn (adopted) found dead | always `null`: cc is not its parent and cannot read its status | when cc noticed |
+| `stopped` | cc stopped an adopted backend (no exit event follows) | `null` | when cc stopped it |
+
+`stopRequested` is true when cc asked for the exit (Stop, Restart, Disable, a version switch). For `gone`, the death lies in `(lastAliveAt ?? startedAt, at]`; the reason is normally in `backend.log` (the dying process's last output), which also becomes `crashTail`.
+
+**What detects an adopted backend's death** (the passive touches; each records the death it finds, and adoption, `status()` and the `ensureStarted` fast path also bump in-memory `lastAliveAt` when they find the pid alive — the proxy's upstream-failure hook only records):
+
+- the boot adopt pass: a recorded pid already dead is recorded as `gone` with `lastAliveAt: null` and the row's `crashTail` is the log's last lines (a live record that is merely not adoptable, such as disabled, undiscovered or not answering, is cleared unrecorded);
+- `status()` and the proxy's upstream-failure hook;
+- the `ensureStarted` fast path, i.e. every proxied request and MCP call: one `kill(pid, 0)`; a dead pid is recorded and the call gets the same `503 crashed` a dead upstream gets.
+
+An idle adopted backend's death is therefore recorded only at the next touch or boot, and `at` can be long after the death. A recycled pid reads alive, so a death can be missed until the next health or port probe or boot.

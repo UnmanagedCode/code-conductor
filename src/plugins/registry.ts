@@ -11,10 +11,13 @@ import {
 } from './manifest.ts';
 import { httpError } from '../httpError.ts';
 import { hostPlatform, type Platform } from '../platform/index.ts';
-import { createSupervisor, httpOk, type ChildRuntime } from './supervisor.ts';
+import { createSupervisor, httpOk, type ChildRuntime, type ChildExitInfo } from './supervisor.ts';
+import {
+  backendLogPaths, readLogTail, trimLog, LOG_MAX_BYTES, LOG_KEEP_BYTES, LOG_TAIL_BYTES, type LogTail,
+} from './backendLog.ts';
 import { createMcpBridge } from './mcpBridge.ts';
 import { createContributions, type LookedUpEntry, type PluginPlacement } from './contributions.ts';
-import { createPluginStore, pluginDataDir, type PersistedPluginRecord } from './store.ts';
+import { createPluginStore, pluginDataDir, type PersistedPluginRecord, type RuntimeRecord } from './store.ts';
 import { buildPluginRow, type PluginRow } from './row.ts';
 import { pidAlive, waitForPort } from './ports.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
@@ -30,8 +33,10 @@ import { errCode, errMsg } from '../../shared/basics.ts';
 // own the rest:
 // src/plugins/contributions.ts (conventions/roles/playbooks/claudePlugin roots, and the
 // caches behind them) and src/plugins/store.ts (the persisted registry.json /
-// runtime.json, their load-notice policy, and the adopt pass) — the matching
-// public members point straight at them.
+// runtime.json / exits.json, their load-notice policy, and the adopt pass) — the
+// matching public members point straight at them. A backend's stdout+stderr is a
+// per-plugin log file (src/plugins/backendLog.ts), and every exit cc can observe
+// is recorded durably in exits.json.
 //
 // activeVersion = {type:'main'} | {type:'worktree', name} — drives the
 // supervisor cwd; the manifest is re-read from the active checkout on
@@ -41,7 +46,12 @@ import { errCode, errMsg } from '../../shared/basics.ts';
 // groups, so they survive the conductor's self-respawn; init() re-adopts
 // any recorded child whose pid is alive and answering, else clears the
 // record. Health monitoring is passive (child exit events, proxy upstream
-// errors, on-demand probes) — no periodic poller.
+// errors, on-demand probes) — no periodic poller (battery). The passive touches
+// that see an ADOPTED child (one with no exit event) are: the boot adopt pass,
+// the status() probe, a proxy upstream failure, and the ensureStarted fast path
+// (every proxied request and MCP call). Each records a death it finds as a
+// 'gone' exit; adoption, status() and the fast path also bump `lastAliveAt`
+// when they find the pid alive, which bounds when a later-found death happened. The same touches trim an over-cap log.
 
 const CRASH_LIMIT = 3;
 const CRASH_WINDOW_MS = 60_000;
@@ -109,13 +119,26 @@ interface RuntimeState {
   startPromise: Promise<PluginRow | null> | null;
   tail: string | null;
   adopted: boolean;
+  // Last passive touch that saw the pid alive (in memory only: a boot-time
+  // death therefore reports null, bounded by startedAt alone).
+  lastAliveAt: string | null;
+  // Log-size check bookkeeping: when it last ran and whether a trim is in flight.
+  lastLogCheck: number;
+  trimming: boolean;
 }
+
+// The ensureStarted fast path runs on every proxied request; its log-size check
+// is a timestamp compare against this.
+const LOG_CHECK_MIN_MS = 60_000;
 
 export function createPluginHost(opts: {
   instances?: InstanceManagerLike | null;
   _crashWindowMs?: number;
   _backoffUnitMs?: number;
-  _supervisorOpts?: Omit<Parameters<typeof createSupervisor>[0], 'onExit' | 'platform'>;
+  _supervisorOpts?: Omit<Parameters<typeof createSupervisor>[0], 'onExit' | 'onChildExit' | 'platform'>;
+  _logMaxBytes?: number;
+  _logKeepBytes?: number;
+  _logCheckMinMs?: number;
   platform?: Platform;
 } = {}) {
   const {
@@ -123,6 +146,9 @@ export function createPluginHost(opts: {
     _crashWindowMs = CRASH_WINDOW_MS,
     _backoffUnitMs = BACKOFF_UNIT_MS,
     _supervisorOpts = {},
+    _logMaxBytes = LOG_MAX_BYTES,
+    _logKeepBytes = LOG_KEEP_BYTES,
+    _logCheckMinMs = LOG_CHECK_MIN_MS,
     platform = hostPlatform,
   } = opts;
   // Discovery catalog: rebuilt by rescan(). `entries` keeps every
@@ -155,11 +181,19 @@ export function createPluginHost(opts: {
   // contributions cache from the store's single save path.
   const store = createPluginStore({ onRegistryChange: () => contributions.noteRegistryChange() });
 
-  const supervisor = createSupervisor({ onExit: handleChildExit, platform, ..._supervisorOpts });
+  const supervisor = createSupervisor({
+    onExit: handleChildExit,
+    // Every observed exit of a child this host spawned, whatever settled it.
+    onChildExit: (id: string, info: ChildExitInfo) => {
+      void store.recordExit(id, { ...info, how: 'exit', lastAliveAt: null });
+    },
+    platform,
+    ..._supervisorOpts,
+  });
 
   function runtimeState(id: string): RuntimeState {
     let s = rt.get(id);
-    if (!s) { s = { status: 'stopped', crashTimes: [], backoffUntil: 0, startPromise: null, tail: null, adopted: false }; rt.set(id, s); }
+    if (!s) { s = { status: 'stopped', crashTimes: [], backoffUntil: 0, startPromise: null, tail: null, adopted: false, lastAliveAt: null, lastLogCheck: 0, trimming: false }; rt.set(id, s); }
     return s;
   }
 
@@ -291,14 +325,23 @@ export function createPluginHost(opts: {
   async function adoptRunning(): Promise<void> {
     const adopted = await store.adopt({
       isAdoptable: async (id, rec) => {
+        // A dead pid died while no cc was watching: record it before the adopt
+        // pass prunes the runtime record. A live record that is merely not
+        // adoptable (disabled, undiscovered, not answering) is cleared unrecorded.
+        if (!pidAlive(rec.pid)) {
+          await store.recordExit(id, goneRecord(rec, null));
+          await tailFromLog(id);
+          return false;
+        }
         const entry = byId.get(id);
-        return store.isEnabled(id) && !!entry && pidAlive(rec.pid) && await probeAnswers(rec.port, entry.manifest);
+        return store.isEnabled(id) && !!entry && await probeAnswers(rec.port, entry.manifest);
       },
     });
     for (const id of adopted) {
       const s = runtimeState(id);
       s.status = 'ready';
       s.adopted = true;
+      s.lastAliveAt = new Date().toISOString();
     }
   }
 
@@ -333,10 +376,59 @@ export function createPluginHost(opts: {
     recordCrash(id, `${info.error}\n${(info.output ?? '').slice(-2000)}`);
   }
 
-  // A dead child discovered passively (status probe, proxy upstream error).
-  function markDead(id: string, reason: string): void {
-    store.clearRuntimeDetached(id);
+  // The backend's own last log lines become the row's crash tail (when it wrote any).
+  async function tailFromLog(id: string): Promise<void> {
+    try {
+      const log = await readLogTail(backendLogPaths(id).current, 2000);
+      if (log.text.trim()) runtimeState(id).tail = log.text;
+    } catch (e) { console.warn(`plugins: could not read ${id}'s backend log: ${errMsg(e)}`); }
+  }
+
+  // The exit record of a backend cc did not spawn and found dead: its exit code
+  // and signal are unknowable (cc is not its parent), so both are null.
+  function goneRecord(rec: RuntimeRecord, lastAliveAt: string | null) {
+    return {
+      pid: rec.pid, startedAt: rec.startedAt, at: new Date().toISOString(), how: 'gone' as const,
+      code: null, signal: null, stopRequested: false, lastAliveAt,
+    };
+  }
+
+  // A dead child discovered passively (status probe, proxy upstream error,
+  // ensureStarted on an adopted child). Idempotent per death: only the
+  // transition out of `ready` counts, so a toucher that checked `ready` before
+  // an await (status() parked in its probe) and arrives after another has
+  // flipped the state does nothing — a second recordCrash would count one death
+  // twice toward `failed` and double the backoff. The flip happens before the
+  // first await; the crash tail then becomes the backend's own last log lines. An
+  // adopted child gets its 'gone' record here (a spawned child's exit event
+  // records its own — guarding on `adopted` prevents a double record when a
+  // probe sees the dead pid before that event lands).
+  async function markDead(id: string, reason: string): Promise<void> {
+    const s = runtimeState(id);
+    if (s.status !== 'ready') return;
+    const rec = store.runtimeRecord(id);
+    const wasAdopted = s.adopted;
+    const cleared = store.clearRuntimeDetached(id);
     recordCrash(id, reason);
+    await tailFromLog(id);
+    if (wasAdopted && rec) await store.recordExit(id, goneRecord(rec, s.lastAliveAt));
+    // The runtime record is gone from disk before the death is reported, so a
+    // host that starts right after (a cc restart) cannot adopt or re-record it.
+    await cleared;
+  }
+
+  // Bounds a running backend's log on a passive touch (there is no timer). The
+  // trim is fire-and-forget behind a per-id flag; `throttleMs` > 0 makes the
+  // call a timestamp compare, for the ensureStarted hot path.
+  function maybeTrimLog(id: string, throttleMs: number): void {
+    const s = runtimeState(id);
+    const now = Date.now();
+    if (s.trimming || now - s.lastLogCheck < throttleMs) return;
+    s.lastLogCheck = now;
+    s.trimming = true;
+    trimLog(backendLogPaths(id).current, { maxBytes: _logMaxBytes, keepBytes: _logKeepBytes })
+      .catch(e => console.warn(`plugins: could not trim ${id}'s backend log: ${errMsg(e)}`))
+      .finally(() => { s.trimming = false; });
   }
 
   // ── lookups ─────────────────────────────────────────────────────────
@@ -550,7 +642,7 @@ export function createPluginHost(opts: {
         } : {}),
       };
       let rec;
-      try { rec = await supervisor.start({ id, manifest: { backend }, cwd, env }); }
+      try { rec = await supervisor.start({ id, manifest: { backend }, cwd, env, log: backendLogPaths(id) }); }
       catch (e) {
         // The spawn itself failed (e.g. the host shell cannot be resolved):
         // the same failure as a backend that never became ready.
@@ -649,6 +741,13 @@ export function createPluginHost(opts: {
     if (rec) {
       supervisor.stop({ id, pgid: rec.pgid });
       await store.clearRuntime(id);
+      // An adopted child has no exit event to carry this; a spawned one's does.
+      if (s.adopted) {
+        await store.recordExit(id, {
+          pid: rec.pid, startedAt: rec.startedAt, at: new Date().toISOString(), how: 'stopped',
+          code: null, signal: null, stopRequested: true, lastAliveAt: s.lastAliveAt,
+        });
+      }
     }
     if (s.status !== 'failed') s.status = 'stopped';
   }
@@ -668,7 +767,16 @@ export function createPluginHost(opts: {
     const entry = byId.get(id);
     if (!entry || !store.isEnabled(id)) throw httpError(404, `unknown or disabled plugin '${id}'`);
     const s = runtimeState(id);
-    if (s.status === 'ready') return;
+    if (s.status === 'ready') {
+      // An adopted child has no exit event: one kill(pid, 0), no I/O, tells
+      // whether it is still there. A spawned child's event is authoritative.
+      const rec = s.adopted ? store.runtimeRecord(id) : undefined;
+      if (rec) {
+        if (pidAlive(rec.pid)) s.lastAliveAt = new Date().toISOString();
+        else await markDead(id, `process ${rec.pid} exited while adopted`);
+      }
+      if (s.status === 'ready') { maybeTrimLog(id, _logCheckMinMs); return; }
+    }
     if (s.status === 'failed') {
       throw httpError(503, `plugin '${id}' is failed (${CRASH_LIMIT} crashes in ${Math.round(_crashWindowMs / 1000)}s) — re-enable or start it manually`, { status: 'failed', tail: s.tail });
     }
@@ -725,6 +833,7 @@ export function createPluginHost(opts: {
       reg: id ? store.get(id) ?? null : null,
       runtime: id ? runtimeState(id) : null,
       record: id ? store.runtimeRecord(id) ?? null : null,
+      exits: id ? store.exits(id) : [],
       activeVersion,
       cwd,
       platform,
@@ -761,7 +870,10 @@ export function createPluginHost(opts: {
       const entry = byId.get(id);
       const answers = await probeAnswers(rec.port, entry?.manifest);
       if (!answers && !pidAlive(rec.pid)) {
-        markDead(id, s.tail ?? `process ${rec.pid} died silently`);
+        await markDead(id, s.tail ?? `process ${rec.pid} died silently`);
+      } else if (pidAlive(rec.pid)) {
+        s.lastAliveAt = new Date().toISOString();
+        maybeTrimLog(id, 0);
       }
     }
     return describe(id);
@@ -772,7 +884,17 @@ export function createPluginHost(opts: {
     const rec = store.runtimeRecord(id);
     const s = rt.get(id);
     if (!rec || !s || s.status !== 'ready') return;
-    if (!pidAlive(rec.pid)) markDead(id, s.tail ?? `process ${rec.pid} died (upstream connection failed)`);
+    if (!pidAlive(rec.pid)) {
+      markDead(id, s.tail ?? `process ${rec.pid} died (upstream connection failed)`)
+        .catch(e => console.warn(`plugins: recording ${id}'s death failed: ${errMsg(e)}`));
+    }
+  }
+
+  // The tail of a backend's log file for GET /api/plugins/:id/log.
+  async function backendLog(id: string, which: 'current' | 'previous'): Promise<LogTail> {
+    await ensureInit();
+    if (!byId.get(id) && !store.has(id)) throw httpError(404, `unknown plugin '${id}'`);
+    return readLogTail(backendLogPaths(id)[which], LOG_TAIL_BYTES);
   }
 
   // Worktree-version activation: which checkout the supervisor cwd points
@@ -940,7 +1062,7 @@ export function createPluginHost(opts: {
     claudePluginDirs: contributions.claudePluginDirs,
     runCodeModule: contributions.runCodeModule,
     runCodeMembers: contributions.runCodeMembers,
-    reportUpstreamFailure, setServerPort, stopAll,
+    reportUpstreamFailure, setServerPort, stopAll, backendLog,
     notices: store.notices,
   };
 }

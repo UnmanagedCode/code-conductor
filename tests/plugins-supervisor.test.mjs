@@ -1,9 +1,9 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import net from 'node:net';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, writeSync } from 'node:fs';
 import path from 'node:path';
-import { mkdtemp } from './tmpRegistry.mjs';
+import { mkdtemp, mkdtempSync } from './tmpRegistry.mjs';
 import { EventEmitter } from 'node:events';
 import { spawn } from 'node:child_process';
 import { createSupervisor } from '../src/plugins/supervisor.ts';
@@ -11,6 +11,13 @@ import { allocatePort, pidAlive, tcpOpen, waitForPort } from '../src/plugins/por
 import { FAKE_PLUGIN_DIR, waitFor } from './plugin-helpers.mjs';
 import { hasMarker } from './procTree.mjs';
 import { sleep } from './poll.mjs';
+
+// A fresh log location per call: the supervisor's child writes its stdout and
+// stderr to this file, and the readiness / crash-tail reads come from it.
+const tmpLog = () => {
+  const dir = mkdtempSync('sup-log-');
+  return { current: path.join(dir, 'backend.log'), previous: path.join(dir, 'backend.prev.log') };
+};
 
 const manifest = (backend) => ({ id: 'fake-plugin', name: 'Fake', version: '1', pluginApi: 1, backend });
 
@@ -59,7 +66,7 @@ function withDeadline(promise, ms, onTimeout) {
 // killProcessGroup swallows ESRCH (src/groupedCommand.ts) and
 // waitFor(() => !pidAlive(pid)) resolves at once on a dead pid.
 async function startAndSettle(t, sup, opts) {
-  const rec = await sup.start(opts);
+  const rec = await sup.start({ log: tmpLog(), ...opts });
   t.after(() => stopAndWait(sup, opts.id, rec));
   const rt = await waitFor(() => {
     const r = sup.runtime(opts.id);
@@ -223,7 +230,7 @@ function holdPort(port) {
 // `scripts` is one entry per attempt; the last entry repeats.
 function fakeSpawn(scripts) {
   const spawned = [];
-  const fn = () => {
+  const fn = (_cmd, _args, opts) => {
     const script = scripts[Math.min(spawned.length, scripts.length - 1)];
     const proc = new EventEmitter();
     // A SYNTHETIC pid — an array index, not a kernel allocation. What keeps it
@@ -237,12 +244,13 @@ function fakeSpawn(scripts) {
     // becomes process.kill(-900001, 'SIGTERM') against a stranger's process
     // group.
     proc.pid = 900001 + spawned.length;
-    proc.stdout = new EventEmitter();
-    proc.stderr = new EventEmitter();
     spawned.push(proc);
+    // A real child writes through the fds it was handed (stdio[1] / stdio[2],
+    // the backend log file). Written INSIDE the spawn call, because the
+    // supervisor closes its copies of those fds as soon as spawn returns.
+    if (script.stderr) writeSync(opts.stdio[2], script.stderr);
+    if (script.stdout) writeSync(opts.stdio[1], script.stdout);
     process.nextTick(() => {
-      if (script.stderr) proc.stderr.emit('data', Buffer.from(script.stderr));
-      if (script.stdout) proc.stdout.emit('data', Buffer.from(script.stdout));
       if (script.exitCode !== undefined) proc.emit('exit', script.exitCode, null);
     });
     return proc;
@@ -335,6 +343,7 @@ test('bare-TCP readiness does not fire before the port is actually bound', async
     id: 'fake-plugin',
     manifest: manifest({ start: 'sleep 30' }), // alive throughout, binds nothing
     cwd: FAKE_PLUGIN_DIR,
+    log: tmpLog(),
   });
   const listener = holdPort(port);
   try {
@@ -482,6 +491,7 @@ test('a child that dies before readiness stops the readiness probing', async () 
     // child never owned — exactly what allocatePort() may already have reissued.
     manifest: manifest({ start: 'node crash.mjs', healthPath: '/health' }),
     cwd: FAKE_PLUGIN_DIR,
+    log: tmpLog(),
   });
   try {
     // Two barriers, both causally downstream of the decision under test: the
@@ -511,6 +521,7 @@ test('readiness probing continues while the child is still alive', async () => {
     id: 'fake-plugin',
     manifest: manifest({ start: 'sleep 30', healthPath: '/health' }),
     cwd: FAKE_PLUGIN_DIR,
+    log: tmpLog(),
   });
   try {
     await waitFor(() => sq.accepts() >= 1);
@@ -790,4 +801,69 @@ test('reservedPort() draws below the reported bound, and refuses when there is n
   }
   const airless = await rangeFile('1024\t65535\n');
   await assert.rejects(() => reservedPort(airless), /no usable range below 1024/);
+});
+
+// Per-attempt offset: a retry attempt's readiness must not be satisfied by the
+// FAILED attempt's output, which is still in the same log file.
+test('a retry attempt\'s readyWhen does not match the failed attempt\'s output', async (t) => {
+  const spawnFake = fakeSpawn([
+    { stdout: 'fake-plugin listening on 45111\n', stderr: EADDRINUSE_STDERR(45111), exitCode: 1 },
+    { stdout: 'booting\n' }, // alive, never says it is listening
+  ]);
+  let calls = 0;
+  const sup = createSupervisor({
+    _spawn: spawnFake,
+    _readyTimeoutMs: 600,
+    _allocatePort: () => Promise.resolve(45100 + (++calls)),
+  });
+  const { rt } = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'irrelevant — _spawn is faked', readyWhen: 'listening on \\d+' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(spawnFake.spawned.length, 2);
+  assert.equal(rt.status, 'crashed', 'the first attempt\'s "listening" line did not make the retry ready');
+  assert.match(rt.error, /readiness not confirmed/);
+});
+
+// A stopped child's exit is observable with its provenance.
+test('onChildExit fires for a stopped child with stopRequested, and for a crash without it', async (t) => {
+  const exits = [];
+  const sup = createSupervisor({ onChildExit: (id, info) => exits.push({ id, info }) });
+  const { rec } = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'node server.mjs', healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  sup.stop({ id: 'fake-plugin', pgid: rec.pgid });
+  await waitFor(() => exits.length === 1);
+  assert.equal(exits[0].id, 'fake-plugin');
+  assert.equal(exits[0].info.pid, rec.pid);
+  assert.equal(exits[0].info.stopRequested, true);
+  assert.equal(exits[0].info.startedAt, rec.startedAt);
+
+  const crashes = [];
+  const sup2 = createSupervisor({ onChildExit: (_id, info) => crashes.push(info) });
+  await startAndSettle(t, sup2, { id: 'fake-plugin', manifest: manifest({ start: 'node crash.mjs' }), cwd: FAKE_PLUGIN_DIR });
+  await waitFor(() => crashes.length === 1);
+  assert.equal(crashes[0].stopRequested, false);
+  assert.equal(crashes[0].code, 1);
+});
+
+// A child that stays alive but never becomes healthy has said something by the
+// time readiness gives up; that output is the crash tail (healthPath readiness
+// never reads the log on its own).
+test('a healthPath child that never becomes healthy has its output in the crash tail', async (t) => {
+  const port = await reservedPort();
+  // A shell echo then a long sleep: the marker is out within milliseconds of the
+  // spawn, far inside the bound, so the bound cannot race the child's startup.
+  const sup = createSupervisor({ _readyTimeoutMs: 1500, _allocatePort: () => Promise.resolve(port) });
+  const { rt } = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: 'echo STARTUP-OUTPUT-MARKER; exec sleep 30', healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(rt.status, 'crashed');
+  assert.match(rt.error, /readiness not confirmed/);
+  assert.match(rt.error, /STARTUP-OUTPUT-MARKER/);
 });

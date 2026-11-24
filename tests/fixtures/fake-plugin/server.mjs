@@ -25,6 +25,29 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ ok: true, plugin: 'fake-plugin' }));
     return;
   }
+  if (url.pathname === '/say') {
+    // n lines to stdout and to stderr through DIRECT stream writes (what a
+    // dependency does; console.* swallows a dead pipe's EPIPE, a direct write
+    // does not), answering only once both writes completed. No stdio 'error'
+    // listener: a write into a pipe whose reader is gone must kill this
+    // process, exactly as it would a real backend.
+    const n = Number(url.searchParams.get('n') ?? 1);
+    const lines = (tag) => Array.from({ length: n }, (_, i) => `say-${tag}-${i}\n`).join('');
+    let pending = 2;
+    const done = () => {
+      if (--pending > 0) return;
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ said: n }));
+    };
+    process.stdout.write(lines('out'), done);
+    process.stderr.write(lines('err'), done);
+    return;
+  }
+  if (url.pathname === '/exit') {
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ exiting: true }), () => process.exit(Number(url.searchParams.get('code') ?? 0)));
+    return;
+  }
   if (url.pathname === '/') {
     res.writeHead(200, { 'content-type': 'text/html' });
     // Base-safe host URLs: relative, so they resolve under any hosting prefix.

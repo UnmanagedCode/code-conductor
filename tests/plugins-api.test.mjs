@@ -1002,3 +1002,59 @@ test('POST /api/plugins/library/:id/install regenerates a pre-existing project w
     await fs.rm(seedDir, { recursive: true, force: true });
   }
 });
+
+// REST contract for the backend log.
+test('GET /api/plugins/:id/log serves the current and the previous run; 400 for another file; 404 for an unknown id', async () => {
+  const boot = await setup();
+  try {
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    const cur = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log');
+    assert.equal(cur.status, 200);
+    assert.equal(cur.body.file, 'current');
+    assert.equal(cur.body.exists, true);
+    assert.match(cur.body.text, /fake-plugin listening/);
+
+    const none = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=previous');
+    assert.equal(none.body.exists, false, 'no previous run yet');
+
+    const restarted = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
+    assert.equal(restarted.status, 200);
+    const prev = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=previous');
+    assert.equal(prev.status, 200);
+    assert.equal(prev.body.file, 'previous');
+    assert.match(prev.body.text, /fake-plugin listening/, 'the first run\'s output moved to previous');
+    await waitFor(() => !pidAlive(st.body.pid));
+
+    assert.equal((await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=bogus')).status, 400);
+    assert.equal((await api(boot.baseUrl, 'GET', '/api/plugins/nope/log')).status, 404);
+  } finally { await boot.close(); }
+});
+
+// The documented cap is 64 KiB (docs/plugins/rest.md). The literal is deliberate: importing
+// DOCUMENTED_LOG_TAIL_BYTES would let a changed cap carry this expectation along with it. A larger log
+// is served as its newest bytes only, cut at a line boundary, flagged truncated, whole size reported.
+const DOCUMENTED_LOG_TAIL_BYTES = 64 * 1024;
+test('GET /api/plugins/:id/log serves only the newest 64 KiB of a larger log', async () => {
+  const boot = await setup();
+  try {
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    // 70-byte lines so the cut can be checked exactly against the file.
+    const lines = Math.ceil((DOCUMENTED_LOG_TAIL_BYTES * 3) / 70);
+    const file = path.join(orchStoreRoot(), 'plugins', 'logs', 'fake-plugin', 'backend.log');
+    const body = Array.from({ length: lines }, (_, i) => `line-${String(i).padStart(6, '0')} ${'x'.repeat(70 - 13)}\n`).join('');
+    await fs.writeFile(file, body);
+    const r = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log');
+    assert.equal(r.status, 200);
+    assert.equal(r.body.truncated, true);
+    assert.equal(r.body.size, Buffer.byteLength(body));
+    assert.ok(r.body.text.length <= DOCUMENTED_LOG_TAIL_BYTES, `text is ${r.body.text.length} bytes`);
+    // Newest bytes only, cut at a line boundary: at most one (partial) line short of the cap.
+    assert.ok(body.endsWith(r.body.text));
+    assert.ok(r.body.text.length > DOCUMENTED_LOG_TAIL_BYTES - 70, 'not cut shorter than the cap allows');
+    assert.ok(r.body.text.startsWith('line-'), 'starts on a whole line');
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/stop');
+    await waitFor(() => !pidAlive(st.body.pid));
+  } finally { await boot.close(); }
+});

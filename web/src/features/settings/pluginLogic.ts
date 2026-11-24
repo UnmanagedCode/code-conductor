@@ -1,11 +1,17 @@
 // Pure helpers behind Settings → Plugins (rows from GET /api/plugins, library
 // entries from GET /api/plugins/library).
 
+/** One entry of a row's `exits` (src/plugins/store.ts ExitRecord): how a backend's run ended. */
+export type ExitRecord = {
+  pid: number; startedAt: string; at: string; how: 'exit' | 'gone' | 'stopped';
+  code: number | null; signal: string | null; stopRequested: boolean; lastAliveAt: string | null;
+};
+
 export type PluginRow = {
   id: string; name: string; project: string; state: string; enabled?: boolean; autoStart?: boolean; version?: string;
   activeVersion?: { type: 'main' } | { type: 'worktree'; name: string }; gitHead?: string; stale?: boolean; port?: number;
   manifestSource?: { type: string; name?: string }; conventions?: { name: string; description: string; hasScaffold?: boolean }[];
-  roles?: unknown[]; playbooks?: unknown[]; errors?: string[]; crashTail?: string; hasBackend?: boolean;
+  roles?: unknown[]; playbooks?: unknown[]; errors?: string[]; crashTail?: string; hasBackend?: boolean; exits?: ExitRecord[];
   localOnly?: string[]; system?: string;
 };
 export type LibraryEntry = {
@@ -35,6 +41,15 @@ export function metaBits(row: PluginRow): string[] {
   }
   if (row.manifestSource?.type === 'worktree') bits.push(`manifest from worktree ${row.manifestSource.name}`);
   return bits;
+}
+
+/** One line for an exit record; a backend found gone says its exit status is unknown, since cc could not observe it. */
+export function exitSummary(e: ExitRecord): string {
+  const when = new Date(e.at).toLocaleString();
+  if (e.how === 'stopped') return `stopped by cc · ${when}`;
+  if (e.how === 'gone') return `found gone, exit status unknown (it died while cc was not watching it) · ${when}`;
+  const what = e.signal ? `killed by ${e.signal}` : `exited with code ${e.code}`;
+  return `${what}${e.stopRequested ? ' (stop requested)' : ''} · ${when}`;
 }
 
 export function contributions(row: PluginRow): string[] {
