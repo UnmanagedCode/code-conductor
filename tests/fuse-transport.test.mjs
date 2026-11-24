@@ -44,6 +44,7 @@ const probeCount = async (log) =>
 import { fuseRunRoot } from '../src/systems/fuse/plan.ts';
 import { assertRemoteLive } from '../src/systems/registry.ts';
 import net from 'node:net';
+import { execFileSync } from 'node:child_process';
 import { ControlServer, encodeRequest, CCU_OP, CCU_STATUS, CCU_FLAG_FOR_WRITE,
   CCU_FLAG_RELEASE_ONLY, CCU_FLAG_MODE_SET } from '../src/systems/fuse/control.ts';
 import { buildTierTable } from '../src/systems/fuse/tierTable.ts';
@@ -1086,9 +1087,9 @@ describe("the write path — mode, faults and the double reconcile", () => {
     });
   });
 
-  // PINS: a failed push PERSISTS the diverged path set to the diverged record,
-  // BEFORE the worker sees EIO, so a teardown that never saw this server can
-  // copy the bytes out of the mirror. The record is the whole set, sorted.
+  // PINS: a failed push PERSISTS the diverged path set to the diverged record
+  // (the whole set, sorted), readable once the reply has arrived. The ORDER —
+  // on disk before the worker sees EIO — is T12e's.
   // DIES UNDER: no write; writing only the current path (the second arm lists
   // [p] instead of [p, q]); including `over-cap` faults (the third arm).
   test('T12d — a failed push persists the diverged path set', async () => {
@@ -1116,6 +1117,33 @@ describe("the write path — mode, faults and the double reconcile", () => {
       assert.equal(server.faultAt(big).kind, 'over-cap');
       await fail('c.txt');
       assert.ok(!(await listed()).includes(big), 'an over-cap path (never materialised) was listed as diverged');
+    });
+  });
+
+  // PINS: the diverged record is on disk BEFORE the worker sees EIO. The record
+  // write's temp file is a FIFO, so the write blocks until the test reads it —
+  // no production seam — and the REPLY must not arrive while it is blocked.
+  // DIES UNDER: replying before the record write completes (the reply resolves
+  // while the write is still blocked); not writing at all (the FIFO is never
+  // opened, so the read below hangs → the test's own timeout kills it).
+  test('T12e — the diverged record is written before the REFUSED reply', async () => {
+    await rig(async ({ src, mirror, call, divergedRecord }) => {
+      const p = path.join(src, 'ordered.txt');
+      await fs.writeFile(p, 'ORIGINAL');
+      assert.equal((await call(CCU_OP.FETCH, CCU_FLAG_FOR_WRITE, p)).status, CCU_STATUS.READY);
+      await fs.writeFile(path.join(mirror, p), 'WORKER');
+      await wedgeSource(p);
+      const fifo = `${divergedRecord}.tmp.${process.pid}`;
+      execFileSync('mkfifo', [fifo]);
+      let replied = false;
+      const reply = call(CCU_OP.DIRTY, 0, p).then((r) => { replied = true; return r; });
+      for (let i = 0; i < 50; i++) await new Promise((r) => setImmediate(r));
+      assert.equal(replied, false, 'the worker was answered while the record write was still pending');
+      const fh = await fs.open(fifo, 'r');
+      let text;
+      try { text = await fh.readFile('utf8'); } finally { await fh.close(); }
+      assert.deepEqual(JSON.parse(text).paths, [p]);
+      assert.equal((await reply).status, CCU_STATUS.REFUSED);
     });
   });
 

@@ -759,7 +759,7 @@ describe('the fault refusals — divergence and over-cap', () => {
     // so the worker does not try to Read it.
     // DIES UNDER: the wording dropping the recovery location.
     assert.ok(reason.includes(`'${DIVERGED.keptUnder}'`), 'the refusal does not name where the bytes are kept');
-    assert.match(reason, /on the orchestrator/);
+    assert.match(reason, /bytes on the orchestrator into/);
     // NEVER "cannot" FOR THE ACT ITSELF. `will not` is the whole distinction
     // between a refusal and a failure, and a model acts differently on each.
     assert.doesNotMatch(reason, /^cc cannot/);

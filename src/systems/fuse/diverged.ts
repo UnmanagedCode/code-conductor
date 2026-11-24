@@ -57,7 +57,7 @@ export interface RescueResult {
 
 const within = (child: string, parent: string): boolean => {
   const rel = path.relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  return rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel);
 };
 
 async function sameBytes(a: string, b: string): Promise<boolean> {
@@ -89,7 +89,9 @@ async function publish(src: string, dst: string): Promise<string> {
   throw new Error(`more than ${MAX_SUFFIX} different copies of ${dst} already exist`);
 }
 
-export async function rescueDiverged(opts: { rundir: string; dest: string }): Promise<RescueResult> {
+// `extraPaths` is the live server's in-memory set, unioned with the record's so
+// a failed record write cannot lose bytes.
+export async function rescueDiverged(opts: { rundir: string; dest: string; extraPaths?: string[] }): Promise<RescueResult> {
   const { rundir, dest } = opts;
   const mirror = path.join(rundir, 'mirror');
   const result: RescueResult = { dir: null, rescued: [], failed: [], skipped: [] };
@@ -98,6 +100,7 @@ export async function rescueDiverged(opts: { rundir: string; dest: string }): Pr
   let paths: string[];
   try { paths = await readDivergedRecord(record); }
   catch (e) { result.failed.push({ path: record, error: (e as Error).message }); return result; }
+  paths = [...new Set([...paths, ...(opts.extraPaths ?? [])])].sort();
 
   let realMirror: string | null | undefined;     // undefined: not resolved yet
   let realDest: string | null = null;

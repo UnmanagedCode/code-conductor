@@ -368,7 +368,7 @@ export class ControlServer {
   #persistDiverged(): Promise<void> {
     const run = this.#divergedWrites.then(() => writeDivergedRecord(
       this.#opts.divergedRecord,
-      [...this.#faults].filter(([, f]) => f.kind === 'diverged').map(([p]) => p),
+      this.divergedPaths(),
     )).catch((e: Error) => {
       this.#opts.log?.(`cc-union control: could not record diverged paths in ${this.#opts.divergedRecord}: ${e.message}`);
     });
@@ -434,6 +434,12 @@ export class ControlServer {
   // a reconcile landed.
   faultAt(p: string): Fault | null {
     return this.#faults.get(p) ?? null;
+  }
+
+  // The paths currently diverged, from memory — what teardown unions with the
+  // persisted record, so a record write that failed cannot lose their bytes.
+  divergedPaths(): string[] {
+    return [...this.#faults].filter(([, f]) => f.kind === 'diverged').map(([p]) => p);
   }
 
   // Await whatever frame is in flight for `p`, so a caller that reads

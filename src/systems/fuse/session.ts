@@ -431,6 +431,9 @@ export interface TeardownInput extends Sinks {
   // false only from the runtime sweep, whose dirs were already harvested by
   // their own teardown or the boot sweep.
   harvest?: boolean;
+  // Diverged paths the live control server still held when it closed, unioned
+  // with `diverged.json` for the rescue.
+  divergedPaths?: string[];
 }
 
 async function readJson<T>(file: string): Promise<T | null> {
@@ -854,7 +857,7 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
   //        The line's prefix is `cc-fuse rescue:` and NOT `cc-fuse: `, so the
   //        sweep's event-line filter does not print it a second time.
   if (!report.wedged) {
-    const r = await rescueDiverged({ rundir, dest: fuseRecoveredDir(path.basename(rundir)) });
+    const r = await rescueDiverged({ rundir, dest: fuseRecoveredDir(path.basename(rundir)), extraPaths: input.divergedPaths });
     report.rescued = r.rescued;
     report.rescueFailed = r.failed;
     if (r.rescued.length || r.skipped.length) {
@@ -897,11 +900,18 @@ export async function runTeardown(input: TeardownInput): Promise<TeardownReport>
     // landing between the two simply makes the write ENOENT rather than
     // resurrecting the directory. The window is closed by the mechanism, not
     // narrowed by the check.
-    if (record && await fsp.stat(rundir).then(() => true, () => false)) {
-      await writeJsonAtomic(recordPath, {
-        ...record, wedged: true, terminalState: report.terminalState,
-        residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
-      }).catch((e: Error) => notes.push(`the wedge record could not be written: ${e.message}`));
+    if (await fsp.stat(rundir).then(() => true, () => false)) {
+      // A MINIMAL RECORD when none is readable (a rescue failure on an
+      // intent-only or record-less dir): `prepare()` refuses a relaunch on
+      // `wedged`, and without this it would reuse the dir and truncate the kept
+      // mirror.
+      const base = record ?? { schema: RECORD_SCHEMA, instanceId: report.instanceId, rundir };
+      if (record || report.rescueFailed.length) {
+        await writeJsonAtomic(recordPath, {
+          ...base, wedged: true, terminalState: report.terminalState,
+          residualMounts: report.residualMounts, survivingPids: report.survivingPids, at: Date.now(),
+        }).catch((e: Error) => notes.push(`the wedge record could not be written: ${e.message}`));
+      }
     }
   } else {
     // Reached only when the namespace enumeration RAN and came back empty, no
@@ -1098,6 +1108,9 @@ export class FuseSession {
     // the runtime sweep must never reclaim it. Released by `#teardown`.
     ACTIVE.add(p.rundir);
     await fsp.rm(p.recordPath, { force: true }).catch(() => {});
+    // The previous lifecycle's diverged paths: its bytes were rescued or are the
+    // wedge's business (refused above), and a stale list would be rescued again.
+    await fsp.rm(p.divergedRecordPath, { force: true }).catch(() => {});
     this.record = null;
     this.#tornDown = false;
     // 0700, AND IT IS THE ENVIRONMENT FILES THAT MAKE IT MATTER. `env.plan.sh`
@@ -1204,9 +1217,12 @@ export class FuseSession {
     // `Instance.kill()`'s no-process arm together with `remove()` going through
     // `kill()` at all; before that pair, `remove()` skipped `kill()` entirely,
     // so kill's own fix was unreachable from there.
-    await this.#control?.close().catch(() => {});
+    const ctl = this.#control;
+    await ctl?.close().catch(() => {});
     this.#control = null;
     if (this.#tornDown) return { alreadyTornDown: true };
+    // Read AFTER close(), whose drain lets in-flight DIRTYs record their faults.
+    const divergedPaths = ctl?.divergedPaths() ?? [];
     this.#tornDown = true;
     try {
       return await runTeardown({
@@ -1215,6 +1231,7 @@ export class FuseSession {
         scan: this.#scan,
         deadlines: this.#deadlines,
         closeStdin,
+        divergedPaths,
         ...this.#sinks,
       });
     } finally { ACTIVE.delete(this.plan.rundir); }

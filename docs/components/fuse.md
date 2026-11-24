@@ -154,9 +154,7 @@ Two more of its rules existed because every file op carried a whole file over a 
 
 ## FUSE teardown
 
-One implementation — `runTeardown` in `src/systems/fuse/session.ts` — reached from four places: `Instance.kill()` (the commanded path, which **awaits** it), `Instance._handleExit()` (the crash path, fire-and-forget beside `_redirect.close()`), and `sweepFuseSessions()` at boot. `bootstrap.sh` owns none of it: it `exec`s into the CLI and ceases to exist as a supervisor, and a shell trap cannot survive `SIGKILL`.
-
-It is also reached from the runtime sweep (`requestFuseSweep`).
+One implementation — `runTeardown` in `src/systems/fuse/session.ts` — reached from four places: `Instance.kill()` (the commanded path, which **awaits** it), `Instance._handleExit()` (the crash path, fire-and-forget beside `_redirect.close()`), `sweepFuseSessions()` at boot, and `requestFuseSweep()` at runtime (see "The runtime sweep"). `bootstrap.sh` owns none of it: it `exec`s into the CLI and ceases to exist as a supervisor, and a shell trap cannot survive `SIGKILL`.
 
 Ordered, every step bounded, every failure branch continuing rather than stopping:
 
@@ -171,7 +169,7 @@ Ordered, every step bounded, every failure branch continuing rather than stoppin
 | 6 | `SIGKILL` the **namespace anchor**, last. | survives ⇒ noted; the namespace stays open |
 | 7 | **Confirm death positively**, and take the verdict from **namespace membership**: enumerate `/proc` (`procScan.ts`), re-verify the worker, the daemon **and** the anchor against their recorded starttimes, and read mounts from every vantage point — cc's own, `/proc/1/mounts`, any live recorded pid, and any member the record never named. | any survivor, any member, any residue, **or a scan that could not run** ⇒ the wedge branch |
 | 7c | **Clean verdict only:** copy each file listed in `diverged.json` out of the mirror to `<store>/systems/fuse/recovered/<runDirName>/<remote path>` (`rescueDiverged`), before the reclaim. | a failed copy ⇒ the verdict becomes a **wedge** (`rescueFailed`), so step 8 keeps the run dir: the mirror holds the only copy |
-| 8 | Re-read `mount.json` **immediately before** the irreversible step, then `rm -rf` the run directory. | on a wedge, **keep** it and rewrite `mount.json` with `{wedged, terminalState, residualMounts, survivingPids, at}` | Step 8's wedge line also names diverged files that were not copied out.
+| 8 | Re-read `mount.json` **immediately before** the irreversible step, then `rm -rf` the run directory. | on a wedge, **keep** it and rewrite `mount.json` with `{wedged, terminalState, residualMounts, survivingPids, at}` Step 8's wedge line also names diverged files that were not copied out. |
 
 **A FUSECTL LISTING IS NEVER PROOF OF OWNERSHIP; AN ATTACHED ROOT ON THE RECORDED MINOR IS.** fusectl is one global superblock and lists every FUSE connection on the host. Unmounting the union root destroys the session's superblock — which aborts its connection and removes its fusectl entry — and frees its anon minor, which the kernel allocates lowest-free, so the next FUSE mount anywhere (typically another session's bootstrap) gets the same number. An abort issued after the root's unmount therefore kills that session: its bootstrap dies at the `/proc` or `/sys` bind (`move_mount() … ENOTCONN`, code 78) or at `chroot` (`Transport endpoint is not connected`, code 125), or its CLI dies later (`SIGBUS`). The abort goes **before** the root's unmount, not after it with a skip, so it stays the solvent for a busy root that only `umount -l` detaches; the aborted daemon sees `POLLERR` on its device and skips its own unmount, and step 4 stops it as before.
 
@@ -235,5 +233,7 @@ A diverged file's bytes are copied to `<store>/systems/fuse/recovered/<runDirNam
 - **Regular files only.** A symlink entry is not recreated; its target is written into the `cc-fuse rescue:` line. A directory entry is skipped (its files have entries of their own), as is a path with nothing in the mirror. None of these is a failure.
 - **Never overwrites.** Identical bytes already at the destination count as done (a retry is idempotent); different bytes go to `<dst>.1`, `.2`, … Publication is a temp copy then a no-clobber `link`.
 - **Path-safe.** An entry must stay inside the mirror (`withinPosix`) and its parent must `realpath` inside the realpath'd mirror; the destination parent must `realpath` inside the rescue dir.
-- **Failure keeps the run dir** (a wedge; `prepare()` then refuses the dir with `FUSE_PREVIOUS_TEARDOWN_WEDGED`) until a later sweep succeeds.
+- **The live set is unioned in.** `FuseSession`'s teardown reads the closed control server's in-memory diverged set (`ControlServer.divergedPaths()`) and passes it to the rescue with the record's paths, so a failed `diverged.json` write (ENOSPC, EROFS, EIO) cannot lose bytes while cc is up. **Residual:** a cc crash combined with a failed record write still loses them — the boot sweep has only the record.
+- **`prepare()` drops the previous lifecycle's `diverged.json`** (after the wedge/foreign refusals, which leave a wedged dir untouched), so a reused dir is not rescued twice.
+- **Failure keeps the run dir** (a wedge; `prepare()` then refuses the dir with `FUSE_PREVIOUS_TEARDOWN_WEDGED`) until a later sweep succeeds. With no readable `mount.json`, step 8 writes a minimal wedged record so that refusal still holds.
 - **The operator deletes them; cc never does.** The refusal names the recovered directory and says it cannot be read from the session.
