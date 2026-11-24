@@ -13,6 +13,7 @@ import { openNewProjectDialog } from '@/features/dialogs/api';
 import { startConducting } from '@/features/dialogs/conduct';
 import { SessionWidthHandles } from './SessionWidthHandles';
 import { SessionHeader } from './SessionHeader';
+import { LandingMark } from './LandingMark';
 import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
 import { EndedBanner } from './EndedBanner';
@@ -31,7 +32,7 @@ function EmptyState() {
   const focus = useFocusMode();
   return (
     <div className="flex h-full flex-col items-center justify-center gap-6 p-6 text-center" data-empty-state>
-      <LiveMark className="size-32" />
+      <LandingMark className="size-32" />
       <div className="space-y-2">
         <h2 className="text-2xl font-semibold tracking-tight text-balance">Ready when you are, maestro</h2>
         <p className="mx-auto max-w-md text-muted-foreground">

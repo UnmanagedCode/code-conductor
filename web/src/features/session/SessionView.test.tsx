@@ -20,6 +20,7 @@ import { rateLimits } from '@/app/trackers';
 import type { Instance, InstanceWorktree } from '@/state/types';
 import { routeFetch } from '@/test/routeFetch';
 import { SessionView } from './SessionView';
+import { landingAssembly } from './LandingMark';
 import { CONDUCTOR_LABEL } from '@shared/conductors';
 
 const WORKTREE: InstanceWorktree = { worktreeName: 'wt-a', branch: 'code-conductor/wt-a', baseBranch: 'main', baseSha: 'abcdef012345', postWorktreeCreate: null };
@@ -57,6 +58,8 @@ async function openMenu() {
 beforeEach(() => {
   sent.length = 0;
   seed();
+  // This file pins the settled landing; the page load's one assembly is pinned below and in LandingMark.test.tsx.
+  landingAssembly.set({ played: true });
 });
 
 // The workers panel reads the session's spawned sessions; answer it (and any other read) with `{}`.
@@ -233,5 +236,22 @@ describe('the logo', () => {
     renderView();
     expect(document.querySelector('[data-empty-state]'), 'fixture check: a session, not the landing').toBeNull();
     followsConnection(() => document.querySelector('[data-conversation-empty]'));
+  });
+
+  it('the landing\'s mark assembles on the first landing of a page load', () => {
+    // Invariant: the assembly belongs to the landing: with the page load's play not yet used, the landing's mark carries the assembly attribute.
+    landingAssembly.set({ played: false });
+    renderView();
+    expect(document.querySelector('[data-empty-state] svg[data-logo="mark"]')!.hasAttribute('data-logo-assemble')).toBe(true);
+  });
+
+  it('the empty chat\'s mark never assembles', () => {
+    // Invariant: the empty chat keeps the plain live mark even when the page load's landing play is unused.
+    landingAssembly.set({ played: false });
+    seed({ connection: 'open', instances: [inst('A')], activeId: 'A' });
+    renderView();
+    const mark = document.querySelector('[data-conversation-empty] svg[data-logo="mark"]');
+    expect(mark, 'fixture check: the empty chat draws a mark').toBeTruthy();
+    expect(mark!.hasAttribute('data-logo-assemble')).toBe(false);
   });
 });
