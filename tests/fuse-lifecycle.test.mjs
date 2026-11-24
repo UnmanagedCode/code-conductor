@@ -3993,9 +3993,12 @@ describe('the boot sweep', () => {
   // PINS: an orphaned run dir whose `diverged.json` lists a file is RESCUED by
   // the boot sweep — the bytes reach `recovered/` before the reclaim — and the
   // operator line is printed exactly once.
+  // The fixture carries an `events.log` row, so the sweep's clean-path
+  // `eventPaths.length` block runs and its `cc-fuse: ` filter has the rescue note
+  // beside the events note to choose between.
   // DIES UNDER: the sweep path skipping the rescue (the bytes are gone); the
-  // line printing twice (the sweep's `cc-fuse: ` events filter picking up the
-  // `cc-fuse rescue:` note).
+  // filter loosened to `cc-fuse` (the rescue line is printed a second time inside
+  // the `cc-fuse sweep:` events line).
   test('BS-rescue: an orphaned run dir with diverged.json is rescued, and said once', async () => {
     const { sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
     const { fuseRecoveredDir } = await import('../src/systems/fuse/plan.ts');
@@ -4004,10 +4007,13 @@ describe('the boot sweep', () => {
     await fs.mkdir(path.join(dir, 'mirror', 'srv', 'app'), { recursive: true });
     await fs.writeFile(path.join(dir, 'mirror', 'srv', 'app', 'a.txt'), 'ONLY COPY');
     await fs.writeFile(path.join(dir, 'diverged.json'), JSON.stringify({ schema: 1, paths: ['/srv/app/a.txt'] }));
+    await fs.writeFile(path.join(dir, 'events.log'), 'deny\tgetattr\t/lib/x86_64-linux-gnu/libtinfo.so.6\tunpinned-fail-closed\t7\t7\tclaude\tclaude\n');
     const warned = [];
     const reports = await sweepFuseSessions({ driver: fakeDriver(), scan: emptyScan, log: { warn: (...a) => warned.push(a.join(' ')) } });
     const report = reports.find(r => r.instanceId === id);
     assert.equal(report.removedRunDir, true, JSON.stringify(report.notes));
+    assert.ok(report.eventPaths.length > 0, 'the events block did not run, so the filter is not exercised');
+    assert.ok(warned.some(w => w.startsWith('cc-fuse sweep:') && w.includes('libtinfo.so.6')), 'no events line, so the filter is not exercised');
     assert.equal(await fs.readFile(path.join(fuseRecoveredDir(id), 'srv', 'app', 'a.txt'), 'utf8'), 'ONLY COPY');
     assert.equal(warned.filter(w => w.includes('cc-fuse rescue:')).length, 1, warned.join(' | '));
     await fs.rm(fuseRecoveredDir(id), { recursive: true, force: true });
@@ -4709,6 +4715,9 @@ describe('the runtime sweep', () => {
   };
   const exists = (f) => fs.stat(f).then(() => true, () => false);
   const tick = async (n = 20) => { for (let i = 0; i < n; i++) await new Promise(r => setImmediate(r)); };
+  // Let the thread pool turn many times: a competing sweep or prepare() is a chain
+  // of fs round trips, so this gives it room to make progress if nothing holds it.
+  const settleIO = async (n = 200) => { for (let i = 0; i < n; i++) await fs.lstat(runRoot).catch(() => null); };
   const wedgedShape = () => {
     const procs = { 7101: { starttime: '710100', state: 'S', threads: ['1', '2'], ns: 'mnt:[elsewhere]' } };
     const driver = fakeDriver({ procs, nsMounts: [], conns: [], undead: new Set([7101]) });
@@ -4742,11 +4751,13 @@ describe('the runtime sweep', () => {
     let live = [], calls = 0;
     let release;
     const held = fuseRunDirLock.run(dir, () => new Promise(r => { release = r; }));
-    const sweep = requestFuseSweep({ liveIds: () => { calls++; return live; }, driver: fakeDriver(), scan: emptyScan, log: quiet });
-    await tick(50);
-    assert.equal(calls, 0, 'liveIds was read before the entry had its turn');
-    live = [id];
-    release(); await held;
+    let sweep;
+    try {
+      sweep = requestFuseSweep({ liveIds: () => { calls++; return live; }, driver: fakeDriver(), scan: emptyScan, log: quiet });
+      await tick(50);
+      assert.equal(calls, 0, 'liveIds was read before the entry had its turn');
+      live = [id];
+    } finally { release(); await held; }
     assert.deepEqual(await sweep, [], 'the entry registered while the sweep waited was swept');
     assert.equal(await exists(path.join(dir, 'mount.json')), true);
     await fs.rm(dir, { recursive: true, force: true });
@@ -4774,11 +4785,13 @@ describe('the runtime sweep', () => {
     assert.equal(fuseRunDirActive(path.join(runRoot, id)), false, 'a torn-down session is still marked active');
   });
 
-  // PINS: the sweep and `prepare()` on ONE dir are mutually exclusive: a
-  // prepare that starts while the sweep is mid-teardown waits for it, so the
-  // sweep's reclaim cannot delete what prepare just made.
-  // DIES UNDER: `#exclusive` not taking `fuseRunDirLock`; the sweep's body
-  // running outside the lock (intent.json / control.sock are gone).
+  // PINS: the sweep and `prepare()` on ONE dir are mutually exclusive: a prepare
+  // that starts while the sweep holds the dir mid-teardown makes NO progress —
+  // its promise is unsettled and it has created nothing — until the sweep
+  // releases, and then runs after it.
+  // DIES UNDER: `#exclusive` not taking `fuseRunDirLock` (prepare proceeds while
+  // the sweep is gated: it settles / writes pins.txt and the socket, and the order
+  // is not sweep-then-prepare); the sweep's body running outside the lock.
   test('RT3: the sweep and prepare() on one dir are mutually exclusive', async () => {
     const { requestFuseSweep } = await import('../src/systems/fuse/sweep.ts');
     const id = randomUUID();
@@ -4792,43 +4805,87 @@ describe('the runtime sweep', () => {
     const d = fakeDriver();
     const s = new FuseSession({ plan: planFor(id), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
     const sweep = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+    const order = [];
+    sweep.then(() => order.push('sweep'), () => {});
     try {
       await entered;
       const prepared = s.prepare();
-      await tick();
+      let settled = false;
+      prepared.then(() => { settled = true; order.push('prepare'); }, () => { settled = true; });
+      await settleIO();
+      assert.equal(settled, false, 'prepare() finished while the sweep held the dir');
+      assert.equal(await exists(path.join(dir, 'control.sock')), false, 'prepare() made progress while the sweep held the dir');
+      assert.equal(await exists(path.join(dir, 'pins.txt')), false);
+      assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'intent.json'), 'utf8')).ccBootId, 'old', 'prepare() rewrote the intent under the sweep');
       release();
       const [reports] = await Promise.all([sweep, prepared]);
       assert.deepEqual(reports.map(r => r.instanceId), [id]);
-      assert.equal(await exists(path.join(dir, 'intent.json')), true, 'the sweep reclaimed what prepare() made');
+      assert.deepEqual(order, ['sweep', 'prepare']);
+      assert.equal(JSON.parse(await fs.readFile(path.join(dir, 'intent.json'), 'utf8')).ccBootId, 'b', 'the sweep reclaimed what prepare() made');
       assert.equal(await exists(path.join(dir, 'control.sock')), true);
     } finally { release(); await s.teardown(); }
   });
 
-  // PINS: a runtime sweep is never concurrent with the boot sweep, and requests
-  // made while one is queued share it.
-  // DIES UNDER: no shared tail (the runtime scan is called before the boot
-  // sweep is released); no coalescing (the two promises differ).
-  test('RT4: never concurrent with the boot sweep, and requests coalesce', async () => {
+  // PINS: a session's OWN prepare() and teardown() are serialised through the run
+  // dir's lock, in call order: held by the test, neither runs; released, prepare
+  // finishes before teardown starts, so the dir ends reclaimed.
+  // DIES UNDER: `#exclusive` reduced to `fn()` (prepare creates the intent while
+  // the lock is held, and/or teardown runs first and prepare leaves a live dir).
+  test('RT3b: a session’s prepare() and teardown() queue behind the lock, in order', async () => {
+    const { fuseRunDirLock, fuseRunDirActive } = await import('../src/systems/fuse/session.ts');
+    const id = randomUUID();
+    const dir = path.join(runRoot, id);
+    const d = fakeDriver();
+    const s = new FuseSession({ plan: planFor(id), ccBootId: 'b', driver: d, scan: d.scan, deadlines: { handshakeMs: 0 } });
+    let release;
+    const held = fuseRunDirLock.run(dir, () => new Promise(r => { release = r; }));
+    try {
+      const prepared = s.prepare();
+      const torn = s.teardown();
+      await settleIO();
+      assert.equal(await exists(path.join(dir, 'intent.json')), false, 'prepare() ran while the run dir was locked');
+      release(); await held;
+      await prepared; await torn;
+      assert.equal(await exists(dir), false, 'teardown() did not run after prepare()');
+      assert.equal(fuseRunDirActive(dir), false);
+    } finally { release(); await held; }
+  });
+
+  // PINS: a runtime sweep never runs while the boot sweep is in flight, even on a
+  // DISJOINT run dir — the shared tail serialises whole sweeps (the boot sweep's
+  // orphan backstop and harvest included), which the per-dir lock cannot. The boot
+  // sweep is held in its BACKSTOP (its only dir already reclaimed), a fresh dir
+  // appears, and the runtime sweep must not touch it until the boot sweep ends.
+  // Requests made while one is queued share it.
+  // DIES UNDER: no shared tail (the runtime sweep reclaims the new dir — its scan
+  // runs — while the boot sweep is still gated); no coalescing (a !== b).
+  test('RT4: never concurrent with the boot sweep (disjoint dirs), and requests coalesce', async () => {
     const { requestFuseSweep, sweepFuseSessions } = await import('../src/systems/fuse/sweep.ts');
     const first = await seedDead(randomUUID());
     let enter, release;
     const entered = new Promise(r => { enter = r; });
     const gate = new Promise(r => { release = r; });
-    const bootScan = async () => { enter(); await gate; return { ok: true, raw: '' }; };
+    // Passes while `first` exists (its teardown); blocks once it is reclaimed,
+    // which is the backstop's enumeration.
+    const bootScan = async () => {
+      if (!(await exists(first))) { enter(); await gate; }
+      return { ok: true, raw: '' };
+    };
     const boot = sweepFuseSessions({ driver: fakeDriver(), scan: bootScan, log: quiet });
-    await entered;
-    const second = await seedDead(randomUUID());   // appears after the boot sweep's readdir
-    let runtimeScans = 0;
-    const scan = async () => { runtimeScans++; return { ok: true, raw: '' }; };
-    const a = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
-    const b = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
-    assert.equal(a, b, 'a request while one is queued did not join it');
-    await tick();
-    assert.equal(runtimeScans, 0, 'the runtime sweep ran while the boot sweep was still going');
-    release();
+    let second, a, b, runtimeScans = 0;
+    try {
+      await entered;
+      second = await seedDead(randomUUID());           // disjoint from anything the boot sweep touched
+      const scan = async () => { runtimeScans++; return { ok: true, raw: '' }; };
+      a = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+      b = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan, log: quiet });
+      assert.equal(a, b, 'a request while one is queued did not join it');
+      await settleIO();
+      assert.equal(runtimeScans, 0, 'the runtime sweep ran while the boot sweep was still going');
+      assert.equal(await exists(second), true, 'the runtime sweep reclaimed a dir while the boot sweep was still going');
+    } finally { release(); }
     await boot; await a;
     assert.ok(runtimeScans > 0, 'the runtime sweep never ran, so nothing above was a test');
-    assert.equal(await exists(first), false);
     assert.equal(await exists(second), false);
   });
 
@@ -4844,11 +4901,13 @@ describe('the runtime sweep', () => {
     const entered = new Promise(r => { enter = r; });
     const gate = new Promise(r => { release = r; });
     const a = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan: async () => { enter(); await gate; return { ok: true, raw: '' }; }, log: quiet });
-    await entered;
-    const second = await seedDead(randomUUID());
-    const b = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan: emptyScan, log: quiet });
-    assert.notEqual(a, b, 'a request during a running sweep joined it');
-    release();
+    let second, b;
+    try {
+      await entered;
+      second = await seedDead(randomUUID());
+      b = requestFuseSweep({ liveIds: () => [], driver: fakeDriver(), scan: emptyScan, log: quiet });
+      assert.notEqual(a, b, 'a request during a running sweep joined it');
+    } finally { release(); }
     await a; await b;
     assert.equal(await exists(first), false);
     assert.equal(await exists(second), false, 'the dir that appeared mid-sweep was never reclaimed');

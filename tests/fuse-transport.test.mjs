@@ -25,7 +25,7 @@
 import { test, describe, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { promises as fs, createReadStream } from 'node:fs';
+import { promises as fs, constants as fsConstants } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { mkdtemp } from './tmpRegistry.mjs';
 import { ProviderSystem } from '../src/systems/providerSystem.ts';
@@ -1143,16 +1143,30 @@ describe("the write path — mode, faults and the double reconcile", () => {
       // The reader opens in a `finally`, so a failing assertion still unblocks the
       // write and the rig's `server.close()` does not wait on it forever.
       let text = '';
-      let reader = null;
-      const bounded = (pr, what) => Promise.race([pr, new Promise((_, rej) => setTimeout(() => rej(new Error(`timed out: ${what}`)), 5_000).unref())]);
+      let fh = null;
       try {
         assert.ok(server.faultAt(p), 'the push never failed');
         assert.equal(replied, false, 'the worker was answered while the record write was still pending');
       } finally {
-        reader = createReadStream(fifo, { encoding: 'utf8' });
-        reader.on('data', (c) => { text += c; });
+        // NON-BLOCKING open: it succeeds on a FIFO with no writer (a plain
+        // O_RDONLY open would block a threadpool thread forever and hang the
+        // process when nothing ever writes the record), and it is what unblocks a
+        // writer that IS waiting.
+        fh = await fs.open(fifo, fsConstants.O_RDONLY | fsConstants.O_NONBLOCK);
       }
-      await bounded(new Promise((r, rej) => { reader.once('end', r); reader.once('error', rej); }), 'the record reaching the reader');
+      try {
+        // Poll until the record has arrived and the writer has closed (a
+        // non-blocking read returns 0 with no writer, so 0 after data = done).
+        const buf = Buffer.alloc(4096);
+        const deadline = Date.now() + 5_000;
+        for (;;) {
+          const n = await fh.read(buf, 0, buf.length, null).then((r) => r.bytesRead, (e) => (e.code === 'EAGAIN' ? -1 : Promise.reject(e)));
+          if (n > 0) text += buf.toString('utf8', 0, n);
+          else if (n === 0 && text) break;
+          if (Date.now() > deadline) throw new Error('timed out: the record never reached the FIFO');
+          if (n <= 0) await new Promise((r) => setTimeout(r, 5));
+        }
+      } finally { await fh.close(); }
       assert.deepEqual(JSON.parse(text).paths, [p]);
       assert.equal((await reply).status, CCU_STATUS.REFUSED);
     });
