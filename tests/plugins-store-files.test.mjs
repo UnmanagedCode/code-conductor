@@ -174,3 +174,18 @@ test('a corrupt exits.json is preserved as .corrupt and reported as a notice', a
     assert.equal(store.notices().some(n => n.file === 'exits.json' && n.backup), true);
   } finally { await env.restore(); }
 });
+
+test('a wrong-shaped exits.json is dropped per id with a notice, never thrown at a reader', async () => {
+  const env = await makePluginRoot();
+  try {
+    const good = { pid: 1, startedAt: 'a', at: 'b', how: 'exit', code: 1, signal: null, stopRequested: false, lastAliveAt: null };
+    await fs.mkdir(path.dirname(exitsFile()), { recursive: true });
+    await fs.writeFile(exitsFile(), JSON.stringify({ 'fake-plugin': 'x', mixed: [good, 7, null], fine: [good] }));
+    const store = createPluginStore({ onRegistryChange() {} });
+    await store.load();
+    assert.deepEqual(store.exits('fake-plugin'), []);
+    assert.deepEqual(store.exits('mixed'), [good], 'only the well-formed entries survive');
+    assert.deepEqual(store.exits('fine'), [good]);
+    assert.ok(store.notices().some(n => n.file === 'exits.json'), 'the drop is reported');
+  } finally { await env.restore(); }
+});

@@ -849,3 +849,19 @@ test('onChildExit fires for a stopped child with stopRequested, and for a crash 
   assert.equal(crashes[0].stopRequested, false);
   assert.equal(crashes[0].code, 1);
 });
+
+// A child that stays alive but never becomes healthy has said something by the
+// time readiness gives up; that output is the crash tail (healthPath readiness
+// never reads the log on its own).
+test('a healthPath child that never becomes healthy has its output in the crash tail', async (t) => {
+  const port = await reservedPort();
+  const sup = createSupervisor({ _readyTimeoutMs: 500, _allocatePort: () => Promise.resolve(port) });
+  const { rt } = await startAndSettle(t, sup, {
+    id: 'fake-plugin',
+    manifest: manifest({ start: `node -e "console.log('STARTUP-OUTPUT-MARKER'); setInterval(() => {}, 1000)"`, healthPath: '/health' }),
+    cwd: FAKE_PLUGIN_DIR,
+  });
+  assert.equal(rt.status, 'crashed');
+  assert.match(rt.error, /readiness not confirmed/);
+  assert.match(rt.error, /STARTUP-OUTPUT-MARKER/);
+});
