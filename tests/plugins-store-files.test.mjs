@@ -4,6 +4,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { createPluginHost } from '../src/plugins/registry.ts';
+import { createPluginStore } from '../src/plugins/store.ts';
 import { pidAlive } from '../src/plugins/ports.ts';
 import { orchStoreRoot } from '../src/projects.ts';
 import { makePluginRoot } from './plugin-helpers.mjs';
@@ -134,4 +135,42 @@ test('adopt leaves a LIVE record on disk untouched', async () => {
     await host1.stopAll();
     await env.restore();
   }
+});
+
+// exits.json {<id>: ExitRecord[]}, newest first, capped; independent of runtime.json.
+const exitsFile = () => path.join(orchStoreRoot(), 'plugins', 'exits.json');
+const exitRec = (pid) => ({
+  pid, startedAt: '2026-01-01T00:00:00.000Z', at: '2026-01-01T00:01:00.000Z', how: 'exit',
+  code: 1, signal: null, stopRequested: false, lastAliveAt: null,
+});
+
+test('exits.json envelope: newest first, capped per id, and concurrent recordExits both land', async () => {
+  const env = await makePluginRoot();
+  try {
+    const store = createPluginStore({ onRegistryChange() {} });
+    await store.load();
+    // Not awaited one by one: the last write must carry the newest state.
+    await Promise.all(Array.from({ length: 12 }, (_, i) => store.recordExit('fake-plugin', exitRec(i + 1))));
+    const onDisk = await readJson(exitsFile());
+    assert.deepEqual(Object.keys(onDisk), ['fake-plugin']);
+    assert.equal(onDisk['fake-plugin'].length, 10, 'capped at ten per plugin');
+    assert.equal(onDisk['fake-plugin'][0].pid, 12, 'newest first');
+    assert.equal(onDisk['fake-plugin'][9].pid, 3);
+    assert.deepEqual(Object.keys(onDisk['fake-plugin'][0]).sort(),
+      ['at', 'code', 'how', 'lastAliveAt', 'pid', 'signal', 'startedAt', 'stopRequested']);
+    assert.deepEqual(store.exits('fake-plugin'), onDisk['fake-plugin']);
+  } finally { await env.restore(); }
+});
+
+test('a corrupt exits.json is preserved as .corrupt and reported as a notice', async () => {
+  const env = await makePluginRoot();
+  try {
+    await fs.mkdir(path.dirname(exitsFile()), { recursive: true });
+    await fs.writeFile(exitsFile(), '{not json');
+    const store = createPluginStore({ onRegistryChange() {} });
+    await store.load();
+    assert.equal(await fs.readFile(`${exitsFile()}.corrupt`, 'utf8'), '{not json');
+    assert.deepEqual(store.exits('fake-plugin'), []);
+    assert.equal(store.notices().some(n => n.file === 'exits.json' && n.backup), true);
+  } finally { await env.restore(); }
 });

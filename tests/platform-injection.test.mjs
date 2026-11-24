@@ -7,6 +7,8 @@ import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
 import os from 'node:os';
+import path from 'node:path';
+import { mkdtempSync } from './tmpRegistry.mjs';
 import { posixPlatform } from '../src/platform/posix.ts';
 import { runGroupedCommand, killProcessGroup } from '../src/groupedCommand.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
@@ -57,6 +59,8 @@ test('killProcessGroup signals via platform.killGroup, then falls back when it t
   assert.deepEqual(fb, ['SIGTERM', 'SIGKILL']);
 });
 
+const piLog = () => { const d = mkdtempSync('pi-log-'); return { current: path.join(d, 'b.log'), previous: path.join(d, 'b.prev.log') }; };
+
 test('createSupervisor spawns the platform command with daemon options and stops via killGroup', () => {
   const fake = fakePlatform({
     commandFor: () => ({ command: 'rewritten', args: ['x'] }),
@@ -70,7 +74,7 @@ test('createSupervisor spawns the platform command with daemon options and stops
     return p;
   };
   const sup = createSupervisor({ platform: fake, _spawn, _allocatePort: async () => 1, _settleMs: 0, _readyTimeoutMs: 1 });
-  sup.start({ id: 'p', manifest: { backend: { start: 'node s.js' } }, cwd: os.tmpdir() }).catch(() => {});
+  sup.start({ id: 'p', manifest: { backend: { start: 'node s.js' } }, cwd: os.tmpdir(), log: piLog() }).catch(() => {});
   return waitFor(() => seen).then(() => {
     assert.equal(seen.cmd, 'rewritten');
     assert.deepEqual(seen.args, ['x']);

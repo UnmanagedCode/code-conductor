@@ -3,7 +3,7 @@ import {
   describeBinding, defaultClaudeModel, envFromText, envToText, firstModelForBackend, fmtCtxTokens, launchFromText, modelsForBackend,
   parseCtxTokens, type ModelsPayload,
 } from './models/logic';
-import { contributions, hookWarning, metaBits, updateChange, updateWarning, type PluginRow } from './pluginLogic';
+import { contributions, exitSummary, hookWarning, metaBits, updateChange, updateWarning, type PluginRow } from './pluginLogic';
 import { playbookOptions, ENFORCEMENT_LABELS } from './ConventionsSection';
 import { describeAuth } from './ClaudeLogin';
 import { describeUpdate } from './AboutSection';
@@ -151,5 +151,29 @@ describe('account / about / archived', () => {
     expect(visibleSections({ remoteSystems: false, voice: false }).map((s) => s.id)).not.toContain('voice');
     expect(visibleSections({ remoteSystems: true, voice: true }).map((s) => s.id)).toEqual(
       ['models', 'conventions', 'plugins', 'backends', 'systems', 'account', 'voice', 'archived', 'about']);
+  });
+});
+
+describe('exitSummary', () => {
+  const base = { pid: 1, startedAt: '2026-01-01T00:00:00.000Z', at: '2026-01-01T00:05:00.000Z', how: 'exit' as const, code: null, signal: null, stopRequested: false, lastAliveAt: null };
+
+  it('names the exit code, or the signal, of an exit cc observed', () => {
+    expect(exitSummary({ ...base, code: 3 })).toMatch(/code 3/);
+    expect(exitSummary({ ...base, signal: 'SIGKILL' })).toMatch(/SIGKILL/);
+  });
+
+  it('says when cc asked for the exit', () => {
+    expect(exitSummary({ ...base, signal: 'SIGTERM', stopRequested: true })).toMatch(/stop/i);
+    expect(exitSummary({ ...base, code: 1 })).not.toMatch(/stop/i);
+  });
+
+  it('admits that a backend found gone has an unknown exit status', () => {
+    const s = exitSummary({ ...base, how: 'gone' });
+    expect(s).toMatch(/unknown/i);
+    expect(s).not.toMatch(/code/);
+  });
+
+  it('says a stopped adopted backend was stopped by cc', () => {
+    expect(exitSummary({ ...base, how: 'stopped', stopRequested: true })).toMatch(/stopped/i);
   });
 });

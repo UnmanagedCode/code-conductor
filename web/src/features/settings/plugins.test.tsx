@@ -1552,3 +1552,46 @@ describe('Plugins → Restart all', () => {
     expect(restartAllButton().disabled).toBe(false);
   });
 });
+
+describe('Plugins → exit history and backend log', () => {
+  const at = '2026-01-01T10:00:00.000Z';
+  const exitRec = { pid: 7, startedAt: at, at, how: 'exit' as const, code: 1, signal: null, stopRequested: false, lastAliveAt: null };
+  const plugin = (id: string) => document.querySelector(`[data-plugin="${id}"]`) as HTMLElement;
+
+  // The row renders its newest exit record, and only when there is one.
+  it('a backend row names its newest exit; an unknown-status exit says so; no exits, no line', async () => {
+    rows = [
+      { ...PL, id: 'crashed', name: 'Crashed', exits: [exitRec, { ...exitRec, code: 9 }] },
+      { ...PL, id: 'gone', name: 'Gone', exits: [{ ...exitRec, how: 'gone', code: null }] },
+      { ...PL, id: 'clean', name: 'Clean' },
+    ];
+    wrap();
+    await waitFor(() => expect(plugin('crashed')).not.toBeNull());
+    const crashed = within(plugin('crashed')).getByText(/Last exit/).textContent ?? '';
+    expect(crashed).toMatch(/code 1/);
+    expect(crashed).not.toMatch(/code 9/);
+    expect(within(plugin('gone')).getByText(/Last exit/).textContent).toMatch(/unknown/i);
+    expect(within(plugin('clean')).queryByText(/Last exit/)).toBeNull();
+  });
+
+  // The call site and its URL: Backend log fetches the current run, Previous run the previous one.
+  it('Backend log fetches the log and shows it; Previous run fetches the previous file', async () => {
+    rows = [PL];
+    serve({
+      'GET /api/plugins/pl/log': (c) => ({ file: c.url.includes('previous') ? 'previous' : 'current', exists: true, size: 9, truncated: false,
+        text: c.url.includes('previous') ? 'older run line\n' : 'current run line\n' }),
+    });
+    wrap();
+    await waitFor(() => expect(plugin('pl')).not.toBeNull());
+    const toggle = within(plugin('pl')).getByRole('button', { name: 'Backend log' });
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(toggle);
+    await waitFor(() => expect(within(plugin('pl')).getByText('current run line', { exact: false })).toBeTruthy());
+    expect(calls.filter((c) => c.method === 'GET' && c.url === '/api/plugins/pl/log')).toHaveLength(1);
+    expect(within(plugin('pl')).getByRole('button', { name: 'Backend log' }).getAttribute('aria-expanded')).toBe('true');
+
+    fireEvent.click(within(plugin('pl')).getByRole('button', { name: 'Previous run' }));
+    await waitFor(() => expect(within(plugin('pl')).getByText('older run line', { exact: false })).toBeTruthy());
+    expect(calls.some((c) => c.url === '/api/plugins/pl/log?file=previous')).toBe(true);
+  });
+});

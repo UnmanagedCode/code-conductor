@@ -1002,3 +1002,31 @@ test('POST /api/plugins/library/:id/install regenerates a pre-existing project w
     await fs.rm(seedDir, { recursive: true, force: true });
   }
 });
+
+// REST contract for the backend log.
+test('GET /api/plugins/:id/log serves the current and the previous run; 400 for another file; 404 for an unknown id', async () => {
+  const boot = await setup();
+  try {
+    await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/enable');
+    const st = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/start');
+    const cur = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log');
+    assert.equal(cur.status, 200);
+    assert.equal(cur.body.file, 'current');
+    assert.equal(cur.body.exists, true);
+    assert.match(cur.body.text, /fake-plugin listening/);
+
+    const none = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=previous');
+    assert.equal(none.body.exists, false, 'no previous run yet');
+
+    const restarted = await api(boot.baseUrl, 'POST', '/api/plugins/fake-plugin/restart');
+    assert.equal(restarted.status, 200);
+    const prev = await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=previous');
+    assert.equal(prev.status, 200);
+    assert.equal(prev.body.file, 'previous');
+    assert.match(prev.body.text, /fake-plugin listening/, 'the first run\'s output moved to previous');
+    await waitFor(() => !pidAlive(st.body.pid));
+
+    assert.equal((await api(boot.baseUrl, 'GET', '/api/plugins/fake-plugin/log?file=bogus')).status, 400);
+    assert.equal((await api(boot.baseUrl, 'GET', '/api/plugins/nope/log')).status, 404);
+  } finally { await boot.close(); }
+});
