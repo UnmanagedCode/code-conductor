@@ -712,7 +712,8 @@ const OFF_THERE: PluginRow = { ...OFF, id: 'off-there', name: 'Off There', proje
 /** Update all, whatever its label: `Update all`, `Update all (N)` or `Updating i/n…`. */
 const updateAllButton = () => screen.getByTitle('Update every installed library plugin that is behind its origin, one at a time') as HTMLButtonElement;
 const plugin = (id: string) => document.querySelector(`[data-plugin="${id}"]`) as HTMLElement;
-const pluginButtons = (id: string) => within(plugin(id)).queryAllByRole('button').map((b) => (b.textContent ?? '').trim());
+// The row's ACTION buttons: the backend-log viewer's own toggles are not lifecycle controls.
+const pluginButtons = (id: string) => within(plugin(id)).queryAllByRole('button').map((b) => (b.textContent ?? '').trim()).filter((t) => t !== 'Backend log' && t !== 'Previous run');
 const localOnlyNote = (id: string) => plugin(id).querySelector('[data-local-only]') as HTMLElement | null;
 /** The index of the first recorded POST to `url`; -1 if none. */
 const postIndex = (url: string) => calls.findIndex((c) => c.method === 'POST' && c.url === url);

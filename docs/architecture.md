@@ -281,6 +281,9 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── plugins/                              # plugin system state
 │   │   ├── registry.json                     # {plugins: {<id>: {project, enabled, activeVersion, autoStart}}}
 │   │   ├── runtime.json                      # {<id>: {pid, pgid, port, startedAt, gitHead}} — adopt-don't-drain record
+│   │   ├── exits.json                        # {<id>: ExitRecord[]} — how each backend's recent runs ended, newest first (`src/plugins/store.ts`)
+│   │   ├── logs/                             # cc-owned backend output, one dir per manifest id: `backend.log` (this run) and `backend.prev.log` (the run before) — `backendLogPaths`, `src/plugins/backendLog.ts`
+│   │   │   └── <id>/
 │   │   ├── data/                             # plugin-owned, one dir per manifest id, handed to that plugin's backend as `CONDUCTOR_PLUGIN_DATA_DIR` (`pluginDataDir`, `src/plugins/store.ts`); cc creates, reads and deletes nothing here
 │   │   │   └── <id>/
 │   │   └── library/                          # Plugin Library drop-in manifests, one JSON file per entry

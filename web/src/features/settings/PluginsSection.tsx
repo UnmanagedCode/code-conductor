@@ -11,7 +11,7 @@ import { ApiError } from '@shared/http';
 import { json, post, errText, streamAction, capLog } from './api';
 import { notifyPluginsChanged, type PluginsChange } from './pluginsSignal';
 import {
-  backendLocalOnly, canRestart, contributions, hookWarning, isUsable, metaBits, restartableRows, updatableEntries, updateChange, updateWarning,
+  backendLocalOnly, canRestart, contributions, exitSummary, hookWarning, isUsable, metaBits, restartableRows, updatableEntries, updateChange, updateWarning,
   type LibraryEntry, type PluginRow, type UpdateResult,
 } from './pluginLogic';
 import { createStore, useStore } from '@/state/createStore';
@@ -244,6 +244,34 @@ export function useUpdateAllPlugins() {
   return { updatable, progress, locked, run: () => void updateAll() };
 }
 
+type LogView = { text: string; exists: boolean } | { error: string } | null;
+
+/** A backend's stdout+stderr file: the current run's tail, or the previous run's, fetched when asked for. */
+function BackendLog({ id }: { id: string }) {
+  const [open, setOpen] = React.useState(false);
+  const [view, setView] = React.useState<LogView>(null);
+  const seq = React.useRef(0);
+  const load = async (file: 'current' | 'previous') => {
+    const mine = ++seq.current;
+    setView(null);
+    let next: LogView;
+    try { next = await json<{ text: string; exists: boolean }>(`/api/plugins/${id}/log${file === 'previous' ? '?file=previous' : ''}`); }
+    catch (e) { next = { error: errText(e) }; }
+    if (mine === seq.current) setView(next);
+  };
+  return (
+    <div className="mt-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <Button size="sm" variant="outline" aria-expanded={open} onClick={() => { const next = !open; setOpen(next); if (next) void load('current'); else seq.current++; }}>Backend log</Button>
+        {open && <Button size="sm" variant="outline" onClick={() => void load('previous')}>Previous run</Button>}
+      </div>
+      {open && view && ('error' in view
+        ? <Status className="mt-1" text={view.error} tone="error" />
+        : view.text ? <LogBox text={view.text} className="mt-1" /> : <div className="mt-1 text-xs text-muted-foreground">No output</div>)}
+    </div>
+  );
+}
+
 export function PluginsSection() {
   const { rows, worktrees, library, loaded, libLoaded, note, libNote, libTail, live, acting, busyEntry } = useStore(pluginsStore, (s) => s);
   const { updatable, progress: updatingAll, locked, run: runUpdateAll } = useUpdateAllPlugins();
@@ -298,9 +326,13 @@ export function PluginsSection() {
                   </ul>
                 )}
                 {!!row.errors?.length && <Status className="mt-2" text={row.errors.join('; ')} tone="error" />}
+                {row.hasBackend && !backendLocalOnly(row) && !!row.exits?.length && (
+                  <div className="mt-1 text-xs break-words text-muted-foreground">Last exit: {exitSummary(row.exits[0])}</div>
+                )}
                 {row.crashTail && (
                   <details className="mt-2"><summary className="cursor-pointer text-xs text-destructive">Crash output</summary><LogBox text={row.crashTail} className="mt-1" /></details>
                 )}
+                {row.hasBackend && !backendLocalOnly(row) && isUsable(row) && <BackendLog id={row.id} />}
                 {isUsable(row) && (
                   <div className="mt-3 flex flex-wrap items-center gap-2">
                     {!row.enabled ? (

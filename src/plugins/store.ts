@@ -5,13 +5,16 @@ import { isSlug } from '../identifiers.ts';
 import type { ManifestSource } from './manifest.ts';
 import { errCode, errMsg } from '../../shared/basics.ts';
 
-// The plugin host's persistence collaborator: the two JSON files under
+// The plugin host's persistence collaborator: the three JSON files under
 // `<orchStoreRoot()>/plugins/`, the corrupt-file preservation policy, the
 // load notices that policy produces, and the adopt pass that prunes stale
 // runtime records.
 //
 //   registry.json  {plugins: {<id>: {project, enabled, activeVersion, autoStart}}}
 //   runtime.json   {<id>: {pid, pgid, port, startedAt, gitHead}}
+//   exits.json     {<id>: ExitRecord[]}  newest first, EXIT_HISTORY per id. Independent
+//                  of runtime.json, so the next start overwriting a runtime record
+//                  loses no exit.
 //   data/<id>/     plugin-owned; handed to that plugin's backend as
 //                  CONDUCTOR_PLUGIN_DATA_DIR (`pluginDataDir`), never read or
 //                  written by the store. It sits under its own `data/` subdir
@@ -43,6 +46,27 @@ export interface RuntimeRecord {
   gitHead: string | null;
 }
 
+// How the backend's last run ended, as far as cc could tell:
+//  - 'exit'    cc's own child, from its 'exit' event: code/signal/time are exact.
+//  - 'gone'    a backend cc did not spawn (adopted) found dead on a passive touch.
+//              Its exit code and signal are unknowable; the death happened in
+//              (lastAliveAt ?? startedAt, at], and `at` is when cc next looked.
+//  - 'stopped' cc stopped an adopted backend (no exit event will follow).
+export interface ExitRecord {
+  pid: number;
+  startedAt: string;
+  at: string;
+  how: 'exit' | 'gone' | 'stopped';
+  code: number | null;
+  signal: string | null;
+  // cc asked it to stop (Stop, Restart, Disable, a version switch).
+  stopRequested: boolean;
+  // 'gone' only: the last passive touch that saw the pid alive; null = unknown (boot).
+  lastAliveAt: string | null;
+}
+
+export const EXIT_HISTORY = 10;
+
 export interface PluginStoreDeps {
   // Fired by every registry.json write, BEFORE the write — a failed write still
   // leaves the signal sent. Signalling from the one save path rather than at
@@ -61,6 +85,10 @@ export function pluginDataDir(id: string): string {
 export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
   let persisted: { plugins: Record<string, PersistedPluginRecord> } = { plugins: {} };
   let runtimeRecords: Record<string, RuntimeRecord> = {};
+  let exitRecords: Record<string, ExitRecord[]> = {};
+  // exits.json saves chain: concurrent writeFileAtomic renames could land out of
+  // order, and the file must end up carrying the newest state.
+  let exitsSaving: Promise<void> = Promise.resolve();
 
   // Non-ENOENT load failures from THIS load pass — surfaced on GET /api/plugins so
   // a user whose plugins came back disabled learns why, and where the old file went.
@@ -68,8 +96,9 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
 
   const registryFile = (): string => path.join(orchStoreRoot(), 'plugins', 'registry.json');
   const runtimeFile = (): string => path.join(orchStoreRoot(), 'plugins', 'runtime.json');
+  const exitsFile = (): string => path.join(orchStoreRoot(), 'plugins', 'exits.json');
 
-  // Backs BOTH registry.json and runtime.json, deliberately: carving out a
+  // Backs registry.json, runtime.json and exits.json, deliberately: carving out a
   // registry-only variant would need an extra parameter for no benefit, and each
   // notice names its own file.
   async function loadJson(file: string, fallback: unknown): Promise<unknown> {
@@ -101,8 +130,14 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     await writeFileAtomic(runtimeFile(), JSON.stringify(runtimeRecords, null, 2) + '\n');
   }
 
-  // Registry first, then runtime — the adopt pass reads both, and a corrupt
-  // registry.json must produce its notice before runtime.json's.
+  function saveExits(): Promise<void> {
+    const next = exitsSaving.catch(() => {}).then(() => writeFileAtomic(exitsFile(), JSON.stringify(exitRecords, null, 2) + '\n'));
+    exitsSaving = next;
+    return next;
+  }
+
+  // Registry first, then runtime, then exits — the adopt pass reads the first
+  // two, and a corrupt registry.json must produce its notice before runtime.json's.
   async function load(): Promise<void> {
     // Reset first: a projectsRoot() swap or a retry after a failed init must
     // start clean, not inherit the previous pass's notices.
@@ -110,6 +145,8 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     persisted = (await loadJson(registryFile(), { plugins: {} })) as { plugins: Record<string, PersistedPluginRecord> };
     if (typeof persisted?.plugins !== 'object' || persisted.plugins === null) persisted = { plugins: {} };
     runtimeRecords = (await loadJson(runtimeFile(), {})) as Record<string, RuntimeRecord>;
+    exitRecords = (await loadJson(exitsFile(), {})) as Record<string, ExitRecord[]>;
+    if (typeof exitRecords !== 'object' || exitRecords === null || Array.isArray(exitRecords)) exitRecords = {};
   }
 
   // ── registry.json ───────────────────────────────────────────────────
@@ -172,6 +209,20 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     await saveRuntimeRecords();
   }
 
+  // ── exits.json ──────────────────────────────────────────────────────
+  function exits(id: string): ExitRecord[] {
+    return (exitRecords[id] ?? []).map(r => ({ ...r }));
+  }
+
+  // Never rejects: callers are detached (an exit event, a passive probe) or on a
+  // path that must not fail for want of a history write, so a failed write is
+  // warned here, naming its file.
+  async function recordExit(id: string, rec: ExitRecord): Promise<void> {
+    exitRecords[id] = [{ ...rec }, ...(exitRecords[id] ?? [])].slice(0, EXIT_HISTORY);
+    try { await saveExits(); }
+    catch (e) { console.warn(`plugins: exits.json write failed: ${errMsg(e)}`); }
+  }
+
   // Fire-and-forget variant for the two passive death paths (a supervisor exit
   // event, a dead pid noticed by a probe): neither has anything to await into,
   // so the write is detached and a failure is warned rather than thrown.
@@ -207,6 +258,7 @@ export function createPluginStore({ onRegistryChange }: PluginStoreDeps) {
     load,
     get, has, isEnabled, autoStart, entries, upsert, setEnabled, setAutoStart, setActiveVersion,
     runtimeRecord, runtimeIds, recordStart, clearRuntime, clearRuntimeDetached, adopt,
+    exits, recordExit,
     notices,
   };
 }

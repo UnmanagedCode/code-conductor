@@ -1,5 +1,6 @@
 import { headSha } from './supervisor.ts';
 import type { Platform } from '../platform/index.ts';
+import type { ExitRecord } from './store.ts';
 import { claudePluginPaths, type PluginManifest, type ManifestSource } from './manifest.ts';
 
 // The PluginRow view-model: the projection GET /api/plugins serializes verbatim
@@ -49,6 +50,8 @@ export interface PluginRow {
   stale: boolean;
   errors: string[];
   crashTail: string | null;
+  // How the backend's recent runs ended, newest first (src/plugins/store.ts ExitRecord).
+  exits: ExitRecord[];
 }
 
 export interface PluginRowInput {
@@ -68,6 +71,7 @@ export interface PluginRowInput {
   reg: { enabled: boolean; autoStart: boolean } | null;
   runtime: { status: string; tail: string | null } | null;
   record: { port: number; pid: number; startedAt: string; gitHead: string | null } | null;
+  exits: ExitRecord[];
   // Resolved (and, where needed, self-healed) by the caller.
   activeVersion: ManifestSource;
   // The checkout the plugin actually runs from — the worktree path for a
@@ -77,7 +81,7 @@ export interface PluginRowInput {
   platform: Platform;
 }
 
-export async function buildPluginRow({ entry, reg, runtime, record, activeVersion, cwd, platform }: PluginRowInput): Promise<PluginRow> {
+export async function buildPluginRow({ entry, reg, runtime, record, exits, activeVersion, cwd, platform }: PluginRowInput): Promise<PluginRow> {
   const id = entry.id;
   const hasBackend = !!entry.manifest?.backend;
   let state: string;
@@ -139,5 +143,6 @@ export async function buildPluginRow({ entry, reg, runtime, record, activeVersio
     stale,
     errors: entry.errors ?? [],
     crashTail: runtime?.tail ?? null,
+    exits,
   };
 }
