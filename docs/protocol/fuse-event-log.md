@@ -17,7 +17,7 @@ A **file format with real readers**, which is why it is here and not only in [co
 - **The last two store columns are for `deny`/`unpinned-fail-closed` rows only** and are empty otherwise: a pin does not fix an `unmarked-host-served` row, whose path already came from the host. `suggestPin` (`src/systems/fuse/tierTable.ts`) is the mapping.
 - **PATHS ONLY, never content.** A credential path may appear in either; a credential never does.
 - **Size-capped, one rotated generation.** Before each harvest appends, a store already over `fuseEventStoreMaxBytes()` (`CC_FUSE_EVENTS_MAX_BYTES`, default `FUSE_EVENT_STORE_MAX_BYTES`) is renamed to `events.log.1`, overwriting the previous one.
-  - Rotation only happens between whole harvests, so both files start and end on whole rows: no marker line, no header. The live file can go over the cap by one harvest's rows.
+  - Rotation only happens between whole harvests, so both files start and end on whole rows: no marker line, no header. The live file can go over the cap by one harvest's rows. A torn append (ENOSPC/EIO/crash mid-append) can leave a partial last row, which a later rotation carries into `events.log.1`.
   - To read everything retained, read `events.log.1` then `events.log`; rows older than `.1` are gone. The store is still the only record that outlives a session.
   - Concurrent teardowns in one cc are serialised per path by `appendRotating` (`src/logRotation.ts`), and the projects-root lock means one cc per store. A restart handover's brief overlap of two servers is not serialised; its worst case is a lost `.1` generation, never a split row.
   - An invalid `CC_FUSE_EVENTS_MAX_BYTES` falls back to `FUSE_EVENT_STORE_MAX_BYTES` with a teardown note naming the variable; the rows are still stored.

@@ -48,8 +48,7 @@ test('appendRotating: rotation keeps one generation and overwrites it', async ()
 
 // PINS: a missing parent and file are created, and a missing file is not "over
 // the cap" (nothing to rotate).
-// DIES UNDER: dropping the mkdir; treating ENOENT as over the cap; rethrowing
-// ENOENT from stat.
+// DIES UNDER: dropping the mkdir; rethrowing ENOENT from stat.
 test('appendRotating: creates a missing parent dir and file; a missing file is never rotated', async () => {
   const { file, previous } = await tmp();
   await appendRotating(file, B('a body longer than the cap\n'), { maxBytes: 4, previous });
@@ -61,10 +60,12 @@ test('appendRotating: creates a missing parent dir and file; a missing file is n
 // first sees the earlier call's write. Unserialised, all eight stats see ENOENT
 // and the file holds all eight rows.
 // DIES UNDER: removing the keyed queue; keying it on something other than the
-// resolved path (a fresh queue per call).
+// resolved path (the raw string splits the queue: the spellings below name one file).
 test('appendRotating: concurrent calls on one file run one at a time, in call order', async () => {
   const { file, previous } = await tmp();
-  await Promise.all(Array.from({ length: 8 }, (_, i) => appendRotating(file, B(`row-${i}\n`), { maxBytes: 1, previous })));
+  // Odd calls spell the SAME file differently, so a raw-string key splits the queue.
+  const spell = (i) => (i % 2 ? path.join(path.dirname(file), '..', 'sub', path.basename(file)) : file);
+  await Promise.all(Array.from({ length: 8 }, (_, i) => appendRotating(spell(i), B(`row-${i}\n`), { maxBytes: 1, previous })));
   assert.equal(await read(file), 'row-7\n');
   assert.equal(await read(previous), 'row-6\n');
 });

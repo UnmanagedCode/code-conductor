@@ -2171,7 +2171,7 @@ describe('the policy event store rotation', () => {
   // The new exports are loaded dynamically: a static named import of one that
   // does not exist yet would fail the whole file rather than these tests.
   const loadPlan = () => import('../src/systems/fuse/plan.ts');
-  // `fuseEventStoreRotated` is asserted by the first test; the rest only need the
+  // `fuseEventStoreRotated` is pinned to `<store>.1` by the first test; the rest only need the
   // path, so a missing export reds them for their own reason, not a TypeError.
   const rotated = (plan) => plan.fuseEventStoreRotated?.() ?? `${plan.fuseEventStore()}.1`;
   async function resetStore() {
@@ -2200,10 +2200,15 @@ describe('the policy event store rotation', () => {
   // PINS: the cap is read per call; unset/empty is the default, a positive whole
   // number is taken, and anything else falls back to the default WITH a refusal
   // sentence naming the variable.
-  // DIES UNDER: reading the env once at module load; dropping validation; `>= 0`
+  // DIES UNDER: renaming the rotated file away from `<store>.1`; changing the
+  // default size; reading the env once at module load; dropping validation; `>= 0`
   // for `> 0`; a fallback other than the default; `refused: null` for a bad value.
   test('fuseEventStoreMaxBytes: unset or empty is the default; a positive integer is taken; anything else falls back to the default with a refusal naming the variable', async () => {
     const plan = await loadPlan();
+    // The default and the rotated NAME are pinned independently of the code that
+    // uses them: the other tests read the rotated file through this same function.
+    assert.equal(plan.FUSE_EVENT_STORE_MAX_BYTES, 8 * 1024 * 1024);
+    assert.equal(plan.fuseEventStoreRotated(), `${plan.fuseEventStore()}.1`);
     delete process.env.CC_FUSE_EVENTS_MAX_BYTES;
     assert.deepEqual(plan.fuseEventStoreMaxBytes(), { maxBytes: plan.FUSE_EVENT_STORE_MAX_BYTES, refused: null });
     process.env.CC_FUSE_EVENTS_MAX_BYTES = '';
@@ -2231,7 +2236,7 @@ describe('the policy event store rotation', () => {
     await fs.mkdir(path.dirname(plan.fuseEventStore()), { recursive: true });
     await fs.writeFile(plan.fuseEventStore(), seed);
     const { record } = await teardown('f2', 3);
-    assert.deepEqual(await fs.readFile(rotated(plan)), seed);
+    assert.deepEqual(await fs.readFile(`${plan.fuseEventStore()}.1`), seed);
     const live = (await fs.readFile(plan.fuseEventStore(), 'latin1'));
     assert.match(live, /^\d{4}-\d\d-\d\dT/);
     const lines = live.split('\n').filter(Boolean);

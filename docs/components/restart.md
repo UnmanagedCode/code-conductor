@@ -324,7 +324,7 @@ TTS-specific config + re-exports over `installRunner.ts` (`bin/install-piper.sh`
 
 ## `src/keyedQueue.ts`
 
-`createKeyedQueue()` returns `run(key, fn)`: a per-key promise chain, in-process. Calls on one key run one at a time in call order; different keys run concurrently; a rejection goes to its own caller and never blocks the next call; a key's entry is dropped once its tail settles. Used by `src/projectClaudeMd.ts` (one project's `CONVENTIONS.md` writes) `src/worktrees.ts` (one project's merge hooks) and `src/logRotation.ts` (appends to one log file).
+`createKeyedQueue()` returns `run(key, fn)`: a per-key promise chain, in-process. Calls on one key run one at a time in call order; different keys run concurrently; a rejection goes to its own caller and never blocks the next call; a key's entry is dropped once its tail settles. Used by `src/projectClaudeMd.ts` (one project's `CONVENTIONS.md` writes), `src/worktrees.ts` (one project's merge hooks) and `src/logRotation.ts` (appends to one log file).
 
 ## `src/logRotation.ts`
 
