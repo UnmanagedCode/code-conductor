@@ -94,7 +94,8 @@ export async function readLogTail(file: string, maxBytes: number, fromOffset = 0
 // a line the child wrote in the gap between our truncate and our write is
 // overwritten (lost). Before, it would have survived ahead of the tail. A child
 // write racing a trim could always be lost or misplaced — a child cannot be asked
-// to cooperate — and this is the same class, with the same one-write window.
+// to cooperate — and this is the same class, with the same one-write window. A
+// racing child record longer than the rewrite can leave its suffix after the tail.
 export async function trimLog(file: string, { maxBytes, keepBytes }: { maxBytes: number; keepBytes: number }): Promise<boolean> {
   let fh: fs.FileHandle;
   try { fh = await fs.open(file, 'r+'); }
@@ -108,7 +109,11 @@ export async function trimLog(file: string, { maxBytes, keepBytes }: { maxBytes:
     const marker = `[cc ${new Date().toISOString()}: log trimmed, ${size - tail.length} bytes dropped]\n`;
     const out = Buffer.concat([Buffer.from(marker), tail]);
     await fh.truncate(0);
-    await fh.write(out, 0, out.length, 0);
+    // FileHandle.write may write less than asked: loop until the whole buffer is out.
+    for (let done = 0; done < out.length;) {
+      const { bytesWritten } = await fh.write(out, done, out.length - done, done);
+      done += bytesWritten;
+    }
     return true;
   } finally { await fh.close(); }
 }
