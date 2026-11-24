@@ -2264,10 +2264,13 @@ describe('the policy event store rotation', () => {
     await assert.rejects(fs.access(rotated(plan)), { code: 'ENOENT' });
   });
 
-  // PINS: concurrent teardowns across one rotation store every row exactly
-  // once, none split. The serialisation killer is the keyed-queue test in
-  // tests/log-rotation.test.mjs; this is its end-to-end form.
-  // DIES UNDER: unserialised store appends (a lost or split row).
+  // PINS: the harvest is wired to the rotation and the right rotated path, and
+  // three teardowns over one rotation store each row once, none split, in the
+  // common case. NOT a reliable serialisation pin: the teardowns usually
+  // stagger, so an unserialised append often survives this test. The
+  // serialisation killer is the in-order test in tests/log-rotation.test.mjs.
+  // DIES UNDER: not wiring appendRotating into the harvest; the wrong rotated
+  // path; dropping or duplicating a session's rows.
   test('concurrent teardowns across one rotation store every row exactly once', async () => {
     const plan = await resetStore();
     // Large enough that the three sessions' rows together stay under the cap, so
