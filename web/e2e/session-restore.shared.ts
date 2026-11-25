@@ -17,9 +17,20 @@ const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
   const { sessionId } = await spawnSession(cc, `restore-${test.info().project.name}`, { persistent: true });
-  // The hint goes into the page's own socket while its first list read is held, so a second read starts behind it.
+  // The hint goes into the page's own socket while its first list read is held. List reads are coalesced, so the hint's read waits behind the first.
   const socket: { route: WebSocketRoute | null } = { route: null };
   await page.routeWebSocket(/\/ws$/, (ws) => { ws.connectToServer(); socket.route = ws; });
+  // Counts the `instances` frames the page's socket delivers. The app handles a frame in the same dispatch, so a count read afterwards is a handled hint.
+  await page.addInitScript(() => {
+    const Socket = window.WebSocket;
+    (window as any).__hints = 0;
+    window.WebSocket = class extends Socket {
+      constructor(...args: ConstructorParameters<typeof WebSocket>) {
+        super(...args);
+        this.addEventListener('message', (e) => { if (typeof e.data === 'string' && JSON.parse(e.data).t === 'instances') (window as any).__hints++; });
+      }
+    };
+  });
   const reads: Route[] = [];
   await page.route('**/api/instances', async (route) => {
     if (route.request().method() !== 'GET' || reads.length >= 2) return route.continue();
@@ -31,13 +42,15 @@ export async function overtakenListReadFlow({ page, cc }: Args): Promise<void> {
   const anchored = new RegExp(`/#session=${sessionId}$`);
 
   await page.goto(`/#session=${sessionId}`);
-  await expect.poll(() => reads.length, { message: 'fixture check: the hint started a second read while the first was held' }).toBe(2);
-  const [first, second] = reads;
+  await expect.poll(() => page.evaluate(() => (window as any).__hints as number), { message: 'fixture check: the page handled the hint while the first read was held' }).toBe(1);
+  const [first] = reads;
   const firstLanded = page.waitForResponse((r) => r.request() === first.request());
   await first.continue();
   await firstLanded;
+  await expect.poll(() => reads.length, { message: "fixture check: the hint's read started once the first landed" }).toBe(2);
+  const second = reads[1];
 
-  // Invariant: the first read's list opens the named session, the newer read still in flight.
+  // Invariant: the first read's list opens the named session, the hint's newer read still held.
   await expect(next.sessionHeader(page), 'the named session opened').toBeVisible();
   await expect(page).toHaveURL(anchored);
   await expect(next.composer(page)).toBeEnabled();
