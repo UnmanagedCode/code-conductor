@@ -94,7 +94,7 @@ function AppShell() {
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
       <div className={`relative flex ${SHELL_BOX} overflow-hidden bg-background`}>
-        {/* Focus mode (a headless run or a `--replay`): one session, no sidebar to pick another. */}
+        {/* Focus mode (a headless run, a `--replay`, or a `?focus=<sid>` page): one session, no sidebar to pick another. */}
         {!focus && (
           <>
             <div className="hidden shrink-0 md:flex">
