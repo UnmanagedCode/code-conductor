@@ -30,5 +30,5 @@ export function watchReplayRoot({ instances, sessionId, log }: ReplayRootDeps): 
     answer(s);
   };
   instances.on('status', onStatus);
-  return { detach: () => { instances.off('status', onStatus); } };
+  return { detach: () => { instances.off('status', onStatus); answerers.clear(); } };
 }

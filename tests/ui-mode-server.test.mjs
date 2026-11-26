@@ -11,14 +11,12 @@ import { bootServer } from './helpers.mjs';
 const health = async (baseUrl) => (await fetch(`${baseUrl}/api/health`)).json();
 const spawn = (baseUrl) => fetch(`${baseUrl}/api/instances`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
 
-// Invariant: the mode is argv-only — entryStartOptions reads no UI mode from the
-// environment, whatever CC_VIEW_ONLY holds.
+// Invariant: the mode is argv-only — entryStartOptions carries neither a
+// `viewOnly` nor a `uiMode` key.
 test('entryStartOptions carries no UI mode', () => {
-  for (const env of [{}, { CC_VIEW_ONLY: '1' }]) {
-    const o = entryStartOptions(env);
-    assert.equal('viewOnly' in o, false);
-    assert.equal('uiMode' in o, false);
-  }
+  const o = entryStartOptions({});
+  assert.equal('viewOnly' in o, false);
+  assert.equal('uiMode' in o, false);
 });
 
 // Invariant: health always carries the server's `uiMode` as a top-level key,

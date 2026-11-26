@@ -13,7 +13,7 @@
 import { promises as fs } from 'node:fs';
 import type { Readable } from 'node:stream';
 import { OUTPUT_FORMATS, type OutputFormat } from './result.ts';
-import { UI_MODES, isUiMode, type UiMode } from '../../shared/uiMode.ts';
+import { SERVER_UI_MODES, UI_MODES, isUiMode, type UiMode } from '../../shared/uiMode.ts';
 
 export type HeadlessMode = 'code' | 'plan';
 export type HeadlessSource = { prompt: string } | { file: string };
@@ -107,8 +107,10 @@ export function parseEntryArgs(argv: string[]): EntryArgs {
   if (seen.length === 0) {
     // An ordinary server: unknown arguments are ignored, `--ui` is checked.
     if (uiError !== null) return { kind: 'server_usage', message: uiError };
-    if (ui === 'interact') return { kind: 'server_usage', message: `${UI} interact needs a headless run (--prompt / --prompt-file) or ${REPLAY}` };
-    return { kind: 'server', ui: (ui ?? 'full') as 'full' | 'view' };
+    const mode = (ui ?? 'full') as UiMode;
+    // Only `interact` is outside SERVER_UI_MODES: it needs a focused session.
+    if (!SERVER_UI_MODES.includes(mode)) return { kind: 'server_usage', message: `${UI} ${mode} needs a headless run (--prompt / --prompt-file) or ${REPLAY}` };
+    return { kind: 'server', ui: mode as 'full' | 'view' };
   }
 
   const requested = values.get('--output-format');
