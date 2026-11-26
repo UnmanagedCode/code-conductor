@@ -247,6 +247,14 @@ const DEFAULT_ENTRIES: LibraryEntry[] = [
     description: 'Virtual GNS3 labs that agents build and drive: machines, switches, links, golden-image recipes, and screen, keyboard and serial access to guests.',
     repo: 'https://github.com/UnmanagedCode/code-gns3',
   },
+  {
+    id: 'code-protocol',
+    name: 'Code Protocol',
+    description: 'Protocols of steps the conductor defines, and runs where workers submit proof for each step and the conductor reviews it, with a page to define protocols and follow runs.',
+    repo: 'https://github.com/UnmanagedCode/code-protocol',
+    postClone: 'npm install',
+    postPull: 'npm install',
+  },
 ];
 
 // The plugin-host surface install()/update() read (see createPluginHost in
