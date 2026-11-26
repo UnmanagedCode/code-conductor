@@ -229,3 +229,28 @@ test('make headless normalises the other .env values it exports', { skip: !HAS_M
   assert.match(r.stderr, /also published at http:\/\/127\.0\.0\.1:8799/);
   assert.deepEqual(r.argv.slice(r.argv.indexOf('conductor') + 1), ['--prompt', 'hi', '--mode', 'plan']);
 });
+
+// Invariant: a set UI reaches cc as `--ui <value>` after the run's other flags,
+// and an unset UI adds no `--ui` at all (cc's own default then applies).
+test('UI passes through as --ui; unset adds nothing', async (t) => {
+  const f = fixture(t);
+  const r = f.exec({ UI: 'interact' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.argv.slice(r.argv.indexOf('conductor') + 1), ['--prompt', 'say hi', '--ui', 'interact']);
+  const s = f.exec({});
+  assert.equal(s.status, 0, s.stderr);
+  assert.ok(!s.argv.includes('--ui'), s.argv.join(' '));
+});
+
+// Invariant: make headless exports UI (normalised like MODE) to the script, so
+// `make headless UI=…` or a docker/.env UI reaches cc as `--ui`.
+test('make headless exports UI to the run', { skip: !HAS_MAKE && 'no make' }, async (t) => {
+  const f = fixture(t);
+  const dotenv = [`CC_PROJECTS_DIR="${f.main}"`, `CC_HEADLESS_PROJECTS_DIR="${f.run}"`, 'UI="full"  # steer anything', ''].join('\n');
+  const r = f.make({ dotenv, vars: ['PROMPT=hi'] });
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.argv.slice(r.argv.indexOf('conductor') + 1), ['--prompt', 'hi', '--ui', 'full']);
+  const s = f.make({ dotenv: `CC_PROJECTS_DIR="${f.main}"\nCC_HEADLESS_PROJECTS_DIR="${f.run}"\n`, vars: ['PROMPT=hi', 'UI=interact'] });
+  assert.equal(s.status, 0, s.stderr);
+  assert.deepEqual(s.argv.slice(s.argv.indexOf('conductor') + 1), ['--prompt', 'hi', '--ui', 'interact']);
+});

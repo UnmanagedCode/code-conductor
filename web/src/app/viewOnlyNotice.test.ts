@@ -10,13 +10,13 @@ const sonner = vi.hoisted(() => {
 });
 vi.mock('sonner', () => sonner);
 
-import { refuse, setViewOnly, VIEW_ONLY_MESSAGE } from '@shared/viewOnly';
+import { refuse, setUiMode, VIEW_ONLY_MESSAGE } from '@shared/viewOnly';
 import { toast, VIEW_ONLY_TOAST_ID } from '@/ui/feedback';
 import { startViewOnlyNotice } from './viewOnlyNotice';
 
 let stop: () => void;
-beforeEach(() => { vi.clearAllMocks(); setViewOnly(true); stop = startViewOnlyNotice(); });
-afterEach(() => { stop(); setViewOnly(false); });
+beforeEach(() => { vi.clearAllMocks(); setUiMode('view'); stop = startViewOnlyNotice(); });
+afterEach(() => { stop(); setUiMode('full'); });
 
 describe('the view-only notice', () => {
   it('a refusal burst shows one toast (every call carries the same id)', () => {

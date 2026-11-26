@@ -18,7 +18,7 @@ import { SubagentPanel, TaskPanel, TurnIndicator } from './SessionPanels';
 import { UsageChip } from './UsageChip';
 import { EndedBanner } from './EndedBanner';
 import { focusPromptAfterSelect } from './promptFocus';
-import { useViewOnly } from '@/state/viewOnly';
+import { useSessionViewOnly, useViewOnly } from '@/state/viewOnly';
 import { useFocusMode } from '@/state/focus';
 
 /** The logo whose cursor blinks while the socket is open and holds still while it (re)connects. */
@@ -53,7 +53,8 @@ function EmptyState() {
 
 export function SessionView() {
   const inst = useStore(appStore, activeInstance);
-  const viewOnly = useViewOnly();
+  // The Composer is this session's own control: live on the interactive session under `--ui interact`.
+  const viewOnly = useSessionViewOnly(inst?.sessionId ?? null);
   const focus = useFocusMode();
   const column = useSessionColumn();
   const composerRef = React.useRef<ComposerHandle>(null);

@@ -9,60 +9,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { spawn } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
-import { mkdtemp } from './tmpRegistry.mjs';
 import { HEADLESS_FRAGMENT } from '../src/headless/fragment.ts';
-import { waitFor } from './poll.mjs';
+import { freshHome as scratchHome, spawnServer, until, onlyJson, fx, BANNER } from './headlessProcess.mjs';
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const SERVER_TS = path.resolve(__dirname, '..', 'server.ts');
-const FAKE_CLAUDE = path.join(__dirname, 'fake-claude.mjs');
-const fx = (n) => path.join(__dirname, 'fixtures', n);
-const BANNER = /code-conductor listening on http:\/\/127\.0\.0\.1:(\d+)\n/;
+const freshHome = (t) => scratchHome(t, 'headless-e2e-');
 
-async function freshHome(t) {
-  const home = await mkdtemp('headless-e2e-');
-  fs.mkdirSync(path.join(home, 'project'), { recursive: true });
-  fs.mkdirSync(path.join(home, '.claude', 'projects'), { recursive: true });
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
-  return home;
-}
-
+// A headless process on `home` with `scenario`, recording the CLIs' stdin to root-stdin.jsonl.
 function headless(t, home, scenario, args, { env = {} } = {}) {
-  const child = spawn(process.execPath, [SERVER_TS, ...args], {
-    cwd: home,
-    env: {
-      ...process.env,
-      HOME: home,
-      PORT: '0',
-      HOST: '127.0.0.1',
-      PROJECTS_ROOT: path.join(home, 'project'),
-      CLAUDE_PROJECTS_ROOT: path.join(home, '.claude', 'projects'),
-      CLAUDE_BIN: `${process.execPath} ${FAKE_CLAUDE}`,
-      FAKE_CLAUDE_SCENARIO: scenario,
-      FAKE_CLAUDE_TRANSCRIPT: path.join(home, 'root-stdin.jsonl'),
-      ORCH_IDLE_DRAIN_SETTLE_MS: '100',
-      ...env,
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  const out = { stdout: '', stderr: '' };
-  child.stdout.setEncoding('utf8').on('data', (c) => { out.stdout += c; });
-  child.stderr.setEncoding('utf8').on('data', (c) => { out.stderr += c; });
-  const closed = new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
-  t.after(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await closed; } });
-  return { child, out, closed };
-}
-
-function until(pred, what, timeout = 30_000) {
-  return waitFor(pred, { timeout, interval: 50, label: what });
-}
-
-function onlyJson(stdout) {
-  const lines = stdout.split('\n');
-  assert.equal(lines.length, 2, `one line then the newline: ${JSON.stringify(stdout)}`);
-  return JSON.parse(lines[0]);
+  return spawnServer(t, home, args, { FAKE_CLAUDE_SCENARIO: scenario, FAKE_CLAUDE_TRANSCRIPT: path.join(home, 'root-stdin.jsonl'), ...env });
 }
 
 test('a completed run: exit 0, the one result object on stdout, every log line on stderr', async (t) => {
@@ -83,7 +37,7 @@ test('a completed run: exit 0, the one result object on stdout, every log line o
   assert.doesNotMatch(run.out.stdout, /listening on/);
   const sent = fs.readFileSync(path.join(home, 'root-stdin.jsonl'), 'utf8');
   assert.ok(sent.includes(JSON.stringify(`${HEADLESS_FRAGMENT}\n\nsay hi and finish`).slice(1, -1)), 'the root got the fragment then the prompt');
-  // Invariant: the run records its root's session for a later `--view`.
+  // Invariant: the run records its root's session for a later `--replay`.
   const marker = JSON.parse(fs.readFileSync(path.join(home, 'project', '.code-conductor', 'headless-last-run.json'), 'utf8'));
   assert.deepEqual(marker, { sessionId: res.sessionId });
 });

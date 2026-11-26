@@ -1,10 +1,10 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { EVICTING_ACTIONS, keepsResident, pluginFrames, overlayStore } from './plugins';
-import { setViewOnly } from '@shared/viewOnly';
+import { setUiMode } from '@shared/viewOnly';
 
 afterEach(() => {
-  setViewOnly(false);
+  setUiMode('full');
   vi.unstubAllGlobals();
   pluginFrames.leave();
   for (const id of pluginFrames.residentIds()) (pluginFrames as any).evict(pluginFrames.resident.get(id));
@@ -78,7 +78,7 @@ describe('plugin frames', () => {
 
   it('plugin view loads in view-only: its lazy start is allowed and the frame mounts', async () => {
     // Invariant: POST /api/plugins/:id/start passes the view-only backstop, so a stopped plugin's view still starts and shows.
-    setViewOnly(true);
+    setUiMode('view');
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(ok({ state: 'stopped', name: 'Hub' }))
       .mockResolvedValueOnce(ok({ ok: true }));

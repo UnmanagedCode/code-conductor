@@ -6,19 +6,17 @@
 // the result and exits, leaving state as a normal cc death leaves it.
 
 import { newConductorSpawnBody } from '../../shared/newConductor.ts';
-import { buildApprovePrompt } from '../../shared/planApproval.ts';
 import { spawnFromBody } from '../spawnRequest.ts';
 import { IDLE_DRAIN_SETTLE_MS } from '../idleSubscriptions.ts';
 import { flushCostWrites, getSessionStats } from '../costTracking.ts';
 import { reconstructMessages } from '../mcp/messageReconstruction.ts';
-import { HEADLESS_FRAGMENT, HEADLESS_QUESTION_ANSWER } from './fragment.ts';
+import { HEADLESS_FRAGMENT } from './fragment.ts';
+import { forceInterrupt, rootAskAnswerer } from './rootPolicy.ts';
 import { EXIT_CODES, signalExitCode, type HeadlessReason, type HeadlessResult } from './result.ts';
 import type { HeadlessMode } from './args.ts';
 import type { InstanceLike, InstanceManagerLike, InstanceSummary } from '../instanceTypes.ts';
 import { errMsg } from '../../shared/basics.ts';
 
-// How long a signal waits on the root's forced interrupt before the run ends anyway.
-const INTERRUPT_WAIT_MS = 5_000;
 const SIGNALS: readonly NodeJS.Signals[] = ['SIGINT', 'SIGTERM'];
 
 export interface SignalSource {
@@ -86,7 +84,8 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
   let ending = false;
   let delivered = false;
   let settleTimer: ReturnType<typeof setTimeout> | null = null;
-  let answeredAsks = 0;
+  // The root's asks, answered with no person present (src/headless/rootPolicy.ts); set when it spawns.
+  let answerAsk: ((s: InstanceSummary) => void) | null = null;
   let signalled: NodeJS.Signals | null = null;
   // The cost as read when the first signal arrived, once that read finished — what a second signal reports.
   let firstSignalCost: number | null = null;
@@ -152,26 +151,6 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     done.catch(failRun);
   }
 
-  const send = (text: string) => root!.promptOrQueueSteer(text, [], { author: 'human' })
-    .catch((e: unknown) => end('conductor_error', `answering the root conductor failed: ${errMsg(e)}`));
-
-  // A tool ask on the root, once per ask: there is no person to answer it.
-  function answerAsk(s: InstanceSummary): void {
-    const asks = s.liveAsks ?? 0;
-    if (s.awaitingUserSource !== 'tool' || asks <= answeredAsks) return;
-    answeredAsks = asks;
-    if (s.awaitingUser === 'question') { send(HEADLESS_QUESTION_ANSWER).catch(failRun); return; }
-    if (s.awaitingUser !== 'plan') return;
-    // The plan the auto-approve rule did not take (code mode, or out of plan
-    // mode): approved as the UI's Approve does.
-    const r = root!;
-    void (async () => {
-      try { if (r.mode === 'plan') await r.setMode('bypassPermissions'); }
-      catch (e) { await end('conductor_error', `approving the root conductor's plan failed: ${errMsg(e)}`); return; }
-      await send(buildApprovePrompt(undefined));
-    })().catch(failRun);
-  }
-
   function rootDied(status: string): void {
     const cause = root?.sessionId ? instances.exitCauseFor(root.sessionId) : null;
     const detail = cause ? ` (code ${cause.code}, signal ${cause.signal}${cause.stderrTail ? `; stderr: ${cause.stderrTail.trim()}` : ''})` : '';
@@ -182,7 +161,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     if (!root || ending) return;
     if (s.id === root.id) {
       if (s.status === 'exited' || s.status === 'crashed') { rootDied(s.status); return; }
-      answerAsk(s);
+      answerAsk?.(s);
     }
     evaluate();
   }
@@ -198,14 +177,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     const r = root;
     firstSignalRead = rolledCost(r).then((c) => { firstSignalCost = c; return c; });
     void (async () => {
-      if (r) {
-        let timer: ReturnType<typeof setTimeout> | undefined;
-        await Promise.race([
-          r.interrupt({ force: true }).catch(() => {}),
-          new Promise<void>((res) => { timer = setTimeout(res, INTERRUPT_WAIT_MS); }),
-        ]);
-        clearTimeout(timer);
-      }
+      if (r) await forceInterrupt(r);
       deliver(snapshot('signal', exitCode, error, await rolledCost(r)));
     })().catch(failRun);
   }
@@ -231,6 +203,7 @@ export function runHeadless({ instances, prompt, mode, clock = Date, signals = p
     }
     if (ending) return;
     root = spawned;
+    answerAsk = rootAskAnswerer(spawned, (message) => { end('conductor_error', message).catch(failRun); });
     onRoot?.(spawned);
     instances.on('status', onStatus);
     instances.on('subscription_changed', evaluate);

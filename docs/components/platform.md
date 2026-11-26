@@ -33,7 +33,7 @@ Pinned by `tests/platform-posix.test.mjs`, `tests/platform-win32.test.mjs`, `tes
 
 ## Platform capabilities
 
-The `capabilities` bag on `GET /api/health` also carries `viewOnly`, which comes from the server's start options (`CC_VIEW_ONLY`, `createServer({viewOnly})` → `mountAdmin`), not from `Platform`; it is not a `PlatformCapabilities` member and gates no route or MCP tool.
+The `capabilities` bag on `GET /api/health` is `Platform.capabilities` alone. The boot's UI mode is a separate top-level `uiMode` key (`createServer({uiMode})` → `mountAdmin`, from `--ui`; [features/ui-modes.md](../features/ui-modes.md)), not a `PlatformCapabilities` member, and gates no route or MCP tool.
 
 (`Platform.capabilities`, `src/platform/platform.ts`; the refusal codes and helpers are in `src/capabilities.ts`). A flag marks a feature this host can run; when off, the feature is hidden in the UI and refused with a stable code. POSIX has all three on. The modules stay statically imported (they do nothing at import), so only behaviour is gated.
 

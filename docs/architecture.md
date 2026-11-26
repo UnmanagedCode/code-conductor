@@ -192,7 +192,7 @@ All orchestrator-owned state in a single workspace-wide dotfolder — the centra
 │   ├── migrated-backup-0043/               # ONLY on an install upgraded past persistent sessions: the pre-image of sessions.json and sessions.json.bak migrations/0043 converted
 │   ├── pending-resume.json                  # transient — the resume manifest (src/resumeManifest.ts): {writtenAt, deliver, instances}; written by finishDrain at every Restart / Shut down, read+unlinked on boot
 │   ├── running-sessions.json                # present while cc runs — the running record (src/runningRecord.ts): {writtenAt, instances, clis}; removed by finishDrain; found without a manifest at boot = an unclean stop; read+unlinked on boot
-│   ├── headless-last-run.json               # the last headless run's root: {sessionId} (public id), overwritten when the root spawns (src/headless/lastRun.ts); a `--view` replay shows it
+│   ├── headless-last-run.json               # the last headless run's root: {sessionId} (public id), overwritten when the root spawns (src/headless/lastRun.ts); a `--replay` shows it
 │   ├── pending-continue.json                # the resume banner's held notices (src/pendingContinue.ts): {notices:[{sessionId, kind, text, workers, at}]}; removed when empty
 │   ├── pending-archive.json                 # transient — an archive list no current path writes; swept+unlinked on boot (src/pendingArchive.ts)
 │   ├── server-lock/                         # the projects-root lock (src/rootLock.ts) — see "The projects-root lock"

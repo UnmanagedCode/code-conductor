@@ -1,7 +1,8 @@
 // Focus mode, client side: a headless-family server (a headless run, or a
-// `--view` replay) names on GET /api/health the one session the UI shows, and
-// the client then renders no sidebar and opens it. DOM-free: node-tested
-// without a DOM. Mirrors shared/viewOnly.ts.
+// `--replay`) names on GET /api/health the one session the UI shows, and
+// the client then renders no sidebar and opens it. Under `--ui interact` that
+// session is also the interactive one (shared/viewOnly.ts isInteractiveSession).
+// DOM-free: node-tested without a DOM.
 
 /** The session a headless-family server focuses on; `null` until a live run's root has spawned. */
 export interface HealthFocus {

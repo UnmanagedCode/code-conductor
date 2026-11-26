@@ -54,7 +54,6 @@ export const ENV_VARS: Readonly<Record<string, EnvVar>> = {
   PORT: { kind: 'knob', default: 'DEFAULT_PORT', purpose: 'Listen port.' },
   CC_BASE_PATH: { kind: 'knob', default: null, purpose: 'URL path prefix cc is hosted under behind a reverse proxy (e.g. /apps/cc-2); unset = root.' },
   CC_SKIP_WEB_BUILD: { kind: 'knob', default: null, purpose: '=1 skips the web build at boot and before a restart.' },
-  CC_VIEW_ONLY: { kind: 'knob', default: null, purpose: '=1 starts every web client in view-only mode (mutating UI hidden, mutating client calls refused); UI-only, not access control.' },
   CC_SKIP_DEPS_SYNC: { kind: 'knob', default: null, purpose: '=1 skips the dependency install before a restart.' },
   CC_ROOT_LOCK_HANDOVER_WAIT_MS: { kind: 'knob', default: '120_000', purpose: 'How long a restarting server waits for its replacement to adopt the root lock.' },
   CC_NPM_INSTALL_CMD: { kind: 'knob', default: "'npm install'", purpose: 'The install command for a restart and for self-update.' },

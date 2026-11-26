@@ -1,5 +1,5 @@
-// The session a headless run last spawned its root as, recorded so a `--view`
-// replay (src/headless/view.ts) can find it. The event log cannot say: a
+// The session a headless run last spawned its root as, recorded so a `--replay`
+// (src/headless/replay.ts) can find it. The event log cannot say: a
 // headless root's `session start` row carries the same human actor as a root
 // started from the UI.
 

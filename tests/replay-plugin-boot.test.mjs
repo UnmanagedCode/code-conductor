@@ -1,7 +1,8 @@
-// What a `--view` replay's plugin handling shows end to end: the control
-// (start() without `replay`) autostarts an enabled auto-start plugin, and in a
-// replay an explicit POST /api/plugins/:id/start still starts it lazily. The
-// boot-time skip itself (`if (!replay)` around the host's init()+autoStartAll()
+// What a `--replay`'s plugin handling shows end to end: the control (start()
+// without `launchless`) autostarts an enabled auto-start plugin, as does a
+// replay under `--ui interact` (not launchless), and in a launchless replay
+// (`--ui view`) an explicit POST /api/plugins/:id/start still starts it
+// lazily. The boot-time skip itself (`if (!launchless)` around the host's init()+autoStartAll()
 // chain in startHolding) is NOT proved here — it is pinned structurally in
 // tests/web-build-wiring.test.mjs. No behavioural test can see it: the chain
 // settles before start() returns (init is already settled by the boot's
@@ -84,7 +85,7 @@ async function bootWithPlugin(opts) {
   };
 }
 
-// Invariant (control): without `replay` the boot spawns the enabled plugin's backend.
+// Invariant (control): without `launchless` the boot spawns the enabled plugin's backend.
 test('a headless boot spawns an enabled auto-start plugin', async () => {
   const s = await bootWithPlugin({});
   try {
@@ -94,10 +95,21 @@ test('a headless boot spawns an enabled auto-start plugin', async () => {
   } finally { await s.close(); }
 });
 
-// Invariant: in a replay an explicit start requests a daemon spawn and brings
-// the backend up (the lazy start a plugin view relies on).
-test('in a replay, an explicit plugin start still spawns the backend', async () => {
-  const s = await bootWithPlugin({ replay: true, viewOnly: true });
+// Invariant: a replay that can launch (`--ui interact`, launchless false) gets
+// the boot's plugin autostart back.
+test('a replay under --ui interact autostarts an enabled auto-start plugin', async () => {
+  const s = await bootWithPlugin({ uiMode: 'interact', launchless: false });
+  try {
+    const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });
+    assert.ok(row.pid);
+    assert.ok(s.daemonSpawns() >= 1, 'a daemon spawn was requested');
+  } finally { await s.close(); }
+});
+
+// Invariant: in a launchless replay an explicit start requests a daemon spawn
+// and brings the backend up (the lazy start a plugin view relies on).
+test('in a launchless replay, an explicit plugin start still spawns the backend', async () => {
+  const s = await bootWithPlugin({ launchless: true, uiMode: 'view' });
   try {
     const before = await s.row();
     assert.ok(before, 'the plugin is discovered');

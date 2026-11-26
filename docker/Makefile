@@ -158,7 +158,7 @@ login/ollama:
 	$(DOCKER_COMPOSE) $(COMPOSE_FILES) exec conductor ollama login
 
 # One headless cc run in a throwaway container, on a projects root of its own:
-#   make headless CC_HEADLESS_PROJECTS_DIR=/abs/dir PROMPT='…' | PROMPT_FILE=path|- [MODE=plan]
+#   make headless CC_HEADLESS_PROJECTS_DIR=/abs/dir PROMPT='…' | PROMPT_FILE=path|- [MODE=plan] [UI=view|interact|full]
 # A thin wrapper over docker/headless.sh, which holds the logic and exits with
 # cc's exact code; make itself collapses any failure to 2 (the JSON on stdout
 # carries the real `exitCode`). PROMPT is passed through $(value …) so make
@@ -166,6 +166,7 @@ login/ollama:
 headless: export CC_HEADLESS_PROMPT = $(value PROMPT)
 headless: export PROMPT_FILE := $(value PROMPT_FILE)
 headless: export MODE := $(value MODE)
+headless: export UI := $(value UI)
 headless: export CC_HEADLESS_PROJECTS_DIR := $(value CC_HEADLESS_PROJECTS_DIR)
 headless: export CC_HEADLESS_HOME := $(value CC_HEADLESS_HOME)
 headless: export CC_HEADLESS_PORT := $(value CC_HEADLESS_PORT)

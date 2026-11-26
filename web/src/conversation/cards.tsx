@@ -9,7 +9,7 @@ import { formatUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import { send } from '@shared/ws';
 import { appStore, activeInstance } from '@/state/app';
 import { useStore } from '@/state/createStore';
-import { useViewOnly } from '@/state/viewOnly';
+import { useSessionViewOnly } from '@/state/viewOnly';
 import { ConversationModel, type PlanNode, type QuestionNode } from './model';
 import { BubbleBody } from './BubbleBody';
 
@@ -25,10 +25,13 @@ function sendCardAnswer(instanceId: string, text: string, onFail: (reason: strin
 /** The shown session has no instance (an ended pane): its cards are read-only. */
 const useEnded = () => useStore(appStore, (s) => !!activeInstance(s)?.ended);
 
+/** The shown session's controls are read-only under the UI mode (shared/viewOnly.ts sessionViewOnly). */
+const useCardViewOnly = () => useSessionViewOnly(useStore(appStore, (s) => activeInstance(s)?.sessionId ?? null));
+
 export function PlanCard({ node, model }: { node: PlanNode; model: ConversationModel }) {
   const plan: string = typeof node.ev.plan === 'string' ? node.ev.plan : '';
   const ended = useEnded();
-  const viewOnly = useViewOnly();
+  const viewOnly = useCardViewOnly();
   const locked = node.autoApproved || !!node.submitted || ended;
   const status = node.autoApproved ? 'Auto-approved'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`
@@ -107,7 +110,7 @@ export function QuestionCard({ node, model }: { node: QuestionNode; model: Conve
   const answeredCount = node.answers.filter((a) => a.kind !== 'none').length;
   const noteMode = answer.kind === 'option' || answer.kind === 'multi';
   const ended = useEnded();
-  const viewOnly = useViewOnly();
+  const viewOnly = useCardViewOnly();
   const locked = node.submitted || ended;
   const status = node.answered ? 'Answered'
     : node.failedReason ? `Couldn't send: ${node.failedReason}`

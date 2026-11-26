@@ -37,10 +37,12 @@ test('tests/run.mjs sets CC_SKIP_WEB_BUILD=1 and CC_SKIP_DEPS_SYNC=1 before it s
   }
 });
 
+// Invariant: entryStartOptions reads PORT/HOST/CC_BASE_PATH with their defaults,
+// turns a step off only for exactly `1`, and carries no UI mode (that is argv's).
 test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1 / CC_SKIP_DEPS_SYNC=1 turn their step off', () => {
-  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true, recordBootCommit: true, basePath: '', viewOnly: false });
-  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true, recordBootCommit: true, basePath: '', viewOnly: false });
-  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false, recordBootCommit: true, basePath: '', viewOnly: false });
+  assert.deepEqual(entryStartOptions({}), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: true, recordBootCommit: true, basePath: '' });
+  assert.deepEqual(entryStartOptions({ PORT: '9123', HOST: '0.0.0.0', CC_SKIP_WEB_BUILD: '1' }), { port: 9123, host: '0.0.0.0', buildWeb: false, syncDeps: true, recordBootCommit: true, basePath: '' });
+  assert.deepEqual(entryStartOptions({ CC_SKIP_DEPS_SYNC: '1' }), { port: 8787, host: '127.0.0.1', buildWeb: true, syncDeps: false, recordBootCommit: true, basePath: '' });
   assert.equal(entryStartOptions({ CC_BASE_PATH: '/p/q' }).basePath, '/p/q');
   for (const v of ['', '0', 'true', 'yes', ' 1']) {
     assert.equal(entryStartOptions({ CC_SKIP_WEB_BUILD: v }).buildWeb, true, JSON.stringify(v));
@@ -48,10 +50,13 @@ test('entryStartOptions: PORT/HOST with their defaults; only CC_SKIP_WEB_BUILD=1
   }
 });
 
+// Invariant: start() hands createServer its UI mode, focus and launchless flag,
+// and its buildWeb/syncDeps, root lock, headless flag and supervised flag as the
+// restart route's relaunch options.
 test('start() hands its buildWeb and syncDeps, its root lock, its headless flag and whether a restart supervisor launched it, to createServer as the restart route\'s relaunch options, and its restart-status reader', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('export async function start('));
-  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, restartStatus, basePath, viewOnly, focus, replay, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
+  assert.deepEqual(body.match(/createServer\(\{[^)]*\)/g)?.slice(0, 1), ['createServer({ platform, restartStatus, basePath, uiMode, focus, launchless, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } })']);
 });
 
 test('start() takes its supervised flag from takeRestartSupervisor(), before it acquires the root lock', async () => {
@@ -74,35 +79,37 @@ test('start() builds the web UI with bootSwapGuard, over the same inputs it hand
   ]);
 });
 
-// The ordinary boot passes entryStartOptions through untouched; the headless
-// boot (src/headless/entry.ts) spreads it and turns both steps off, since a
-// headless run never writes into a checkout another server may run from.
-test('server.ts\'s entry block starts the server with exactly start(entryStartOptions(process.env)), or headless (or a --view replay) with both steps off', async () => {
+// Invariant: the ordinary boot passes entryStartOptions through plus only its
+// `--ui` mode; a replay and a headless run (src/headless/entry.ts) spread it,
+// turn both steps off (a headless run never writes into a checkout another
+// server may run from) and pass their mode, the replay launchless exactly
+// under `--ui view`.
+test('server.ts\'s entry block starts the server with entryStartOptions(process.env) plus its UI mode, or headless (or a --replay) with both steps off', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const entry = /^if \(process\.argv\[1\] && import\.meta\.url === pathToFileURL\(process\.argv\[1\]\)\.href\) \{\n([\s\S]*?)^\}$/m.exec(src);
   assert.ok(entry, 'premise: the entry block is found');
   assert.deepEqual(entry[1].match(/\bstart\((?:\{[^}]*\}|[^)]*\)?)\)/g), [
-    'start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, replay: true, viewOnly: true })',
-    'start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true })',
-    'start(entryStartOptions(process.env))',
+    "start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, uiMode: args.ui, launchless: args.ui === 'view' })",
+    "start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, uiMode: args.kind === 'headless' ? args.ui : 'view' })",
+    'start({ ...entryStartOptions(process.env), uiMode: ui })',
   ]);
 });
 
-// A `--view` replay starts no plugin backend at boot: the plugin host's
-// fire-and-forget init()+autoStartAll() chain sits under exactly `!replay`, and
+// Invariant: a launchless replay starts no plugin backend at boot: the plugin host's
+// fire-and-forget init()+autoStartAll() chain sits under exactly `!launchless`, and
 // is the only place either is called from startHolding. Pinned structurally
 // because no behavioural test can see it: the chain settles before start()
 // returns (init is already settled by the boot's convention regeneration), and an
 // explicit start joins a boot start still in flight (tests/replay-plugin-boot.test.mjs).
-test('startHolding runs the plugin host\'s init()+autoStartAll() chain only under `!replay`, and nowhere else', async () => {
+test('startHolding runs the plugin host\'s init()+autoStartAll() chain only under `!launchless`, and nowhere else', async () => {
   const src = await fs.readFile(path.join(ROOT, 'server.ts'), 'utf8');
   const body = src.slice(src.indexOf('async function startHolding('), src.indexOf('\nif (process.argv[1]'));
   const flat = body.replace(/\s+/g, ' ');
   assert.equal(flat.split('pluginHost.init()').length - 1, 1, 'one init() call');
   assert.equal(flat.split('pluginHost.autoStartAll()').length - 1, 1, 'one autoStartAll() call');
   assert.ok(
-    flat.includes('if (!replay) pluginHost.init() .then(() => pluginHost.autoStartAll()) .catch('),
-    'the chain is the body of `if (!replay)`, unwidened and unbraced past its .catch',
+    flat.includes('if (!launchless) pluginHost.init() .then(() => pluginHost.autoStartAll()) .catch('),
+    'the chain is the body of `if (!launchless)`, unwidened and unbraced past its .catch',
   );
 });
 

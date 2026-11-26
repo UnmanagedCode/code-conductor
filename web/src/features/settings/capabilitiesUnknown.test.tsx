@@ -24,10 +24,11 @@ afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 describe('Settings with unknown capabilities', () => {
   // A failed capabilities read is not remembered: every section is offered and mountable, and the next open re-reads and applies the answer.
   it('an unreadable capabilities answer offers every section and mounts a gated one; the next open retries and applies the answer', async () => {
+    // Invariant: a failed health read leaves every section offered and mountable; the next open re-reads (an ordinary server's health, uiMode full) and applies its capabilities.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     let health = 0;
     const calls = routeFetch({
-      'GET /api/health': () => (++health === 1 ? new Error('transient') : { json: { capabilities: { remoteSystems: true, voice: false, fuseUnion: true } } }),
+      'GET /api/health': () => (++health === 1 ? new Error('transient') : { json: { capabilities: { remoteSystems: true, voice: false, fuseUnion: true }, uiMode: 'full' } }),
       'GET /api/settings/systems': () => ({ json: { systems: [] } }),
     });
     history.replaceState(null, '', '/#settings/voice');

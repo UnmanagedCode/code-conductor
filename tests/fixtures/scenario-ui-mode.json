@@ -1,0 +1,762 @@
+{
+ "_comment": "UI-mode e2e (tests/ui-mode-*-e2e.test.mjs), one scenario for every process: '[Headless run]' (the root's run turn), 'HOLD-THE-TURN' and 'WORK-ITEM' (a worker's) open a turn that never ends on its own; 'ASK-ME' raises a tool AskUserQuestion that the deny ends; every other prompt ends the open turn with one message (several, one consumed per prompt).",
+ "events": [
+  {
+   "type": "system",
+   "subtype": "init",
+   "session_id": "$SID",
+   "cwd": "$CWD",
+   "model": "claude-sonnet-4-6",
+   "permissionMode": "$MODE"
+  }
+ ],
+ "turns": [
+  {
+   "on": {
+    "type": "prompt",
+    "text": "[Headless run]"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_run",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Dispatching."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_run",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Dispatching."
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt",
+    "text": "HOLD-THE-TURN"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_hold",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Holding."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_hold",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Holding."
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt",
+    "text": "WORK-ITEM"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_work",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Working."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_work",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Working."
+       }
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt",
+    "text": "ASK-ME"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_ask",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "tool_use",
+       "id": "tu_u_q",
+       "name": "AskUserQuestion",
+       "input": {}
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "input_json_delta",
+       "partial_json": "{\"questions\":[{\"question\":\"Pick a fruit\",\"header\":\"Fruit\",\"multiSelect\":false,\"options\":[{\"label\":\"Apple\"},{\"label\":\"Banana\"}]}]}"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "control_request",
+     "request_id": "ct_u_q",
+     "request": {
+      "subtype": "can_use_tool",
+      "tool_name": "AskUserQuestion",
+      "input": {
+       "questions": [
+        {
+         "question": "Pick a fruit",
+         "header": "Fruit",
+         "multiSelect": false,
+         "options": [
+          {
+           "label": "Apple"
+          },
+          {
+           "label": "Banana"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "control_response",
+    "request_id": "ct_u_q",
+    "behavior": "deny"
+   },
+   "emit": [
+    {
+     "type": "user",
+     "message": {
+      "role": "user",
+      "content": [
+       {
+        "type": "tool_result",
+        "tool_use_id": "tu_u_q",
+        "content": "Delivered — the user can see your request in the orchestrator UI now. End your turn now and wait for the user's reply; it arrives as a new message.",
+        "is_error": true
+       }
+      ]
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end1",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end1",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end2",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end2",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end3",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end3",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end4",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end4",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end5",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end5",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  },
+  {
+   "on": {
+    "type": "prompt"
+   },
+   "emit": [
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_start",
+      "message": {
+       "id": "msg_u_end6",
+       "role": "assistant"
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_start",
+      "index": 0,
+      "content_block": {
+       "type": "text",
+       "text": ""
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_delta",
+      "index": 0,
+      "delta": {
+       "type": "text_delta",
+       "text": "Turn done."
+      }
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "content_block_stop",
+      "index": 0
+     }
+    },
+    {
+     "type": "stream_event",
+     "event": {
+      "type": "message_stop"
+     }
+    },
+    {
+     "type": "assistant",
+     "message": {
+      "id": "msg_u_end6",
+      "role": "assistant",
+      "content": [
+       {
+        "type": "text",
+        "text": "Turn done."
+       }
+      ]
+     }
+    },
+    {
+     "type": "result",
+     "subtype": "success",
+     "stop_reason": "end_turn",
+     "duration_ms": 5,
+     "total_cost_usd": 0.0001,
+     "is_error": false
+    }
+   ]
+  }
+ ]
+}

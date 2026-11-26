@@ -49,7 +49,7 @@ Plugin frontends include `<script src="../../pluginBridge.js"></script>` as a bl
 | `SESSION_UNKNOWN` | no instance carries the id and `locate` refuses it (`ApiError`) |
 | `SESSION_NOT_LIVE` | the session exists but no live instance carries it (`exited`/`crashed`, or a `locate` hit, archived or not) |
 | `SESSION_NOT_READY` | `sendPrompt` only: live, but the composer's Send would be disabled (status not `idle`/`turn`, a `modelSwitch` in flight, `overageStoppedUnarmed`) |
-| `VIEW_ONLY` | `sendPrompt` only: cc runs under `CC_VIEW_ONLY`, so the `prompt` frame was refused client-side (`ViewOnlyError`); nothing was sent |
+| `VIEW_ONLY` | `sendPrompt` only: cc runs under `--ui view`, or under `--ui interact` and the target is not the focused root session, so the `prompt` frame was refused client-side (`ViewOnlyError`); nothing was sent |
 | `SEND_FAILED` | `sendPrompt` only: the acked `prompt` frame was rejected (server error ack, closed socket, the 10 s ack timeout in `shared/ws.ts`) |
 | `LOOKUP_FAILED` | the `locate` read failed with a network error, or did not settle within 10 s |
 | `HOST_ERROR` | an unexpected failure inside cc while carrying out the call |

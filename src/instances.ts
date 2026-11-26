@@ -4544,7 +4544,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
   _exitCauses: Map<string, ExitCause>;
   serverPort: number | null;
   // When set, every create() rejects with this refusal before any guard or spawn
-  // (a `--view` replay, src/headless/view.ts).
+  // (a `--replay` under `--ui view`, src/headless/replay.ts).
   _refuseCreates: CreateRefusal | null;
   _claudePluginDirsResolver: () => Promise<string[]>;
   _coreClaudePluginRoot: string;

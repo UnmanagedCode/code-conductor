@@ -5,7 +5,7 @@
 import { bus, connect, send, type BusEventMap } from '@shared/ws';
 import { ApiError, apiFetch } from '@shared/http';
 import type { SessionSpawner } from '@shared/wireRows';
-import { isViewOnly } from '@shared/viewOnly';
+import { sessionViewOnly, setInstanceSessionLookup } from '@shared/viewOnly';
 import { readSessionAnchor, writeSessionAnchor, pushSessionAnchor, consumeStashedAnchor } from '@shared/anchor';
 import { appStore, activeInstance, findInstance, worktreeRemoved, type AppState, type StaleList } from '@/state/app';
 import { syncRoute, routeStore } from '@/state/route';
@@ -362,7 +362,7 @@ export async function resumeSessionByAnchor(anchor: string, { clearAnchorOnMiss 
     // An archived session is never resurrected from a link, one whose worktree
     // is gone cannot be, and no page load resumes a stopped one: each opens
     // read-only. Only a user's lookup resumes.
-    if (!userGesture || isViewOnly() || hit.archived || worktreeRemoved(appStore.get().projects, hit.project, hit.worktreeName)) {
+    if (!userGesture || sessionViewOnly(anchor) || hit.archived || worktreeRemoved(appStore.get().projects, hit.project, hit.worktreeName)) {
       void openEndedSession({ sessionId: anchor, project: hit.project, worktreeName: hit.worktreeName });
       return true;
     }
@@ -428,12 +428,15 @@ let lifetime: AbortController | null = null;
 export function stopController() {
   lifetime?.abort();
   lifetime = null;
+  setInstanceSessionLookup(null);
 }
 
 export function startController() {
   if (lifetime) return;
   lifetime = new AbortController();
   const { signal } = lifetime;
+  // The UI mode's interact exception names sessions; a frame names an instance.
+  setInstanceSessionLookup((id) => appStore.get().instances.find((i) => i.id === id)?.sessionId ?? null);
   const listen = <K extends keyof BusEventMap>(t: K, fn: (e: BusEventMap[K]) => void) => bus.addEventListener(t, fn, { signal });
 
   listen('snapshot', (e) => {

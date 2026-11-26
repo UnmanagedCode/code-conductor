@@ -18,7 +18,8 @@ import { pluginFrames } from './plugins';
 import { startPluginSessionBridge } from './pluginSession';
 import { postFrom, standInWindow, type StandIn } from './test/pluginHost';
 import { settle } from '@/test/settle';
-import { ViewOnlyError } from '@shared/viewOnly';
+import { ViewOnlyError, setInstanceSessionLookup, setUiMode } from '@shared/viewOnly';
+import { setFocus } from '@shared/focus';
 
 const sendMock = vi.mocked(send);
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
@@ -273,6 +274,41 @@ describe('sendPrompt', () => {
     expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
     sendMock.mockReset();
     expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'x' })).toMatchObject({ ok: true });
+  });
+
+  it('interact: sendPrompt reaches the focused root; any other session answers VIEW_ONLY', async () => {
+    // Invariant: the bridge's sendPrompt goes through the real frame filter, so
+    // under interact a prompt to the focused root is delivered (ok) and one to
+    // any other session answers VIEW_ONLY with nothing written to the socket.
+    const real = await vi.importActual<typeof import('@shared/ws')>('@shared/ws');
+    const wire: { t: string; id?: string }[] = [];
+    class FakeSocket extends EventTarget {
+      static OPEN = 1; static CLOSED = 3; readyState = 1;
+      send(raw: string) {
+        const m = JSON.parse(raw);
+        wire.push(m);
+        const ev = new Event('message') as Event & { data: string };
+        ev.data = JSON.stringify({ t: 'ack', reqId: m.reqId, ok: true });
+        this.dispatchEvent(ev);
+      }
+      close() { this.readyState = 3; }
+    }
+    vi.stubGlobal('WebSocket', FakeSocket);
+    real.connect();
+    sendMock.mockImplementation(real.send as never);
+    setInstanceSessionLookup((id) => appStore.get().instances.find((i) => i.id === id)?.sessionId ?? null);
+    setFocus({ sessionId: 's-a' });
+    setUiMode('interact');
+    try {
+      appStore.set({ instances: [inst('a'), inst('b')] });
+      expect(await ask(shared, 'sendPrompt', { sessionId: 's-a', text: 'to the root' })).toMatchObject({ ok: true });
+      expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'to a worker' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
+      expect(wire.filter((m) => m.t === 'prompt').map((m) => m.id)).toEqual(['a']);
+    } finally {
+      setUiMode('full');
+      setFocus(null);
+      setInstanceSessionLookup(null);
+    }
   });
 
   it('rejects a bad sessionId or empty text as INVALID_ARGUMENT', async () => {

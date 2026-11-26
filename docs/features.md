@@ -47,11 +47,12 @@
 
 - [Plugins](features/plugins.md#plugins)
 
-## [view-only.md](features/view-only.md) — `CC_VIEW_ONLY` spectator mode
+## [ui-modes.md](features/ui-modes.md) — one UI mode per boot: `--ui full|view|interact`
 
-- [View-only mode](features/view-only.md#view-only-mode)
-- [Turning it on](features/view-only.md#turning-it-on)
-- [What the UI removes](features/view-only.md#what-the-ui-removes)
-- [The backstop](features/view-only.md#the-backstop)
-- [Refusal toast](features/view-only.md#refusal-toast)
-- [Plugins](features/view-only.md#plugins)
+- [UI modes](features/ui-modes.md#ui-modes)
+- [Choosing a mode](features/ui-modes.md#choosing-a-mode)
+- [What `view` removes](features/ui-modes.md#what-view-removes)
+- [What `interact` adds](features/ui-modes.md#what-interact-adds)
+- [The backstop](features/ui-modes.md#the-backstop)
+- [Refusal toast](features/ui-modes.md#refusal-toast)
+- [Plugins](features/ui-modes.md#plugins)
