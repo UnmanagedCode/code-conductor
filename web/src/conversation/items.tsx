@@ -14,6 +14,7 @@ import { useStore } from '@/state/createStore';
 import { cn } from '@/lib/utils';
 import { parseRenewSeed, splitSummarySections } from '@shared/renewSeed';
 import { splitForwardedMessages } from '@shared/forwardFrame';
+import { parseLeadingChip } from '@shared/contextChip';
 import { ConversationModel, type AssistantNode, type CompactionNode, type DividerNode, type NarrationNode, type QueuedNode, type RootItem, type SystemNode, type TaskCompletionNode, type TextNode, type TextView, type TurnEndNode, type UserNode } from './model';
 import { ActionGroup, CallUsageLine, type RenderCtx } from './tools';
 import { fieldText, PlanCard, QuestionCard } from './cards';
@@ -208,6 +209,17 @@ function AnswerSummary({ answer }: { answer: NonNullable<UserNode['answer']> }) 
   );
 }
 
+/** The context chip a composer send led with: its title, the data behind a fold. Shared by the sent bubble and the queued ghost. */
+function ContextChipRow({ chip, open, onOpenChange }: { chip: { title: string; data: string }; open: boolean; onOpenChange: (open: boolean) => void }) {
+  return (
+    <div data-user-context-chip>
+      <Folded kind="context-chip" icon={<TextSelectIcon className="size-4" />} title={chip.title} open={open} onOpenChange={onOpenChange}>
+        {() => <pre className="max-h-80 overflow-auto text-xs whitespace-pre-wrap wrap-anywhere" data-context-chip-data>{chip.data}</pre>}
+      </Folded>
+    </div>
+  );
+}
+
 function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; model: ConversationModel; actions: BubbleActions | null; currentSegment: string | null }) {
   const view = node.reader.view;
   const setView = (v: TextView) => model.setReader(node, { view: v });
@@ -246,13 +258,7 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   return (
     <div className="group/user flex flex-col gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
       {(node.skill || node.wake || node.idleNudge || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
-      {node.contextChip && (
-        <div data-user-context-chip>
-          <Folded kind="context-chip" icon={<TextSelectIcon className="size-4" />} title={node.contextChip.title} {...fold}>
-            {() => <pre className="max-h-80 overflow-auto text-xs whitespace-pre-wrap wrap-anywhere" data-context-chip-data>{node.contextChip!.data}</pre>}
-          </Folded>
-        </div>
-      )}
+      {node.contextChip && <ContextChipRow chip={node.contextChip} {...fold} />}
       {node.answer ? (
         <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>
@@ -494,6 +500,9 @@ function TaskCompletionView({ node }: { node: TaskCompletionNode }) {
 
 function QueuedView({ node }: { node: QueuedNode }) {
   const d = node.ev.data ?? {};
+  // A queued composer send carries its chip block in the text (the model must still get it on delivery); show it as the sent bubble does.
+  const chip = parseLeadingChip(d.text ?? '');
+  const [chipOpen, setChipOpen] = React.useState(false);
   let clock = '';
   try { if (d.ts) clock = new Date(d.ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }); } catch { /* bad ts */ }
   // Delivered, the ghost stays where it was queued, dimmed, above the turn that delivered it.
@@ -504,7 +513,8 @@ function QueuedView({ node }: { node: QueuedNode }) {
           <ClockIcon className="size-3" /> Queued{clock && ` · ${clock}`}
           {d.attachmentCount > 0 && <span className="flex items-center gap-0.5"><PaperclipIcon className="size-3" />{d.attachmentCount}</span>}
         </div>
-        <div className="text-[15px] whitespace-pre-wrap">{d.text ?? ''}</div>
+        {chip && <ContextChipRow chip={chip} open={chipOpen} onOpenChange={setChipOpen} />}
+        {(!chip || chip.rest) && <div className="text-[15px] whitespace-pre-wrap">{chip ? chip.rest : d.text ?? ''}</div>}
       </div>
     </div>
   );

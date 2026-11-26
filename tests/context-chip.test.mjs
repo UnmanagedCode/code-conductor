@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import {
   CHIP_MARKER, formatChipBlock, composeChipMessage, parseLeadingChip,
 } from '../shared/contextChip.ts';
+import { buildCombinedResumeText } from '../src/overageResume.ts';
 import { ContextChipSlot, validateChipInput, CHIP_TITLE_MAX, CHIP_DATA_MAX } from '../src/contextChip.ts';
 
 // Invariant: the block is unambiguous — data holding backtick fences of any
@@ -134,4 +135,12 @@ test('validateChipInput refuses an empty, multi-line or oversized title, and non
     assert.throws(() => validateChipInput(b), (e) => e.statusCode === 400 && e.code === 'INVALID_ARGUMENT', JSON.stringify(b)?.slice(0, 40));
   }
   assert.doesNotThrow(() => validateChipInput({ title: 'x'.repeat(CHIP_TITLE_MAX), data: 'x'.repeat(CHIP_DATA_MAX) }));
+});
+
+// Invariant: the overage queue holds the composed text and the resume delivers it whole — the model still
+// receives the chip block (the transcript's queued ghost parses it for display; delivery is unchanged).
+test('the overage resume text carries a queued chip send\'s full block', () => {
+  const text = composeChipMessage({ title: 'T', data: 'DATA' }, 'typed');
+  const out = buildCombinedResumeText([{ text, attachments: [], ts: 0 }], 'queued-only');
+  assert.ok(out.includes(text));
 });
