@@ -9,6 +9,7 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 - [`src/upgradeOrigin.ts`](components/instances.md#srcupgradeorigints)
 - [`src/pluginTheme.ts`](components/instances.md#srcpluginthemets)
 - [`src/instances.ts`](components/instances.md#srcinstancests)
+- [`src/contextChip.ts`](components/instances.md#srccontextchipts)
 - [`src/idleSubscriptions.ts`](components/instances.md#srcidlesubscriptionsts)
 - [`src/overageResume.ts`](components/instances.md#srcoverageresumets)
 - [`src/usageWindowDomains.ts`](components/instances.md#srcusagewindowdomainsts)

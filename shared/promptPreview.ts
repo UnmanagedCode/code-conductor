@@ -15,6 +15,7 @@ import { parseWakeCallback } from './wakeCallback.ts';
 import { IDLE_NUDGE_NAME, parseIdleRenewNudge } from './idleRenewNudge.ts';
 import { FORWARD_FRAME_FOOTER, FORWARD_FRAME_HEADER, parseForwardFrame } from './forwardFrame.ts';
 import { RENEW_SEED_PREAMBLE } from './renewSeed.ts';
+import { parseLeadingChip } from './contextChip.ts';
 
 // The length of the head the server stores of a first prompt.
 const FIRST_PROMPT_CAP = 200;
@@ -50,6 +51,10 @@ function leadOf(text: string, name: string, end: string, keep: number): string {
 // tail (the END marker plus the conductor's instruction) because the
 // instruction sits past any head cut.
 export function firstPromptHead(text: string): string {
+  // A composer send with a context chip is stored as what was typed after it,
+  // or as the chip's title when nothing was: the block itself would fill the head.
+  const chip = parseLeadingChip(text);
+  if (chip) return (chip.rest.trim() ? chip.rest : chip.title).slice(0, FIRST_PROMPT_CAP);
   const fwd = parseForwardFrame(text);
   return (fwd ? FORWARD_TAIL + fwd.instruction.trimStart() : text).slice(0, FIRST_PROMPT_CAP);
 }

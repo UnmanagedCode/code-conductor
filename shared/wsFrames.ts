@@ -9,7 +9,7 @@
 
 import type { UiEvent } from './uiEvent.ts';
 import type { Usage } from './usage.ts';
-import type { ListedTask, ModelSwitchState, ModelSwitchFailure } from './wireRows.ts';
+import type { ListedTask, ModelSwitchState, ModelSwitchFailure, ContextChip } from './wireRows.ts';
 
 export interface SnapshotFrame {
   t: 'snapshot';
@@ -35,6 +35,8 @@ export interface SnapshotFrame {
   lastContextUsage: Usage | null;
   // Present once, on a fork's first snapshot ⇒ composer prefill; consumed once.
   droppedText?: string;
+  // The session's pending context chip (src/contextChip.ts), null when none.
+  chip: ContextChip | null;
 }
 
 export interface ResetSnapshotFrame {
@@ -81,6 +83,14 @@ export interface StatusFrame {
   modelSwitchFailure: ModelSwitchFailure | null;
 }
 
+// The session's pending context chip changed: the new chip, or null once it is
+// cleared or consumed.
+export interface ChipFrame {
+  t: 'chip';
+  id: string;
+  chip: ContextChip | null;
+}
+
 // Hint to re-fetch GET /api/instances.
 export interface InstancesHintFrame { t: 'instances' }
 // Hint to re-fetch GET /api/projects.
@@ -100,7 +110,7 @@ export interface ErrorFrame {
   message: string;
 }
 
-export type ServerFrame = SnapshotFrame | ResetSnapshotFrame | EventFrame | SegmentFrame | StatusFrame
+export type ServerFrame = SnapshotFrame | ResetSnapshotFrame | EventFrame | SegmentFrame | StatusFrame | ChipFrame
   | InstancesHintFrame | ProjectsHintFrame | ResumeNoticesFrame | HelloFrame | AckFrame | ErrorFrame;
 
 export type ServerFrameOf<T extends ServerFrame['t']> = Extract<ServerFrame, { t: T }>;

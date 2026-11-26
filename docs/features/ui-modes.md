@@ -76,7 +76,7 @@ The lists, all in `shared/viewOnly.ts`, all **fail closed** (a route or frame no
 | `VIEW_ONLY_REST_ALLOW` | the unread marker, read-aloud (`/api/tts`), a plugin view's lazy start | `view`, `interact` |
 | `VIEW_ONLY_FRAMES_ALLOW` | subscriptions and pristine presence | `view`, `interact` |
 | `INTERACT_FRAMES_ALLOW` | `prompt`, `interrupt`, `mode`, only when the payload's `id` is the interactive session's instance | `interact` |
-| `INTERACT_REST_ALLOW` | `POST /api/instances` whose JSON body's `resume` is the interactive session (a fresh spawn or a non-JSON body is refused); `POST /api/instances/:id/respawn` of its instance; `POST …/sessions/:sid/restore` (both URL shapes) of it | `interact` |
+| `INTERACT_REST_ALLOW` | `POST /api/instances` whose JSON body's `resume` is the interactive session (a fresh spawn or a non-JSON body is refused); `POST /api/instances/:id/respawn` of its instance; `POST …/sessions/:sid/restore` (both URL shapes) of it; `PUT` / `DELETE /api/sessions/:sid/chip` of it (the composer's context-chip × and a plugin page's `setChip` / `clearChip`) | `interact` |
 | `INTERACT_REST_ANY` | `POST /api/transcribe` — the interactive Composer's dictation; persists nothing. The one interact entry that addresses no session. | `interact` |
 
 - A frame names an instance, not a session: the web controller registers `setInstanceSessionLookup` (`startController`, `web/src/app/controller.ts`), mapping an instance id to its row's `sessionId`.
@@ -89,5 +89,6 @@ Each refusal notifies `onViewOnlyRefusal`; `startViewOnlyNotice` (`web/src/app/v
 ## Plugins
 
 - Plugin views still load in every mode (`POST /api/plugins/:id/start` is allowed). A plugin page's own requests bypass both chokepoints.
-- `ccBridge.sendPrompt` goes through `send('prompt')`: it answers result code `VIEW_ONLY` under `view`, and under `interact` for any session but the focused root, which it reaches ([plugins/runtime.md](../plugins/runtime.md)).
+- `ccBridge.sendPrompt` goes through `send('prompt')`, and `setChip` / `clearChip` through the chip REST route: each answers result code `VIEW_ONLY` under `view`, and under `interact` for any session but the focused root, which it reaches ([plugins/runtime.md](../plugins/runtime.md)).
+- The composer's context chip goes with the Composer: no chip under `view`, and under `interact` only for the focused root.
 - A plugin reads `uiMode` and `focus.sessionId` from `/api/health` to hide its own controls ([plugin-ui.md](../plugin-ui.md#ui-modes)).

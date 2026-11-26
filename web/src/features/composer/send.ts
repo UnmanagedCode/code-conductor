@@ -9,6 +9,8 @@ import type { Instance } from '@/state/types';
 export type PromptBody = {
   text: string;
   attachments?: { name: string; mediaType: string; dataBase64: string }[];
+  /** The revision of the context chip this send consumes; only the composer's own Send names one. */
+  chip?: number;
 };
 
 /** Whether the composer's Send is enabled for `inst`. */
@@ -20,6 +22,7 @@ export function sendPrompt(inst: Instance, body: PromptBody): void;
 export function sendPrompt(inst: Instance, body: PromptBody, opts?: { ack: true }): Promise<AckFrame> | void {
   const payload: Record<string, unknown> = { id: inst.id, text: body.text };
   if (body.attachments?.length) payload.attachments = body.attachments;
+  if (body.chip !== undefined) payload.chip = body.chip;
   notePristineSent(inst.id);
   return opts ? send('prompt', payload, opts) : send('prompt', payload);
 }

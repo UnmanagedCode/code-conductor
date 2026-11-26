@@ -12,6 +12,7 @@ export const ANDROID_SPECS = [
   'card-drafts.spec.ts',
   'collapse-state.spec.ts',
   'composer-attach.spec.ts',
+  'composer-chip.spec.ts',
   'composer-dictate.spec.ts',
   'composer-drafts.spec.ts',
   'conductors-lens.spec.ts',

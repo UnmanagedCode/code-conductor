@@ -24,8 +24,10 @@ import type { InstanceManagerLike, InstanceLike, InstanceSummary } from './insta
 import type { UiEvent } from '../shared/uiEvent.ts';
 import type {
   SnapshotFrame, ResetSnapshotFrame, ResetSnapshotPayload, EventFrame, SegmentFrame, StatusFrame,
-  InstancesHintFrame, ProjectsHintFrame, HelloFrame, ErrorFrame,
+  InstancesHintFrame, ProjectsHintFrame, HelloFrame, ErrorFrame, ChipFrame,
 } from '../shared/wsFrames.ts';
+import type { ContextChip } from '../shared/wireRows.ts';
+import { composeChipMessage } from '../shared/contextChip.ts';
 import { currentSegmentScope, segmentOfSeq, insertRingSeamDividers } from './eventArchive.ts';
 
 export interface WsHubOptions {
@@ -94,6 +96,16 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
     // stays stale at the page-load value and a Sessions subnode can
     // vanish when the last live instance is removed.
     broadcastAll(JSON.stringify({ t: 'projects' } satisfies ProjectsHintFrame));
+  });
+
+  // The session's context chip changed: through sendInstanceFrame, so it stays
+  // behind the snapshot a subscribe is building (whose own `chip` field is the
+  // value at capture).
+  instances.on('chip', ({ id, chip }: { id: string; chip: ContextChip | null }) => {
+    const subs = subscribers.get(id);
+    if (!subs) return;
+    const msg = JSON.stringify({ t: 'chip', id, chip } satisfies ChipFrame);
+    for (const ws of subs) sendInstanceFrame(ws, id, msg);
   });
 
   instances.on('list_changed', () => {
@@ -230,6 +242,9 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
         // an appended event like the thinking counter above: a synthetic
         // message_start in events[] would also reach conversation.apply.
         lastContextUsage,
+        // Captured with the rest of the build's reads; a change after it is a
+        // held `chip` frame.
+        chip: inst.contextChip.get(),
         ...(droppedText != null ? { droppedText } : {}),
       } satisfies SnapshotFrame));
     } finally {
@@ -287,7 +302,27 @@ export function attachWsHub({ wss, instances }: WsHubOptions): void {
             // shared/ws.ts rejects a pending ack after 10s and sendCardAnswer's
             // onFail re-opens the card, so waiting on the unbounded stop would make
             // every deferred card answer falsely report failure.
-            await inst.promptOrQueueSteer(String(msg.text ?? ''), atts, { author: 'human' });
+            //
+            // Only the composer's Send names a context chip (`chip: <rev>`), so
+            // the cards and the plugin bridge never consume one. `take` and the
+            // start of promptOrQueueSteer share a tick, so two sockets sending
+            // the same rev deliver the chip once; a stale rev is text only.
+            const typed = String(msg.text ?? '');
+            let taken: ContextChip | null = null;
+            if (msg.chip !== undefined) {
+              if (!Number.isSafeInteger(msg.chip)) { reply(false, 'chip must be a revision number'); return; }
+              taken = inst.contextChip.take(msg.chip as number);
+              if (!taken && !typed && !atts.length) {
+                reply(false, 'nothing to send: the context chip changed');
+                return;
+              }
+            }
+            try {
+              await inst.promptOrQueueSteer(taken ? composeChipMessage(taken, typed) : typed, atts, { author: 'human' });
+            } catch (err) {
+              if (taken) inst.contextChip.restore(taken);
+              throw err;
+            }
             reply(true);
             return;
           }

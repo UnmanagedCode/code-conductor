@@ -1,7 +1,7 @@
 import * as React from 'react';
 import {
   AlarmClockIcon, ArrowRightLeftIcon, BellIcon, BookOpenIcon, CircleAlertIcon, CircleCheckIcon, ClockIcon,
-  FileTextIcon, GitForkIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
+  FileTextIcon, GitForkIcon, TextSelectIcon, ImageOffIcon, ListChecksIcon, MailIcon, MessageCircleIcon, MicIcon, PaperclipIcon, RecycleIcon,
   RotateCcwIcon, ShrinkIcon, TriangleAlertIcon,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -246,6 +246,13 @@ function UserBubble({ node, model, actions, currentSegment }: { node: UserNode; 
   return (
     <div className="group/user flex flex-col gap-1.5" data-item="user" data-variant={node.variant} data-user-index={node.userIndex ?? undefined} data-prompt-origin={node.origin}>
       {(node.skill || node.wake || node.idleNudge || node.renew || node.forward) && <div className="space-y-2" data-user-folds>{folded}</div>}
+      {node.contextChip && (
+        <div data-user-context-chip>
+          <Folded kind="context-chip" icon={<TextSelectIcon className="size-4" />} title={node.contextChip.title} {...fold}>
+            {() => <pre className="max-h-80 overflow-auto text-xs whitespace-pre-wrap wrap-anywhere" data-context-chip-data>{node.contextChip!.data}</pre>}
+          </Folded>
+        </div>
+      )}
       {node.answer ? (
         <div className={cn(USER_BUBBLE, 'bg-info/8 border-r-info/60')}>
           <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-info" data-answer-head>

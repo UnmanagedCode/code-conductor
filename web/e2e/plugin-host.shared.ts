@@ -275,8 +275,8 @@ type BridgeResult = { ok: boolean; code?: string };
 /** What `window.ccBridge` in plugin `id`'s page holds as its session. */
 const bridgeSession = (page: Page, id: string) => probeFrame(page, id)?.evaluate(() => (window as unknown as { ccBridge: { session: { sessionId: string } | null | undefined } }).ccBridge.session) ?? Promise.resolve(undefined);
 /** Calls `ccBridge.<call>(...args)` in plugin `id`'s page and returns the host's result. */
-const bridgeCall = (page: Page, id: string, call: 'openSession' | 'sendPrompt', args: string[]): Promise<BridgeResult> =>
-  probeFrame(page, id)!.evaluate(([c, a]) => (window as unknown as { ccBridge: Record<string, (...x: string[]) => Promise<{ ok: boolean; code?: string }>> }).ccBridge[c as string](...(a as string[])), [call, args] as const);
+const bridgeCall = (page: Page, id: string, call: 'openSession' | 'sendPrompt' | 'setChip' | 'clearChip', args: unknown[]): Promise<BridgeResult> =>
+  probeFrame(page, id)!.evaluate(([c, a]) => (window as unknown as { ccBridge: Record<string, (...x: unknown[]) => Promise<{ ok: boolean; code?: string }>> }).ccBridge[c as string](...(a as unknown[])), [call, args] as const);
 
 export async function sessionFlow({ page, cc }: Args): Promise<void> {
   // Invariant: a plugin page, shown or hidden, follows the session the user views; sendPrompt delivers a prompt to another session without switching to it; openSession switches to a live one; an unknown id is refused with its code.
@@ -305,6 +305,13 @@ export async function sessionFlow({ page, cc }: Args): Promise<void> {
   expect(await bridgeCall(page, KEEP.id, 'openSession', [a.sessionId]), 'openSession').toEqual({ ok: true });
   await expect(page, 'A is open again').toHaveURL(new RegExp(`#session=${a.sessionId}$`));
   await expect(next.userMessages(page).filter({ hasText: 'from plugin' }), "A's transcript holds the plugin's prompt").toBeVisible();
+
+  // setChip / clearChip: the composer of the session the user views shows, then drops, the chip a plugin page set on it.
+  expect(await bridgeCall(page, KEEP.id, 'setChip', [a.sessionId, { title: 'From the plugin', data: 'plugin data' }]), 'setChip').toEqual({ ok: true });
+  await expect(page.locator('[data-context-chip]'), "A's composer shows the plugin's chip").toContainText('From the plugin');
+  expect(await bridgeCall(page, KEEP.id, 'clearChip', [a.sessionId]), 'clearChip').toEqual({ ok: true });
+  await expect(page.locator('[data-context-chip]'), 'the chip is gone').toHaveCount(0);
+  expect(await bridgeCall(page, KEEP.id, 'setChip', ['nope', { title: 'T', data: 'D' }]), 'a session that is not live').toEqual({ ok: false, code: 'SESSION_NOT_LIVE' });
 
   expect(await bridgeCall(page, KEEP.id, 'openSession', ['nope']), 'an unknown session').toEqual({ ok: false, code: 'SESSION_UNKNOWN' });
   await expect(page, 'the refusal changed nothing').toHaveURL(new RegExp(`#session=${a.sessionId}$`));

@@ -18,6 +18,7 @@ import { pluginFrames } from './plugins';
 import { startPluginSessionBridge } from './pluginSession';
 import { postFrom, standInWindow, type StandIn } from './test/pluginHost';
 import { settle } from '@/test/settle';
+import { contextChipStore } from '@/features/composer/contextChipStore';
 import { ViewOnlyError, setInstanceSessionLookup, setUiMode } from '@shared/viewOnly';
 import { setFocus } from '@shared/focus';
 
@@ -55,7 +56,7 @@ let abortPristine: AbortController;
 const sessionMsgs = (w: StandIn) => w.posted.filter((m: any) => m?.type === 'session') as { session: unknown }[];
 const results = (w: StandIn) => w.posted.filter((m: any) => m?.type === 'result') as any[];
 /** Posts one call and returns the one result the frame got back for its id. */
-async function ask(from: StandIn, type: 'openSession' | 'sendPrompt', fields: Record<string, unknown>) {
+async function ask(from: StandIn, type: 'openSession' | 'sendPrompt' | 'setChip' | 'clearChip', fields: Record<string, unknown>) {
   const id = `c${Math.random()}`;
   postFrom(from, { cc: 1, type, id, ...fields });
   await vi.waitFor(() => expect(results(from).some((r) => r.id === id)).toBe(true));
@@ -395,5 +396,97 @@ describe('who may call', () => {
     // Invariant: a result goes to the frame that asked, not to the others.
     await ask(resident, 'openSession', { sessionId: 's-b' });
     expect(results(shared)).toEqual([]);
+  });
+});
+
+describe('setChip / clearChip', () => {
+  let chipCalls: { method: string; url: string; body: any }[];
+  /** Answers the chip route with `answer`; any other read gets `{}`. */
+  function stubChip(answer: () => Response | Promise<Response>) {
+    chipCalls = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string, o: RequestInit = {}) => {
+      if (!/\/chip$/.test(url)) return json({});
+      chipCalls.push({ method: o.method ?? 'GET', url, body: o.body ? JSON.parse(o.body as string) : null });
+      return answer();
+    }));
+  }
+
+  it('calls PUT / DELETE /api/sessions/<sid>/chip and answers ok', async () => {
+    // Invariant: the bridge's setChip is the same route a plugin backend calls — PUT with {title, data}; clearChip is an unconditional DELETE (no rev).
+    stubChip(() => json({ ok: true }));
+    expect(await ask(shared, 'setChip', { sessionId: 's-b', title: 'T', data: 'D' })).toMatchObject({ ok: true });
+    expect(await ask(shared, 'clearChip', { sessionId: 's-b' })).toMatchObject({ ok: true });
+    expect(chipCalls).toEqual([
+      { method: 'PUT', url: '/api/sessions/s-b/chip', body: { title: 'T', data: 'D' } },
+      { method: 'DELETE', url: '/api/sessions/s-b/chip', body: null },
+    ]);
+  });
+
+  it('passes the route\'s own refusal code through', async () => {
+    // Invariant: SESSION_NOT_LIVE and INVALID_ARGUMENT reach the plugin as the server named them; an ApiError without a code is HOST_ERROR.
+    stubChip(() => json({ error: 'no live session', code: 'SESSION_NOT_LIVE' }, 404));
+    expect(await ask(shared, 'setChip', { sessionId: 's-zz', title: 'T', data: 'D' })).toMatchObject({ ok: false, code: 'SESSION_NOT_LIVE' });
+    stubChip(() => json({ error: 'title must not be empty', code: 'INVALID_ARGUMENT' }, 400));
+    expect(await ask(shared, 'setChip', { sessionId: 's-b', title: '', data: 'D' })).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    stubChip(() => json({ error: 'boom' }, 500));
+    expect(await ask(shared, 'clearChip', { sessionId: 's-b' })).toMatchObject({ ok: false, code: 'HOST_ERROR' });
+  });
+
+  it('refuses a missing sessionId as INVALID_ARGUMENT without a request', async () => {
+    // Invariant: a call that names no session never reaches the server.
+    stubChip(() => json({ ok: true }));
+    for (const fields of [{}, { sessionId: '' }, { sessionId: 4 }]) {
+      expect(await ask(shared, 'clearChip', fields)).toMatchObject({ ok: false, code: 'INVALID_ARGUMENT' });
+    }
+    expect(chipCalls).toEqual([]);
+  });
+
+  it('answers VIEW_ONLY under view, and for a session that is not the focused one under interact', async () => {
+    // Invariant: the calls go through the real REST gate — view refuses both, interact admits the focused session only; nothing is fetched when refused.
+    stubChip(() => json({ ok: true }));
+    setUiMode('view');
+    try {
+      expect(await ask(shared, 'setChip', { sessionId: 's-a', title: 'T', data: 'D' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
+      expect(await ask(shared, 'clearChip', { sessionId: 's-a' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
+      setInstanceSessionLookup((id) => appStore.get().instances.find((i) => i.id === id)?.sessionId ?? null);
+      setFocus({ sessionId: 's-a' });
+      setUiMode('interact');
+      expect(await ask(shared, 'setChip', { sessionId: 's-b', title: 'T', data: 'D' })).toMatchObject({ ok: false, code: 'VIEW_ONLY' });
+      expect(chipCalls).toEqual([]);
+      expect(await ask(shared, 'setChip', { sessionId: 's-a', title: 'T', data: 'D' })).toMatchObject({ ok: true });
+      expect(chipCalls.map((c) => c.url)).toEqual(['/api/sessions/s-a/chip']);
+    } finally {
+      setUiMode('full');
+      setFocus(null);
+      setInstanceSessionLookup(null);
+    }
+  });
+
+  it('answers REQUEST_FAILED on a network error and on a hung request', async () => {
+    // Invariant: an unreachable or silent server surfaces as REQUEST_FAILED instead of leaving the plugin's promise open.
+    stubChip(() => { throw new TypeError('Failed to fetch'); });
+    expect(await ask(shared, 'setChip', { sessionId: 's-b', title: 'T', data: 'D' })).toMatchObject({ ok: false, code: 'REQUEST_FAILED' });
+    stubChip(() => new Promise<Response>(() => {}));
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      postFrom(shared, { cc: 1, type: 'clearChip', id: 'hung', sessionId: 's-b' });
+      await vi.advanceTimersByTimeAsync(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
+    await vi.waitFor(() => expect(results(shared).find((r) => r.id === 'hung')).toMatchObject({ ok: false, code: 'REQUEST_FAILED' }));
+  });
+
+  it('the bridge\'s sendPrompt never carries the chip, while one is shown', async () => {
+    // Invariant: only the composer's own Send consumes a chip — a plugin's sendPrompt is a bare prompt frame (text only), so the chip stays pending.
+    contextChipStore.set({ chips: new Map([['b', { title: 'T', data: 'D', rev: 3 }]]) });
+    try {
+      expect(await ask(shared, 'sendPrompt', { sessionId: 's-b', text: 'hi' })).toMatchObject({ ok: true });
+      expect(sendMock).toHaveBeenCalledTimes(1);
+      expect(sendMock.mock.calls[0][1]).toEqual({ id: 'b', text: 'hi' });
+      expect(contextChipStore.get().chips.get('b')?.rev).toBe(3);
+    } finally {
+      contextChipStore.set({ chips: new Map() });
+    }
   });
 });

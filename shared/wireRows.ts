@@ -49,6 +49,14 @@ export interface ModelSwitchState {
 
 export type ModelSwitchFailure = ModelSwitchState & { error: string };
 
+// The one pending context chip on a live session (src/contextChip.ts). `rev` is
+// the slot's monotonic revision: a send or a × names the rev it saw.
+export interface ContextChip {
+  title: string;
+  data: string;
+  rev: number;
+}
+
 // An instance's worktree, as the summary carries it.
 export interface InstanceWorktree {
   worktreeName: string;

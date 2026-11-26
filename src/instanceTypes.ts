@@ -26,6 +26,8 @@ import type { SessionRedirect } from './systems/toolRedirect.ts';
 import type { TurnMarks } from './sessionStore.ts';
 import type { BackgroundJob } from './backgroundJobs.ts';
 import type { Response } from 'express';
+import type { ContextChipSlot } from './contextChip.ts';
+import type { ContextChip } from '../shared/wireRows.ts';
 import type { LineageSource } from './lineagePager.ts';
 import type { HumanPromptQuote } from './promptAuthor.ts';
 import type { PristineTracker } from './pristine.ts';
@@ -298,6 +300,8 @@ export interface InstanceLike {
   emit(event: 'status', summary: InstanceSummary): void;
   on(event: 'status', cb: (s: InstanceSummary) => void): void;
   off(event: 'status', cb: (s: InstanceSummary) => void): void;
+  // The pending context chip (src/contextChip.ts).
+  readonly contextChip: ContextChipSlot;
 }
 
 // One session spawned (transitively) under a root, as the resume manifest
@@ -367,6 +371,8 @@ export interface InstanceManagerLike {
   // An instance's turn marks changed (Instance.setTurnMarks); wsHub turns it
   // into the `instances` hint alone.
   emit(event: 'turn_marks', arg: { id: string }): void;
+  // An instance's context chip changed (Instance.contextChip); wsHub sends it as a `chip` frame.
+  emit(event: 'chip', arg: { id: string; chip: ContextChip | null }): void;
   // Emitted by IdleSubscriptionHub.deliver(); consumed by the playbook gate.
   emit(event: 'wake_delivered', arg: WakeDelivered): void;
   // The manager's lifecycle relays — see SessionLaunched and its siblings.
@@ -402,6 +408,7 @@ export interface InstanceManagerLike {
   on(event: 'status', cb: (summary: InstanceSummary) => void): void;
   on(event: 'list_changed' | 'subscription_changed' | 'playbook_changed' | 'turn_marks', cb: () => void): void;
   on(event: 'snapshot_reset', cb: (snap: ResetSnapshotPayload) => void): void;
+  on(event: 'chip', cb: (arg: { id: string; chip: ContextChip | null }) => void): void;
   on(event: 'wake_delivered', cb: (arg: WakeDelivered) => void): void;
   on(event: 'session_launched', cb: (arg: SessionLaunched) => void): void;
   on(event: 'session_exited', cb: (arg: SessionExited) => void): void;

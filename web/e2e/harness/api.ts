@@ -22,6 +22,11 @@ export async function api<T = any>(cc: Pick<Cc, 'url'>, method: string, route: s
   return { status: res.status, body: text ? JSON.parse(text) : null };
 }
 
+/** Puts the pending context chip on a live session, as a plugin backend does through `$CONDUCTOR_URL`. */
+export async function setChip(cc: Pick<Cc, 'url'>, sessionId: string, title: string, data: string): Promise<ApiResult> {
+  return api(cc, 'PUT', `/api/sessions/${encodeURIComponent(sessionId)}/chip`, { title, data });
+}
+
 export async function createProject(cc: Pick<Cc, 'url'>, name: string): Promise<void> {
   const r = await api(cc, 'POST', '/api/projects', { name });
   expect(r.status, `POST /api/projects ${name}: ${JSON.stringify(r.body)}`).toBeLessThan(300);

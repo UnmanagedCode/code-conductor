@@ -22,7 +22,9 @@ Plugin frontends include `<script src="../../pluginBridge.js"></script>` as a bl
 | child → parent | `openLink` | `{href}` | a plain click on a link whose http(s) host is cc's link host (`cc.internal`), whatever its `target`, or on a `target="_top"` / `_parent` link to cc's own path + search with a `#plugin/` hash; the bridge prevents it and reports the resolved `href`; the parent shows it in the dock or follows it as a fragment navigation |
 | child → parent | `openSession` | `{id, sessionId}` | make a live session the selection, as a sidebar pick does |
 | child → parent | `sendPrompt` | `{id, sessionId, text}` | deliver `text` to a live session as its composer's Send does, without selecting it |
-| parent → child | `result` | `{id, ok, code?}` | the answer to one `openSession` / `sendPrompt`, posted to the calling frame only |
+| child → parent | `setChip` | `{id, sessionId, title, data}` | put the session's context chip (`PUT /api/sessions/:sid/chip`) |
+| child → parent | `clearChip` | `{id, sessionId}` | clear it (`DELETE /api/sessions/:sid/chip`, no `rev`) |
+| parent → child | `result` | `{id, ok, code?}` | the answer to one `openSession` / `sendPrompt` / `setChip` / `clearChip`, posted to the calling frame only |
 
 **Active session** = `activeInstance(appStore.get())` (`web/src/state/app.ts`): cc's one selection, in every layout; `null` when nothing is selected or the selected instance has no `sessionId` yet. The per-layout table is in [plugin-ui.md](../plugin-ui.md) → Session awareness.
 
@@ -49,14 +51,20 @@ Plugin frontends include `<script src="../../pluginBridge.js"></script>` as a bl
 | `SESSION_UNKNOWN` | no instance carries the id and `locate` refuses it (`ApiError`) |
 | `SESSION_NOT_LIVE` | the session exists but no live instance carries it (`exited`/`crashed`, or a `locate` hit, archived or not) |
 | `SESSION_NOT_READY` | `sendPrompt` only: live, but the composer's Send would be disabled (status not `idle`/`turn`, a `modelSwitch` in flight, `overageStoppedUnarmed`) |
-| `VIEW_ONLY` | `sendPrompt` only: cc runs under `--ui view`, or under `--ui interact` and the target is not the focused root session, so the `prompt` frame was refused client-side (`ViewOnlyError`); nothing was sent |
+| `VIEW_ONLY` | `sendPrompt`, `setChip`, `clearChip`: cc runs under `--ui view`, or under `--ui interact` and the target is not the focused root session, so the call was refused client-side (`ViewOnlyError`); nothing was sent |
 | `SEND_FAILED` | `sendPrompt` only: the acked `prompt` frame was rejected (server error ack, closed socket, the 10 s ack timeout in `shared/ws.ts`) |
 | `LOOKUP_FAILED` | the `locate` read failed with a network error, or did not settle within 10 s |
-| `HOST_ERROR` | an unexpected failure inside cc while carrying out the call |
+| `REQUEST_FAILED` | `setChip` / `clearChip` only: the REST request failed with a network error, or did not settle within 10 s |
+| `HOST_ERROR` | an unexpected failure inside cc while carrying out the call, or a chip route error that names no `code` |
 
-`SESSION_UNKNOWN` and `SESSION_NOT_LIVE` reuse the MCP vocabulary of `src/mcp/handlers.ts`.
+`SESSION_UNKNOWN` and `SESSION_NOT_LIVE` reuse the MCP vocabulary of `src/mcp/handlers.ts`. For `setChip` / `clearChip` the route's own `code` passes through unchanged (`INVALID_ARGUMENT`, `SESSION_NOT_LIVE`: the route answers `SESSION_NOT_LIVE` for an unknown id too, and the host does no `lookup`); the host adds `VIEW_ONLY`, `REQUEST_FAILED`, `HOST_ERROR` (`web/src/features/views/pluginChip.ts`).
 
-**Child API.** Outside an embed, or on a host without these messages, `window.ccBridge` is absent. Embedded it holds `session` (`undefined` until the first `session` message, then the payload or `null`), `onSession(fn)` → unsubscribe (`fn` runs on every `session` message, and at once when one has arrived), and `openSession(sessionId)` / `sendPrompt(sessionId, text)` → `Promise<{ok, code?}>`. A promise never rejects: it resolves with the host's `result`. The parent sends exactly one `result` per received call, and bounds the slow parts: the send ack and the `locate` read at 10 s each. A frame that navigates or reloads mid-call loses its reply, so a plugin that needs a deadline sets its own.
+**Context chips.**
+- One pending chip per live session, held on the instance (`ContextChipSlot`, `src/contextChip.ts`); `PUT` always replaces it (no ownership check) and bumps its `rev`. The bridge calls and a plugin backend's REST calls are the same route ([protocol/rest.md](../protocol/rest.md) → `/api/sessions/:sid/chip`).
+- Only the human composer's Send consumes it: the `prompt` frame carries `chip: <rev>` ([protocol/websocket.md](../protocol/websocket.md)). `ccBridge.sendPrompt`, the plan and question cards, MCP `send_prompt` and a Send to the owner never do, so the chip stays pending through them.
+- The session ending (a dead status outside a relaunch window) or a cc restart drops it; rewind, prune and a restart model switch keep it.
+
+**Child API.** Outside an embed, or on a host without these messages, `window.ccBridge` is absent. Embedded it holds `session` (`undefined` until the first `session` message, then the payload or `null`), `onSession(fn)` → unsubscribe (`fn` runs on every `session` message, and at once when one has arrived), and `openSession(sessionId)` / `sendPrompt(sessionId, text)` / `setChip(sessionId, {title, data})` / `clearChip(sessionId)` → `Promise<{ok, code?}>`. A promise never rejects: it resolves with the host's `result`. The parent sends exactly one `result` per received call, and bounds the slow parts: the send ack, the `locate` read and the chip request at 10 s each. A frame that navigates or reloads mid-call loses its reply, so a plugin that needs a deadline sets its own.
 
 **Security.** `openSession` / `sendPrompt` let any plugin page, hidden keep-alive frames included, drive any session. That adds no reach: a plugin page is same-origin with cc and can already call cc's unauthenticated API and socket. It is why the content-rendering rules in [plugin-ui.md](../plugin-ui.md) Part 2 matter.
 

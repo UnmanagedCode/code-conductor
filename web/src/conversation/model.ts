@@ -14,6 +14,7 @@ import { parseIdleRenewNudge } from '@shared/idleRenewNudge';
 import { parseRenewSeed } from '@shared/renewSeed';
 import { parseForwardFrame, splitForwardedMessages } from '@shared/forwardFrame';
 import { promptOrigin } from '@shared/promptOrigin';
+import { parseLeadingChip } from '@shared/contextChip';
 import { normalizeQuestions, parseCanonicalUserQuestionAnswers } from '@shared/userQuestionAnswers';
 import type { CompletedTask, SystemData, UiEvent, UiEventOf } from '@shared/uiEvent';
 import { splitResultContent } from './format';
@@ -85,6 +86,8 @@ export type UserNode = Base & {
   /** The user-text body shown below any folded part ('' when none). */
   displayText: string;
   transcribed: boolean;
+  /** The context chip the composer sent this message with (shared/contextChip.ts); `displayText` is what was typed after it. */
+  contextChip: { title: string; data: string } | null;
   skill: { name: string; text: string } | null;
   wake: { summary: string; body: string | null } | null;
   idleNudge: { summary: string; body: string } | null;
@@ -1181,13 +1184,18 @@ export class ConversationModel {
     }
 
     let text = evText;
+    // A chip leads a message the composer sent and nothing else: no injected or forwarded turn carries one.
+    const chipParsed = ev.skillLoad ? null : parseLeadingChip(text);
+    const contextChip = chipParsed ? { title: chipParsed.title, data: chipParsed.data } : null;
+    if (chipParsed) text = chipParsed.rest;
     const skill = ev.skillLoad ? { name: ev.skillLoad.skill ?? 'skill', text } : null;
-    const wakeParsed = skill ? null : parseWakeCallback(text);
+    // What follows a chip is the composer's typed text, never an injected turn's marker.
+    const wakeParsed = skill || chipParsed ? null : parseWakeCallback(text);
     const wake = wakeParsed ? { summary: wakeParsed.summary, body: wakeParsed.body ?? null } : null;
-    const idleNudge = skill || wake ? null : parseIdleRenewNudge(text);
+    const idleNudge = skill || wake || chipParsed ? null : parseIdleRenewNudge(text);
     const injectedFold = !!(skill || wake || idleNudge);
-    const renew = injectedFold ? null : parseRenewSeed(text) ? { text } : null;
-    const fwd = injectedFold || renew ? null : parseForwardFrame(text);
+    const renew = injectedFold || chipParsed ? null : parseRenewSeed(text) ? { text } : null;
+    const fwd = injectedFold || renew || chipParsed ? null : parseForwardFrame(text);
     const forward = fwd ? { payload: fwd.payload, count: splitForwardedMessages(fwd.payload).length } : null;
     if (fwd) text = fwd.instruction;
     const qa = injectedFold || renew || forward ? null : ev.questionAnswer ?? null;
@@ -1202,7 +1210,7 @@ export class ConversationModel {
     const node = this.make<UserNode>({
       type: 'user', variant, rawText: evText,
       displayText: !injectedFold && !renew ? text : '',
-      transcribed, skill, wake, idleNudge, renew, forward, answer,
+      transcribed, contextChip, skill, wake, idleNudge, renew, forward, answer,
       attachments: Array.isArray(ev.attachments) ? ev.attachments : [],
       hookContexts: [],
       userIndex: Number.isInteger(ev.userIndex) ? ev.userIndex as number : null,

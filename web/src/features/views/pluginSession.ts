@@ -1,6 +1,6 @@
 // Parent side of the bridge's session awareness (optional host capability, see
 // docs/plugins/runtime.md → Bridge protocol): tells plugin frames which session is
-// active and carries out their `openSession` / `sendPrompt` calls. Frame
+// active and carries out their `openSession` / `sendPrompt` / `setChip` / `clearChip` calls. Frame
 // attribution lives in PluginFrames; this module owns what the messages mean.
 import { ApiError, apiFetch } from '@shared/http';
 import { isLiveStatus } from '@shared/conductors';
@@ -10,6 +10,7 @@ import { activeInstance, appStore } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { promptSendable, sendPrompt } from '@/features/composer/send';
 import { pluginFrames } from './plugins';
+import { handleChipCall } from './pluginChip';
 
 export type BridgeSession = { sessionId: string; project: string; worktree: string | null };
 
@@ -54,7 +55,8 @@ async function lookup(sessionId: string): Promise<Lookup> {
 
 type Reply = (m: unknown) => void;
 
-async function handleCall(d: { type: string; id: string; sessionId?: unknown; text?: unknown }): Promise<{ ok: true } | { ok: false; code: string }> {
+async function handleCall(d: { type: string; id: string; sessionId?: unknown; text?: unknown; title?: unknown; data?: unknown }): Promise<{ ok: true } | { ok: false; code: string }> {
+  if (d.type === 'setChip' || d.type === 'clearChip') return handleChipCall(d);
   const sendingText = d.type === 'sendPrompt';
   if (typeof d.sessionId !== 'string' || !d.sessionId) return { ok: false, code: 'INVALID_ARGUMENT' };
   if (sendingText && (typeof d.text !== 'string' || !d.text.trim())) return { ok: false, code: 'INVALID_ARGUMENT' };

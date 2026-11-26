@@ -74,6 +74,8 @@ export const INTERACT_REST_ALLOW: readonly InteractRestEntry[] = [
   { method: 'POST', pattern: /^\/api\/instances\/([^/]+)\/respawn$/, session: (m) => { const id = decode(m[1]); return id === null ? null : lookupSession(id); }, why: "the header Resume of a crashed or exited session" },
   { method: 'POST', pattern: /^\/api\/projects\/[^/]+\/sessions\/([^/]+)\/restore$/, session: (m) => decode(m[1]), why: 'un-archiving the session before its resume' },
   { method: 'POST', pattern: /^\/api\/projects\/[^/]+\/worktrees\/[^/]+\/sessions\/([^/]+)\/restore$/, session: (m) => decode(m[1]), why: 'un-archiving the session before its resume' },
+  { method: 'PUT', pattern: /^\/api\/sessions\/([^/]+)\/chip$/, session: (m) => decode(m[1]), why: "a plugin page setting the interactive session's context chip" },
+  { method: 'DELETE', pattern: /^\/api\/sessions\/([^/]+)\/chip$/, session: (m) => decode(m[1]), why: "the composer's chip × and a plugin page clearing the interactive session's chip" },
 ];
 
 /** The `interact` exceptions that address no session: admitted for any caller while the mode is `interact`. */
