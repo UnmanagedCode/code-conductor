@@ -2,9 +2,12 @@
 // the platform lacks is hidden rather than offered and then refused.
 // `capabilities()` is null until a load succeeds. A failed load is not
 // remembered: `loadCapabilities()` resolves null and the next call retries.
+// The same read sets the focus (shared/focus.ts) and then the UI mode
+// (shared/viewOnly.ts); a failed read changes neither.
 
 import { apiFetch } from './http.ts';
-import { setViewOnly } from './viewOnly.ts';
+import { setUiMode } from './viewOnly.ts';
+import { uiModeFromHealth } from './uiMode.ts';
 import { focusFromHealth, setFocus } from './focus.ts';
 
 // The platform's flags by name (Platform.capabilities, src/platform/).
@@ -25,8 +28,9 @@ export function loadCapabilities(): Promise<Capabilities | null> {
       pending = null;
       return null;
     }
-    setViewOnly(loaded.viewOnly === true);
+    // Focus first: under `interact` the mode change re-reads the interactive session from it.
     setFocus(focusFromHealth(body));
+    setUiMode(uiModeFromHealth(body));
     return loaded;
   })();
   return pending;

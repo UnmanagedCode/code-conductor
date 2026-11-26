@@ -51,10 +51,11 @@ import { createUpgradeOriginGuard } from './src/upgradeOrigin.ts';
 import { createTerminalEndpoint } from './src/hostTerminal.ts';
 import { takeRestartSupervisor } from './src/restartSupervisor.ts';
 import { acquireRootLock, RootLockHeldError, RootLockUnreadableError, ROOT_LOCK_HELD_EXIT, type RootLock } from './src/rootLock.ts';
-import { parseHeadlessArgs } from './src/headless/args.ts';
+import { parseEntryArgs, ENTRY_SYNOPSIS } from './src/headless/args.ts';
 import { headlessMain } from './src/headless/entry.ts';
-import { viewMain, VIEW_NO_LAUNCH } from './src/headless/view.ts';
+import { replayMain, REPLAY_NO_LAUNCH } from './src/headless/replay.ts';
 import type { HealthFocus } from './shared/focus.ts';
+import type { UiMode } from './shared/uiMode.ts';
 import { DEFAULT_PORT } from './src/env.ts';
 import type { ResumeNoticesFrame } from './shared/wsFrames.ts';
 
@@ -72,7 +73,11 @@ interface ServerCtx {
   wss?: WebSocketServer | null;
 }
 
-export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus, basePath, viewOnly = false, focus = null, replay = false }: { focus?: HealthFocus | null; replay?: boolean; viewOnly?: boolean; basePath?: string; restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
+// `uiMode`: what GET /api/health advertises (shared/uiMode.ts); `interact`
+// needs a focus cell. `launchless`: a `--replay` under `--ui view`, whose
+// manager refuses every create().
+export function createServer({ withInstances = true, claudeLauncher, platform = hostPlatform, webDistDir, relaunch, eventLogLease, codeModeTiming, restartStatus, basePath, uiMode = 'full', focus = null, launchless = false }: { focus?: HealthFocus | null; launchless?: boolean; uiMode?: UiMode; basePath?: string; restartStatus?: () => Promise<ServerRestartState>; withInstances?: boolean; claudeLauncher?: RealClaudeLauncher; platform?: Platform; webDistDir?: string; relaunch?: RelaunchOptions; eventLogLease?: WriteLease; codeModeTiming?: ProgressTiming } = {}) {
+  if (uiMode === 'interact' && focus === null) throw new Error("--ui interact needs a focused session: only a headless run or a --replay has one");
   const app = express();
   app.disable('x-powered-by');
   app.use(hostSecurityHeaders());
@@ -80,7 +85,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   // invalid value throws here, so start() fails loudly.
   const base = parseBasePath(basePath);
   app.use(basePathMiddleware(base));
-  const instances = withInstances ? new InstanceManager({ claudeLauncher, platform, refuseCreates: replay ? VIEW_NO_LAUNCH : null }) : null;
+  const instances = withInstances ? new InstanceManager({ claudeLauncher, platform, refuseCreates: launchless ? REPLAY_NO_LAUNCH : null }) : null;
   // Which backends live sessions are on — lets removeBackend refuse (409) rather
   // than delete a backend out from under a running/respawnable instance, whose next
   // relaunch would otherwise fall through to the real `claude`.
@@ -175,7 +180,7 @@ export function createServer({ withInstances = true, claudeLauncher, platform = 
   });
   app.use('/api', buildRoutes({
     instances, serverCtx, relaunch, recorder: runningRecorder, pending: pendingContinue, pluginHost, pluginLibrary, playbookGate, capabilities: platform.capabilities,
-    claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus, viewOnly, focus,
+    claudeLogin, claudeAuthStatus: claudeAuthStatus.get, restartStatus, uiMode, focus,
   }));
   app.use('/mcp', buildMcpRouter({ instances, pluginHost, playbookGate, capabilities: platform.capabilities, codeModeTiming }));
   const pluginProxy = buildPluginProxy({ pluginHost, basePath: base });
@@ -267,7 +272,7 @@ export async function sweepFuseLeftovers(platform: Platform, sweep: () => Promis
 // never build web/dist or install into the shared node_modules. Only the real
 // entry captures the boot commit (src/bootCommit.ts) and hands it to merge
 // hooks into its own checkout.
-export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean; basePath: string; viewOnly: boolean } {
+export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host: string; buildWeb: boolean; syncDeps: boolean; recordBootCommit: boolean; basePath: string } {
   return {
     port: Number(env.PORT ?? DEFAULT_PORT),
     host: env.HOST ?? '127.0.0.1',
@@ -275,7 +280,6 @@ export function entryStartOptions(env: NodeJS.ProcessEnv): { port: number; host:
     syncDeps: env.CC_SKIP_DEPS_SYNC !== '1',
     recordBootCommit: true,
     basePath: env.CC_BASE_PATH ?? '',
-    viewOnly: env.CC_VIEW_ONLY === '1',
   };
 }
 
@@ -283,10 +287,10 @@ const SERVER_ROOT = path.dirname(fileURLToPath(import.meta.url));
 
 export async function start({
   port = DEFAULT_PORT, host = '127.0.0.1', platform = hostPlatform, buildWeb = true, syncDeps = true, webBuild,
-  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false, replay = false, basePath = '', viewOnly = false,
+  recordBootCommit = false, checkoutRoot = SERVER_ROOT, headless = false, launchless = false, basePath = '', uiMode = 'full',
 }: {
-  // CC_VIEW_ONLY=1: GET /api/health reports capabilities.viewOnly.
-  viewOnly?: boolean;
+  // `--ui` (src/headless/args.ts): what GET /api/health advertises.
+  uiMode?: UiMode;
   // CC_BASE_PATH, raw: parsed (and refused when invalid) by createServer.
   basePath?: string;
   port?: number; host?: string; platform?: Platform; buildWeb?: boolean; syncDeps?: boolean; webBuild?: () => Promise<unknown>;
@@ -294,8 +298,8 @@ export async function start({
   recordBootCommit?: boolean; checkoutRoot?: string;
   // A headless run (src/headless/): the restart route refuses.
   headless?: boolean;
-  // A `--view` replay (src/headless/view.ts): the boot starts no session, plugin backend or CLI probe.
-  replay?: boolean;
+  // A `--replay` under `--ui view` (src/headless/replay.ts): the boot starts no session, plugin backend or CLI probe.
+  launchless?: boolean;
 } = {}) {
   warnIfNodeUnsupported();
   // One server per projects root, taken BEFORE anything reads or rewrites the
@@ -304,7 +308,7 @@ export async function start({
   const supervised = takeRestartSupervisor();
   const rootLock = await acquireRootLock({ storeDir: orchStoreRoot(), platform });
   try {
-    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, replay, supervised, basePath, viewOnly });
+    return await startHolding(rootLock, { port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, launchless, supervised, basePath, uiMode });
   } catch (e) {
     rootLock.releaseSync();
     throw e;
@@ -312,11 +316,11 @@ export async function start({
 }
 
 async function startHolding(rootLock: RootLock, {
-  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, replay, supervised, basePath, viewOnly,
+  port, host, platform, buildWeb, syncDeps, webBuild, recordBootCommit, checkoutRoot, headless, launchless, supervised, basePath, uiMode,
 }: {
-  basePath: string; viewOnly: boolean;
+  basePath: string; uiMode: UiMode;
   port: number; host: string; platform: Platform; buildWeb: boolean; syncDeps: boolean; webBuild?: () => Promise<unknown>;
-  recordBootCommit: boolean; checkoutRoot: string; headless: boolean; replay: boolean; supervised: boolean;
+  recordBootCommit: boolean; checkoutRoot: string; headless: boolean; launchless: boolean; supervised: boolean;
 }) {
   // What this process runs, measured first: the boot below regenerates files
   // in every project, this checkout included. Never throws.
@@ -376,7 +380,7 @@ async function startHolding(rootLock: RootLock, {
   catch (e) { console.warn('session cleanup failed:', e); }
   // Every headless-family server tells the client which session to focus on; null until a root spawns.
   const focus: HealthFocus | null = headless ? { sessionId: null } : null;
-  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, basePath, viewOnly, focus, replay, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
+  const { server, instances, wss, pluginHost, runningRecorder, pendingContinue } = createServer({ platform, restartStatus, basePath, uiMode, focus, launchless, relaunch: { flags: { buildWeb, syncDeps }, rootLock, headless, supervised } });
   // The two app-owned regenerations below both run here, before listen: neither
   // needs the bound port. (What DOES gate on ordering is called out at
   // regenerateAllProjectConventions further down.)
@@ -448,8 +452,8 @@ async function startHolding(rootLock: RootLock, {
   // on it.
   if (pluginHost) {
     pluginHost.setServerPort(addr.port);
-    // A replay starts no plugin backend at boot (one a user opens explicitly starts lazily).
-    if (!replay) pluginHost.init()
+    // A launchless replay starts no plugin backend at boot (one a user opens explicitly starts lazily).
+    if (!launchless) pluginHost.init()
       .then(() => pluginHost.autoStartAll())
       .catch((e) => console.warn('plugin registry init failed:', errText(e)));
   }
@@ -457,7 +461,7 @@ async function startHolding(rootLock: RootLock, {
   // source). Its timer lifecycle tracks the server's, like the bound port; the
   // monitor itself stays unit-testable without a server (tests call _tick()
   // directly). Stopped in both manager shutdown paths.
-  if (instances && !replay) instances._usageMonitor.start();
+  if (instances && !launchless) instances._usageMonitor.start();
   // Build the web UI if its sources changed. Fire-and-forget: the API is
   // already answering, and / serves a "building" page until a build exists.
   // Guarded against the boot commit: a merge landing while it builds must not
@@ -469,8 +473,8 @@ async function startHolding(rootLock: RootLock, {
   // we're listening — never gate port availability on a `claude --version`
   // spawn that can be slow or CPU-starved under concurrent startup. (Awaiting
   // it here delays listen() past test poll deadlines under load.)
-  // A replay forks no `claude` at all.
-  if (!replay) {
+  // A launchless replay forks no `claude` at all.
+  if (!launchless) {
     checkClaudeReadiness({ platform })
       .then((readiness) => process.stderr.write(formatReadiness(readiness) + '\n'))
       .catch((e) => process.stderr.write(`claude readiness check failed: ${errText(e)}\n`));
@@ -480,27 +484,47 @@ async function startHolding(rootLock: RootLock, {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   process.title = 'code-conductor';
-  // A headless flag anywhere in argv makes this a headless run (src/headless/),
-  // which owns its own output and exit code; any other argv is ignored.
-  const headlessArgs = parseHeadlessArgs(process.argv.slice(2));
-  if (headlessArgs.kind === 'view') {
-    void viewMain(headlessArgs, {
-      start: () => start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, replay: true, viewOnly: true }),
-    });
-  } else if (headlessArgs.kind !== 'none') {
-    void headlessMain(headlessArgs, {
-      start: () => start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true }),
-    });
-  } else start(entryStartOptions(process.env)).then(({ port, host }) => {
-    console.log(`code-conductor listening on http://${host}:${port}${parseBasePath(process.env.CC_BASE_PATH)}`);
-  }).catch(e => {
-    if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
-      console.error(e.message);
-      process.exit(ROOT_LOCK_HELD_EXIT);
+  // One UI mode per boot (`--ui`). A headless flag anywhere in argv makes this
+  // a headless run or a replay (src/headless/), which owns its own output and
+  // exit code; any other argv is an ordinary server, its unknown arguments
+  // ignored and a refused `--ui` printed before anything boots.
+  const entryArgs = parseEntryArgs(process.argv.slice(2));
+  switch (entryArgs.kind) {
+    case 'server_usage':
+      process.stderr.write(`${entryArgs.message}\n${ENTRY_SYNOPSIS}\n`);
+      process.exit(2);
+      break;
+    case 'replay': {
+      const args = entryArgs;
+      void replayMain(args, {
+        start: () => start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, uiMode: args.ui, launchless: args.ui === 'view' }),
+      });
+      break;
     }
-    console.error('failed to start:', e);
-    process.exit(1);
-  });
+    case 'headless':
+    case 'usage': {
+      const args = entryArgs;
+      void headlessMain(args, {
+        start: () => start({ ...entryStartOptions(process.env), buildWeb: false, syncDeps: false, headless: true, uiMode: args.kind === 'headless' ? args.ui : 'view' }),
+      });
+      break;
+    }
+    case 'server': {
+      const ui = entryArgs.ui;
+      start({ ...entryStartOptions(process.env), uiMode: ui }).then(({ port, host }) => {
+        console.log(`code-conductor listening on http://${host}:${port}${parseBasePath(process.env.CC_BASE_PATH)}`);
+        if (ui !== 'full') console.log(`UI mode: ${ui}`);
+      }).catch(e => {
+        if (e instanceof RootLockHeldError || e instanceof RootLockUnreadableError) {
+          console.error(e.message);
+          process.exit(ROOT_LOCK_HELD_EXIT);
+        }
+        console.error('failed to start:', e);
+        process.exit(1);
+      });
+      break;
+    }
+  }
 }
 
 // The `code` on a thrown Node error (e.g. 'EADDRINUSE'), or undefined — the

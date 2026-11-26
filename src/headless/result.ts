@@ -18,7 +18,7 @@ export const EXIT_CODES = {
   usage_error: 2,
   conductor_error: 3,
   root_held: ROOT_LOCK_HELD_EXIT,
-  // `--view` only (src/headless/view.ts): the replay's normal end, and a root with no session to show.
+  // `--replay` only (src/headless/replay.ts): the replay's normal end, and a root with no session to show.
   stopped: 0,
   no_session: 4,
 } as const satisfies Record<Exclude<HeadlessReason, 'signal'>, number>;

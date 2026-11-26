@@ -1,6 +1,6 @@
 // A replay's InstanceManager (`refuseCreates`, src/instances.ts) answers every
 // create() with the refusal and never reaches the launcher, so nothing in cc can
-// start a session CLI during a `--view` replay.
+// start a session CLI during a `--replay` under `--ui view`.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -8,7 +8,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { freshProjectsRoot, registerLocalProject, rmrf } from './helpers.mjs';
 import { InstanceManager } from '../src/instances.ts';
-import { VIEW_NO_LAUNCH } from '../src/headless/view.ts';
+import { REPLAY_NO_LAUNCH } from '../src/headless/replay.ts';
 
 // InstanceManager reaches its launcher through launch(input). The marker error ends a create() that gets that far.
 function launcherCounting() {
@@ -17,11 +17,13 @@ function launcherCounting() {
   return { launcher, calls };
 }
 
+// Invariant: a manager built with REPLAY_NO_LAUNCH refuses every create(), a
+// fresh spawn and a resume alike, 409 with the replay code, before the launcher.
 for (const [name, opts] of [['a new session', {}], ['a resume', { resume: 'some-session' }]]) {
   test(`create() of ${name} is refused 409 with the replay code, before the launcher`, async () => {
     const { launcher, calls } = launcherCounting();
-    const m = new InstanceManager({ claudeLauncher: launcher, refuseCreates: VIEW_NO_LAUNCH });
-    await assert.rejects(m.create(opts), (e) => e.statusCode === 409 && e.code === 'VIEW_REPLAY_NO_LAUNCH' && e.message === VIEW_NO_LAUNCH.message);
+    const m = new InstanceManager({ claudeLauncher: launcher, refuseCreates: REPLAY_NO_LAUNCH });
+    await assert.rejects(m.create(opts), (e) => e.statusCode === 409 && e.code === 'VIEW_REPLAY_NO_LAUNCH' && e.message === REPLAY_NO_LAUNCH.message);
     assert.equal(calls.length, 0, 'the launcher was never called');
   });
 }

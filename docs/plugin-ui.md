@@ -776,6 +776,6 @@ For a plugin that follows this setup, beside the contract checks:
 - [ ] `git clone` → `npm install`, with no other step → `frontend/dist` is built, and `git status` is clean afterwards (a symlinked `node_modules` included: `.gitignore` has `node_modules` without a slash).
 - [ ] The Library entry's hooks are `npm install` for `postClone` and `postPull`.
 
-## View-only hosts
+## UI modes
 
-Under `CC_VIEW_ONLY=1` cc's own client hides its mutating controls and refuses mutating calls, but a plugin page is same-origin and its own `fetch` / WebSocket requests (to its backend and to cc's `/api` and `/ws`) bypass that gate. A plugin that wants to hide its own mutating controls reads `capabilities.viewOnly` from cc's `GET /api/health`. Only `ccBridge.sendPrompt` is refused by the host (result code `VIEW_ONLY`). [features/view-only.md](features/view-only.md).
+Under `--ui view` or `--ui interact` cc's own client hides its mutating controls and refuses mutating calls, but a plugin page is same-origin and its own `fetch` / WebSocket requests (to its backend and to cc's `/api` and `/ws`) bypass that gate. A plugin that wants to match reads `uiMode` (`'full' | 'view' | 'interact'`) from cc's `GET /api/health`; under `interact` only `focus.sessionId` (same response) is controllable. Only `ccBridge.sendPrompt` is refused by the host (result code `VIEW_ONLY`: under `view`, and under `interact` for any session but the focused root). [features/ui-modes.md](features/ui-modes.md).

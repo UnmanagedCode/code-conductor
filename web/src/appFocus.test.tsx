@@ -1,5 +1,5 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
-// Focus mode (a headless run or `--view` replay) renders no sidebar — neither
+// Focus mode (a headless run or a `--replay`) renders no sidebar — neither
 // the desktop column nor the drawer — and no control that opens it.
 import '@/test/browserHash';
 import * as React from 'react';
@@ -92,12 +92,13 @@ describe('focus mode', () => {
 // Each surface that carries its own "Open sidebar" button hides it in focus mode,
 // each against a non-focus control so the absence is not vacuous. Components are
 // mounted directly: some are unreachable in a focused client by construction
-// (Settings under view-only), but their own guard is the invariant.
+// (Settings under `--ui view` / `interact`), but their own guard is the invariant.
+// Invariant: no surface renders an Open sidebar button in focus mode.
 describe('every Open sidebar button is gone in focus mode', () => {
   const surfaces: [string, () => React.ReactElement, () => void][] = [
     ['the session view\'s empty state', () => <SessionView />, () => appStore.set({ activeId: null, instances: [] })],
     ['a full-page view (ViewShell)', () => <ViewShell title="A view">body</ViewShell>, () => {}],
-    ['Settings', () => <SettingsView />, () => { routeFetch({ 'GET /api/health': () => ({ json: { capabilities: { git: true } } }), 'GET /api/plugins': () => ({ json: { rows: [] } }) }); }],
+    ['Settings', () => <SettingsView />, () => { routeFetch({ 'GET /api/health': () => ({ json: { capabilities: { git: true }, uiMode: 'full' } }), 'GET /api/plugins': () => ({ json: { rows: [] } }) }); }],
     ['the plugin column\'s bar', () => <PluginView />, () => (window as any).happyDOM.setViewport({ width: 400, height: 800 })],
   ];
   afterEach(() => { (window as any).happyDOM.setViewport({ width: 1024, height: 768 }); });

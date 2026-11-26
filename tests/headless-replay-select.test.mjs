@@ -1,4 +1,4 @@
-// Which session a `--view` replay shows (src/headless/view.ts → resolveViewSession)
+// Which session a `--replay` shows (src/headless/replay.ts → resolveReplaySession)
 // and the last-run marker it reads (src/headless/lastRun.ts).
 
 import { test } from 'node:test';
@@ -6,7 +6,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { freshProjectsRoot, rmrf } from './helpers.mjs';
 import { recordHeadlessRun, readHeadlessRun, headlessLastRunFile } from '../src/headless/lastRun.ts';
-import { resolveViewSession } from '../src/headless/view.ts';
+import { resolveReplaySession } from '../src/headless/replay.ts';
 
 const PUBLIC = 'pub-1';
 const SEGMENT = 'seg-1';
@@ -15,7 +15,7 @@ const index = () => ({
   byPublic: new Map([[PUBLIC, { current: SEGMENT, segments: [{ id: SEGMENT, reason: 'initial', at: '2026-01-01T00:00:00Z' }] }]]),
   byBacking: new Map([[SEGMENT, PUBLIC]]),
 });
-const pick = (requested, lastRun) => resolveViewSession({
+const pick = (requested, lastRun) => resolveReplaySession({
   requested,
   readLastRun: async () => lastRun,
   loadIndex: async () => index(),
@@ -89,7 +89,7 @@ test('no marker is refused, asking for --session', async () => {
     { ok: false, message: 'no headless run has recorded a session on this root; pass --session <id>' });
 });
 test('an unreadable marker is refused with the read error', async () => {
-  const r = await resolveViewSession({
+  const r = await resolveReplaySession({
     requested: null,
     readLastRun: async () => { throw new Error('cannot read /x/headless-last-run.json: boom'); },
     loadIndex: async () => index(),

@@ -4,7 +4,7 @@ import { ApiError, apiFetch } from '@shared/http';
 import { closeActionOf, stopNeedsConfirm } from '@shared/closeAction';
 import { isLiveStatus } from '@shared/conductors';
 import { readSessionAnchor, writeSessionAnchor } from '@shared/anchor';
-import { isViewOnly } from '@shared/viewOnly';
+import { sessionViewOnly } from '@shared/viewOnly';
 import { appStore, activeInstance } from '@/state/app';
 import { syncRoute } from '@/state/route';
 import type { Instance, PostWorktreeHook, Project } from '@/state/types';
@@ -55,8 +55,8 @@ export function loadSessions(projectName: string, worktreeName?: string | null) 
 export async function resumeSession({
   projectName, worktreeName, sessionId, silent = false, gesture,
 }: { projectName: string; worktreeName?: string | null; sessionId: string; silent?: boolean; gesture?: number }) {
-  // View-only: a stopped session opens read-only (the Ended pane), never spawns.
-  if (isViewOnly()) { void openEndedSession({ sessionId, project: projectName, worktreeName: worktreeName ?? null }); return; }
+  // A read-only session (shared/viewOnly.ts sessionViewOnly) opens in the Ended pane, never spawns.
+  if (sessionViewOnly(sessionId)) { void openEndedSession({ sessionId, project: projectName, worktreeName: worktreeName ?? null }); return; }
   // Every resume is a user's (`gesture`: the token of the click that started it, else its own) and
   // yields only to a newer gesture's. `silent` (a notification click) quietly selects a live owner on a 409.
   const token = gesture ?? beginGesture();

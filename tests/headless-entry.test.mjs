@@ -56,6 +56,8 @@ function onlyJson(stdout) {
   return JSON.parse(lines[0]);
 }
 
+// Invariant: every usage error — the `--ui` cases of a headless run or replay
+// included — exits 2 with exactly one usage_error object and boots nothing.
 const USAGE = [
   ['--mode alone', ['--mode', 'plan']],
   ['both prompt flags', ['--prompt', 'a', '--prompt-file', 'b']],
@@ -65,8 +67,11 @@ const USAGE = [
   ['an unreadable prompt file', ['--prompt-file', 'does-not-exist.md']],
   ['a whitespace-only prompt', ['--prompt', '  ']],
   ['an empty stdin prompt', ['--prompt-file', '-']],
-  ['--view with a prompt', ['--view', '--prompt', 'x']],
-  ['--session without --view', ['--session', 'x']],
+  ['--replay with a prompt', ['--replay', '--prompt', 'x']],
+  ['--session without --replay', ['--session', 'x']],
+  ['an unknown --ui', ['--prompt', 'x', '--ui', 'bogus']],
+  ['--replay with an empty --ui', ['--replay', '--ui']],
+  ['--session with --ui but no --replay', ['--session', 's', '--ui', 'view']],
 ];
 for (const [name, args] of USAGE) {
   test(`usage error, ${name}: exit 2, one usage_error object, nothing booted`, async (t) => {
@@ -290,9 +295,9 @@ test('stdout closed before the result is written: exit 2, the undelivered result
 
 // Invariant: a replay stopped by a signal before it picked a session still ends
 // `stopped` (exit 0) with a null sessionId, through the injected start seam.
-test('viewMain: a signal before any session is picked ends stopped, exit 0, sessionId null', async (t) => {
+test('replayMain: a signal before any session is picked ends stopped, exit 0, sessionId null', async (t) => {
   const home = await freshHome(t);
-  const r = await harness(t, home, 'view-signal-before-selection', ['--view']);
+  const r = await harness(t, home, 'replay-signal-before-selection', ['--replay']);
   assert.equal(r.code, 0, r.stderr);
   const res = onlyJson(r.stdout);
   assert.equal(res.reason, 'stopped');

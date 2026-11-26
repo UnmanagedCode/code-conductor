@@ -1,34 +1,41 @@
-// The headless argv contract (src/headless/args.ts): which argv makes a
-// headless run, which is an ordinary boot, which is a usage error (and in which
-// output format it is reported); and how the prompt is read from a file or stdin.
+// The entry argv contract (src/headless/args.ts parseEntryArgs): which argv
+// makes a headless run, a replay or an ordinary boot, which UI mode each runs
+// in, which is a usage error (and in which output format it is reported); and
+// how the prompt is read from a file or stdin.
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable } from 'node:stream';
-import { parseHeadlessArgs, readHeadlessPrompt } from '../src/headless/args.ts';
+import { parseEntryArgs, readHeadlessPrompt } from '../src/headless/args.ts';
 
+// Invariant: an argv with no headless flag is an ordinary `full` server, and
+// its unknown arguments are ignored.
 test('an argv with no headless flag is an ordinary boot, whatever else it holds', () => {
-  assert.deepEqual(parseHeadlessArgs([]), { kind: 'none' });
-  assert.deepEqual(parseHeadlessArgs(['--inspect', 'foo', '--promptly']), { kind: 'none' });
-  assert.deepEqual(parseHeadlessArgs(['--prompt-files', 'x']), { kind: 'none' });
+  assert.deepEqual(parseEntryArgs([]), { kind: 'server', ui: 'full' });
+  assert.deepEqual(parseEntryArgs(['--inspect', 'foo', '--promptly']), { kind: 'server', ui: 'full' });
+  assert.deepEqual(parseEntryArgs(['--prompt-files', 'x']), { kind: 'server', ui: 'full' });
 });
 
+// Invariant: each run flag takes both value forms; a run defaults to mode code,
+// format json, no workers, UI mode view.
 test('both value forms of each flag are accepted; mode defaults to code', () => {
-  assert.deepEqual(parseHeadlessArgs(['--prompt', 'do it']),
-    { kind: 'headless', source: { prompt: 'do it' }, mode: 'code', format: 'json', includeWorkers: false });
-  assert.deepEqual(parseHeadlessArgs(['--prompt=do=it']),
-    { kind: 'headless', source: { prompt: 'do=it' }, mode: 'code', format: 'json', includeWorkers: false });
-  assert.deepEqual(parseHeadlessArgs(['--prompt-file', 'p.md', '--mode', 'plan']),
-    { kind: 'headless', source: { file: 'p.md' }, mode: 'plan', format: 'json', includeWorkers: false });
-  assert.deepEqual(parseHeadlessArgs(['--mode=code', '--prompt-file=-']),
-    { kind: 'headless', source: { file: '-' }, mode: 'code', format: 'json', includeWorkers: false });
+  assert.deepEqual(parseEntryArgs(['--prompt', 'do it']),
+    { kind: 'headless', source: { prompt: 'do it' }, mode: 'code', format: 'json', includeWorkers: false, ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--prompt=do=it']),
+    { kind: 'headless', source: { prompt: 'do=it' }, mode: 'code', format: 'json', includeWorkers: false, ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--prompt-file', 'p.md', '--mode', 'plan']),
+    { kind: 'headless', source: { file: 'p.md' }, mode: 'plan', format: 'json', includeWorkers: false, ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--mode=code', '--prompt-file=-']),
+    { kind: 'headless', source: { file: '-' }, mode: 'code', format: 'json', includeWorkers: false, ui: 'view' });
 });
 
+// Invariant: a value flag consumes the next argument verbatim, even one that names a flag.
 test('a value is taken verbatim, even one that looks like a flag', () => {
-  assert.deepEqual(parseHeadlessArgs(['--prompt', '--mode']),
-    { kind: 'headless', source: { prompt: '--mode' }, mode: 'code', format: 'json', includeWorkers: false });
+  assert.deepEqual(parseEntryArgs(['--prompt', '--mode']),
+    { kind: 'headless', source: { prompt: '--mode' }, mode: 'code', format: 'json', includeWorkers: false, ui: 'view' });
 });
 
+// Invariant: each malformed run argv is a usage result with a non-empty message.
 const usage = [
   ['both prompt flags', ['--prompt', 'a', '--prompt-file', 'b']],
   ['a repeated --prompt', ['--prompt', 'a', '--prompt', 'b']],
@@ -44,7 +51,7 @@ const usage = [
 ];
 for (const [name, argv] of usage) {
   test(`usage error: ${name}`, () => {
-    const r = parseHeadlessArgs(argv);
+    const r = parseEntryArgs(argv);
     assert.equal(r.kind, 'usage', JSON.stringify(r));
     assert.equal(typeof r.message, 'string');
     assert.ok(r.message.length > 0);
@@ -55,13 +62,13 @@ for (const [name, argv] of usage) {
 // --include-workers with stream-json.
 test('--output-format takes each format in both forms; --include-workers needs stream-json', () => {
   for (const format of ['text', 'json', 'stream-json']) {
-    assert.deepEqual(parseHeadlessArgs(['--prompt', 'a', '--output-format', format]),
-      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format, includeWorkers: false });
-    assert.deepEqual(parseHeadlessArgs([`--output-format=${format}`, '--prompt', 'a']),
-      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format, includeWorkers: false });
+    assert.deepEqual(parseEntryArgs(['--prompt', 'a', '--output-format', format]),
+      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format, includeWorkers: false, ui: 'view' });
+    assert.deepEqual(parseEntryArgs([`--output-format=${format}`, '--prompt', 'a']),
+      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format, includeWorkers: false, ui: 'view' });
   }
-  assert.deepEqual(parseHeadlessArgs(['--include-workers', '--prompt', 'a', '--output-format', 'stream-json']),
-    { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format: 'stream-json', includeWorkers: true });
+  assert.deepEqual(parseEntryArgs(['--include-workers', '--prompt', 'a', '--output-format', 'stream-json']),
+    { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format: 'stream-json', includeWorkers: true, ui: 'view' });
 });
 
 // Invariant (spec 1): every argv that is a usage error today keeps today's exact
@@ -79,16 +86,16 @@ const TODAYS_MESSAGES = [
 ];
 for (const [argv, message] of TODAYS_MESSAGES) {
   test(`today's usage message is unchanged: ${JSON.stringify(argv)}`, () => {
-    assert.deepEqual(parseHeadlessArgs(argv), { kind: 'usage', message, format: 'json' });
+    assert.deepEqual(parseEntryArgs(argv), { kind: 'usage', message, format: 'json' });
   });
 }
 
 // Invariant: the two new flags alone make the argv headless, and only they get
 // the new no-prompt wording.
 test('--output-format or --include-workers alone is a headless argv needing a prompt', () => {
-  assert.deepEqual(parseHeadlessArgs(['--output-format', 'json']),
+  assert.deepEqual(parseEntryArgs(['--output-format', 'json']),
     { kind: 'usage', message: 'a headless run needs --prompt or --prompt-file', format: 'json' });
-  assert.deepEqual(parseHeadlessArgs(['--include-workers']),
+  assert.deepEqual(parseEntryArgs(['--include-workers']),
     { kind: 'usage', message: 'a headless run needs --prompt or --prompt-file', format: 'json' });
 });
 
@@ -105,7 +112,7 @@ const NEW_USAGE = [
 ];
 for (const [argv, message] of NEW_USAGE) {
   test(`usage error, new flags: ${JSON.stringify(argv)}`, () => {
-    const r = parseHeadlessArgs(argv);
+    const r = parseEntryArgs(argv);
     assert.equal(r.kind, 'usage', JSON.stringify(r));
     assert.equal(r.message, message);
   });
@@ -114,17 +121,17 @@ for (const [argv, message] of NEW_USAGE) {
 // Invariant: early failures are reported in the requested format — the parsed
 // --output-format when valid, else json.
 test('a usage result carries the requested format when it is valid, else json', () => {
-  assert.equal(parseHeadlessArgs(['--output-format', 'stream-json', '--prompt', 'a', '--mode', 'x']).format, 'stream-json');
-  assert.equal(parseHeadlessArgs(['--output-format', 'text', '--include-workers', '--prompt', 'a']).format, 'text');
-  assert.equal(parseHeadlessArgs(['--output-format', 'xml', '--prompt', 'a']).format, 'json');
-  const stray = parseHeadlessArgs(['foo', '--output-format', 'stream-json', '--prompt', 'a']);
+  assert.equal(parseEntryArgs(['--output-format', 'stream-json', '--prompt', 'a', '--mode', 'x']).format, 'stream-json');
+  assert.equal(parseEntryArgs(['--output-format', 'text', '--include-workers', '--prompt', 'a']).format, 'text');
+  assert.equal(parseEntryArgs(['--output-format', 'xml', '--prompt', 'a']).format, 'json');
+  const stray = parseEntryArgs(['foo', '--output-format', 'stream-json', '--prompt', 'a']);
   assert.deepEqual(stray, { kind: 'usage', message: "unexpected argument 'foo' in a headless run", format: 'stream-json' });
 });
 
 // Invariant: values stay verbatim, the new flag names included.
 test('--prompt --output-format is the prompt "--output-format", format json', () => {
-  assert.deepEqual(parseHeadlessArgs(['--prompt', '--output-format']),
-    { kind: 'headless', source: { prompt: '--output-format' }, mode: 'code', format: 'json', includeWorkers: false });
+  assert.deepEqual(parseEntryArgs(['--prompt', '--output-format']),
+    { kind: 'headless', source: { prompt: '--output-format' }, mode: 'code', format: 'json', includeWorkers: false, ui: 'view' });
 });
 
 const noFile = async () => { throw Object.assign(new Error('ENOENT: no such file'), { code: 'ENOENT' }); };
@@ -173,49 +180,147 @@ test('a stdin that fails mid-read is a usage error, not a throw', async () => {
   assert.match(r.message, /stdin.*EIO/);
 });
 
-// Invariant: `--view` (alone, or with --session in either value form) is a
-// replay argv carrying the requested session, or null for the last run's.
-test('--view parses to a replay; --session takes both value forms in either order', () => {
-  assert.deepEqual(parseHeadlessArgs(['--view']), { kind: 'view', session: null });
-  assert.deepEqual(parseHeadlessArgs(['--view', '--session', 'a']), { kind: 'view', session: 'a' });
-  assert.deepEqual(parseHeadlessArgs(['--session=a', '--view']), { kind: 'view', session: 'a' });
+// Invariant: `--replay` (alone, or with --session in either value form) is a
+// replay argv carrying the requested session, or null for the last run's, in
+// the headless default UI mode `view`.
+test('--replay parses to a replay; --session takes both value forms in either order', () => {
+  assert.deepEqual(parseEntryArgs(['--replay']), { kind: 'replay', session: null, ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--replay', '--session', 'a']), { kind: 'replay', session: 'a', ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--session=a', '--replay']), { kind: 'replay', session: 'a', ui: 'view' });
 });
 
-// Invariant: --view refuses every run flag beside it, naming the first one in argv order.
+// Invariant: --replay refuses every run flag beside it, naming the first one in argv order.
 for (const argv of [
-  ['--view', '--prompt', 'x'],
-  ['--view', '--prompt-file', 'p.md'],
-  ['--view', '--mode', 'plan'],
-  ['--view', '--output-format', 'json'],
-  ['--view', '--include-workers'],
+  ['--replay', '--prompt', 'x'],
+  ['--replay', '--prompt-file', 'p.md'],
+  ['--replay', '--mode', 'plan'],
+  ['--replay', '--output-format', 'json'],
+  ['--replay', '--include-workers'],
 ]) {
-  test(`--view cannot be combined with ${argv[1]}`, () => {
-    assert.deepEqual(parseHeadlessArgs(argv), { kind: 'usage', message: `--view cannot be combined with ${argv[1]}`, format: 'json' });
+  test(`--replay cannot be combined with ${argv[1]}`, () => {
+    assert.deepEqual(parseEntryArgs(argv), { kind: 'usage', message: `--replay cannot be combined with ${argv[1]}`, format: 'json' });
   });
 }
-test('--view names the first clashing flag in argv order', () => {
-  assert.equal(parseHeadlessArgs(['--mode', 'plan', '--view', '--prompt', 'x']).message, '--view cannot be combined with --mode');
+// Invariant: the clash message names the first run flag in argv order, wherever --replay sits.
+test('--replay names the first clashing flag in argv order', () => {
+  assert.equal(parseEntryArgs(['--mode', 'plan', '--replay', '--prompt', 'x']).message, '--replay cannot be combined with --mode');
 });
 
-// Invariant: --session without --view is refused before the prompt checks, so a
+// Invariant: --session without --replay is refused before the prompt checks, so a
 // run never silently ignores it.
-test('--session alone needs --view', () => {
-  assert.deepEqual(parseHeadlessArgs(['--session', 'a']), { kind: 'usage', message: '--session needs --view', format: 'json' });
+test('--session alone needs --replay', () => {
+  assert.deepEqual(parseEntryArgs(['--session', 'a']), { kind: 'usage', message: '--session needs --replay', format: 'json' });
 });
-test('--session with a prompt needs --view', () => {
-  assert.equal(parseHeadlessArgs(['--session', 'a', '--prompt', 'x']).message, '--session needs --view');
+test('--session with a prompt needs --replay', () => {
+  assert.equal(parseEntryArgs(['--session', 'a', '--prompt', 'x']).message, '--session needs --replay');
 });
 
 // Invariant: misuse of the replay flags is a usage error naming its cause.
-const VIEW_USAGE = [
-  [['--view', '--view'], '--view given more than once'],
-  [['--view=1'], '--view takes no value'],
-  [['--view', '--session'], '--session needs a value'],
-  [['--view', '--session', 'a', '--session', 'b'], '--session given more than once'],
-  [['--view', 'stray'], "unexpected argument 'stray' in a headless run"],
+const REPLAY_USAGE = [
+  [['--replay', '--replay'], '--replay given more than once'],
+  [['--replay=1'], '--replay takes no value'],
+  [['--replay', '--session'], '--session needs a value'],
+  [['--replay', '--session', 'a', '--session', 'b'], '--session given more than once'],
+  [['--replay', 'stray'], "unexpected argument 'stray' in a headless run"],
 ];
-for (const [argv, message] of VIEW_USAGE) {
+for (const [argv, message] of REPLAY_USAGE) {
   test(`usage error, replay flags: ${JSON.stringify(argv)}`, () => {
-    assert.deepEqual(parseHeadlessArgs(argv), { kind: 'usage', message, format: 'json' });
+    assert.deepEqual(parseEntryArgs(argv), { kind: 'usage', message, format: 'json' });
   });
 }
+
+// ── --ui ────────────────────────────────────────────────────────────────
+
+// Invariant: each boot family's default UI mode — an ordinary server `full`,
+// a headless run and a replay `view`.
+test('the default UI mode per boot: server full, headless run view, replay view', () => {
+  assert.deepEqual(parseEntryArgs([]), { kind: 'server', ui: 'full' });
+  assert.equal(parseEntryArgs(['--prompt', 'a']).ui, 'view');
+  assert.equal(parseEntryArgs(['--replay']).ui, 'view');
+});
+
+// Invariant: `--ui <m>` and `--ui=<m>` both select the mode, in every family,
+// before or after the other flags; an ordinary server accepts full and view.
+test('--ui takes both value forms in each family', () => {
+  for (const ui of ['full', 'view']) {
+    assert.deepEqual(parseEntryArgs(['--ui', ui]), { kind: 'server', ui });
+    assert.deepEqual(parseEntryArgs([`--ui=${ui}`, '--inspect']), { kind: 'server', ui });
+  }
+  for (const ui of ['full', 'view', 'interact']) {
+    assert.deepEqual(parseEntryArgs(['--prompt', 'a', '--ui', ui]),
+      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format: 'json', includeWorkers: false, ui });
+    assert.deepEqual(parseEntryArgs([`--ui=${ui}`, '--prompt', 'a']),
+      { kind: 'headless', source: { prompt: 'a' }, mode: 'code', format: 'json', includeWorkers: false, ui });
+    assert.deepEqual(parseEntryArgs(['--replay', '--ui', ui, '--session', 's']), { kind: 'replay', session: 's', ui });
+    assert.deepEqual(parseEntryArgs([`--ui=${ui}`, '--replay']), { kind: 'replay', session: null, ui });
+  }
+});
+
+// Invariant: an ordinary server refuses a bad `--ui` (repeated, missing, empty,
+// unknown) and `--ui interact` as server_usage naming the cause — never a
+// silent full boot.
+const SERVER_UI_USAGE = [
+  [['--ui', 'view', '--ui', 'view'], '--ui given more than once'],
+  [['--ui=full', '--ui', 'view'], '--ui given more than once'],
+  [['--ui'], '--ui needs a value'],
+  [['--ui='], '--ui needs a value'],
+  [['--ui', 'bogus'], "--ui must be one of full | view | interact, got 'bogus'"],
+  [['--ui', 'interact'], '--ui interact needs a headless run (--prompt / --prompt-file) or --replay'],
+  [['--ui=interact', '--inspect'], '--ui interact needs a headless run (--prompt / --prompt-file) or --replay'],
+];
+for (const [argv, message] of SERVER_UI_USAGE) {
+  test(`server usage error: ${JSON.stringify(argv)}`, () => {
+    assert.deepEqual(parseEntryArgs(argv), { kind: 'server_usage', message });
+  });
+}
+
+// Invariant: a headless run or replay reports a bad `--ui` as a usage error in
+// the requested format, never as server_usage.
+const HEADLESS_UI_USAGE = [
+  [['--prompt', 'a', '--ui', 'bogus'], "--ui must be one of full | view | interact, got 'bogus'", 'json'],
+  [['--prompt', 'a', '--output-format', 'text', '--ui'], '--ui needs a value', 'text'],
+  [['--replay', '--ui'], '--ui needs a value', 'json'],
+  [['--replay', '--ui='], '--ui needs a value', 'json'],
+  [['--replay', '--ui', 'view', '--ui=full'], '--ui given more than once', 'json'],
+];
+for (const [argv, message, format] of HEADLESS_UI_USAGE) {
+  test(`headless usage error, --ui: ${JSON.stringify(argv)}`, () => {
+    assert.deepEqual(parseEntryArgs(argv), { kind: 'usage', message, format });
+  });
+}
+
+// Invariant: `--ui` consumes its value, so a headless flag given as that value
+// is not a flag: `--ui --replay` is a server argv with a bad `--ui` value.
+test('a headless flag as the value of --ui is not a flag', () => {
+  assert.deepEqual(parseEntryArgs(['--ui', '--replay']),
+    { kind: 'server_usage', message: "--ui must be one of full | view | interact, got '--replay'" });
+  assert.deepEqual(parseEntryArgs(['--ui', '--prompt', 'x']),
+    { kind: 'server_usage', message: "--ui must be one of full | view | interact, got '--prompt'" });
+});
+
+// Invariant: `--ui` alone never makes a boot headless.
+test('--ui alone is an ordinary server', () => {
+  assert.equal(parseEntryArgs(['--ui', 'view']).kind, 'server');
+  assert.equal(parseEntryArgs(['--ui=full', 'stray']).kind, 'server');
+});
+
+// Invariant: a bare `--view` is not a flag (there is no alias): it is an
+// ignored unknown argument, so it boots an ordinary `full` server.
+test('a bare --view is an ordinary full server', () => {
+  assert.deepEqual(parseEntryArgs(['--view']), { kind: 'server', ui: 'full' });
+  assert.deepEqual(parseEntryArgs(['--view', '--session', 'x']).kind, 'usage');
+});
+
+// Invariant: unknown tokens are ignored beside `--ui` in an ordinary server and
+// refused in a headless run (the replay family included).
+test('unknown tokens: ignored on a server, refused in a headless run', () => {
+  assert.deepEqual(parseEntryArgs(['stray', '--ui', 'view']), { kind: 'server', ui: 'view' });
+  assert.deepEqual(parseEntryArgs(['--replay', '--ui', 'interact', 'stray']),
+    { kind: 'usage', message: "unexpected argument 'stray' in a headless run", format: 'json' });
+});
+
+// Invariant: `--ui` never clashes with `--replay`, which still refuses every run flag.
+test('--ui is not a run flag: a replay accepts it', () => {
+  assert.equal(parseEntryArgs(['--ui', 'interact', '--replay']).kind, 'replay');
+  assert.equal(parseEntryArgs(['--replay', '--ui', 'full', '--mode', 'plan']).message, '--replay cannot be combined with --mode');
+});

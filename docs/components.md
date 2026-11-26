@@ -188,8 +188,15 @@ The per-module catalogue: one row per module or topic, each linking to its entry
 ## [headless.md](components/headless.md) — the projects-root lock and headless mode
 
 - [The projects-root lock](components/headless.md#the-projects-root-lock)
-- [Headless mode](components/headless.md#headless-mode)
-- [Replay (--view)](components/headless.md#replay---view)
+- [Headless mode](components/headless.md#headless-mode) (modules include `src/headless/rootPolicy.ts`, the root's no-person policy)
+- [Replay](components/headless.md#replay) — a pointer to headless-replay.md
+
+## [headless-replay.md](components/headless-replay.md) — the `--replay` process
+
+- [Replay](components/headless-replay.md#replay)
+- [Replay under view](components/headless-replay.md#replay-under-view)
+- [Replay under interact and full](components/headless-replay.md#replay-under-interact-and-full)
+- [The run's HOME](components/headless-replay.md#the-runs-home)
 
 ## [playbooks.md](components/playbooks.md) — playbooks and convention skill parts
 

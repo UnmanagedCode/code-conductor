@@ -36,11 +36,12 @@ import { mountErrorHandler } from './routes/errors.ts';
 import type { RelaunchOptions } from './routes/admin.ts';
 import type { ServerCtx } from './routes/shared.ts';
 import type { HealthFocus } from '../shared/focus.ts';
+import type { UiMode } from '../shared/uiMode.ts';
 
-export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus, restartStatus, viewOnly = false, focus = null }:
+export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildWeb: true, syncDeps: true } }, recorder = null, pending = null, pluginHost, pluginLibrary, playbookGate, capabilities = hostPlatform.capabilities, claudeLogin, claudeAuthStatus, restartStatus, uiMode = 'full', focus = null }:
   {
-    // CC_VIEW_ONLY: GET /health adds capabilities.viewOnly.
-    viewOnly?: boolean;
+    // `--ui` (shared/uiMode.ts): GET /health's top-level `uiMode`.
+    uiMode?: UiMode;
     // A headless-family server's focused session, advertised on GET /health.
     focus?: HealthFocus | null;
     instances?: InstanceManagerLike | null;
@@ -81,7 +82,7 @@ export function buildRoutes({ instances, serverCtx, relaunch = { flags: { buildW
   // src/playbookApi.ts; there is no write route.
   r.use('/playbooks', buildPlaybookApi({ playbookGate }));
 
-  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus, viewOnly, focus });
+  mountAdmin(r, { instances, serverCtx, relaunch, recorder, pending, capabilities, restartStatus, uiMode, focus });
   mountSpawnPrefs(r);
   mountProjects(r, { instances, capabilities });
   mountWorkspaces(r);

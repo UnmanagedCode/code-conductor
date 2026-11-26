@@ -1,7 +1,8 @@
-// What a `--view` replay's plugin handling shows end to end: the control
-// (start() without `replay`) autostarts an enabled auto-start plugin, and in a
-// replay an explicit POST /api/plugins/:id/start still starts it lazily. The
-// boot-time skip itself (`if (!replay)` around the host's init()+autoStartAll()
+// What a `--replay`'s plugin handling shows end to end: the control (start()
+// without `launchless`) autostarts an enabled auto-start plugin, as does a
+// replay under `--ui interact` (not launchless), and in a launchless replay
+// (`--ui view`) an explicit POST /api/plugins/:id/start still starts it
+// lazily. The boot-time skip itself (`if (!launchless)` around the host's init()+autoStartAll()
 // chain in startHolding) is NOT proved here — it is pinned structurally in
 // tests/web-build-wiring.test.mjs. No behavioural test can see it: the chain
 // settles before start() returns (init is already settled by the boot's
@@ -37,7 +38,7 @@ function countingPlatform() {
   return { platform, daemonSpawns: () => roles.filter((r) => r === 'daemon').length };
 }
 
-async function bootWithPlugin(opts) {
+async function bootWithPlugin({ env: extraEnv = {}, ...opts } = {}) {
   const { platform, daemonSpawns } = countingPlatform();
   const home = await mkdtemp('cc-replay-plug-');
   const root = path.join(home, 'project');
@@ -54,6 +55,7 @@ async function bootWithPlugin(opts) {
     CLAUDE_CONFIG_DIR: path.join(home, 'claude'),
     CLAUDE_BIN: `${process.execPath} -e 0`,
     ANTHROPIC_API_KEY: 'replay-plugin-boot-fake-key',
+    ...extraEnv,
   };
   const prev = Object.fromEntries(Object.keys(env).map((k) => [k, process.env[k]]));
   Object.assign(process.env, env);
@@ -61,7 +63,7 @@ async function bootWithPlugin(opts) {
   const base = `http://127.0.0.1:${booted.port}`;
   const row = async () => (await (await fetch(`${base}/api/plugins`)).json()).rows.find((r) => r.id === 'fake-plugin');
   return {
-    base, row, daemonSpawns,
+    base, row, daemonSpawns, instances: booted.instances,
     async close() {
       const { server, instances, wss, pluginHost } = booted;
       if (instances) await instances.shutdown();
@@ -84,7 +86,7 @@ async function bootWithPlugin(opts) {
   };
 }
 
-// Invariant (control): without `replay` the boot spawns the enabled plugin's backend.
+// Invariant (control): without `launchless` the boot spawns the enabled plugin's backend.
 test('a headless boot spawns an enabled auto-start plugin', async () => {
   const s = await bootWithPlugin({});
   try {
@@ -94,10 +96,21 @@ test('a headless boot spawns an enabled auto-start plugin', async () => {
   } finally { await s.close(); }
 });
 
-// Invariant: in a replay an explicit start requests a daemon spawn and brings
-// the backend up (the lazy start a plugin view relies on).
-test('in a replay, an explicit plugin start still spawns the backend', async () => {
-  const s = await bootWithPlugin({ replay: true, viewOnly: true });
+// Invariant: a replay that can launch (`--ui interact`, launchless false) gets
+// the boot's plugin autostart back.
+test('a replay under --ui interact autostarts an enabled auto-start plugin', async () => {
+  const s = await bootWithPlugin({ uiMode: 'interact', launchless: false });
+  try {
+    const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });
+    assert.ok(row.pid);
+    assert.ok(s.daemonSpawns() >= 1, 'a daemon spawn was requested');
+  } finally { await s.close(); }
+});
+
+// Invariant: in a launchless replay an explicit start requests a daemon spawn
+// and brings the backend up (the lazy start a plugin view relies on).
+test('in a launchless replay, an explicit plugin start still spawns the backend', async () => {
+  const s = await bootWithPlugin({ launchless: true, uiMode: 'view' });
   try {
     const before = await s.row();
     assert.ok(before, 'the plugin is discovered');
@@ -107,5 +120,36 @@ test('in a replay, an explicit plugin start still spawns the backend', async () 
     const row = await waitFor(async () => { const r = await s.row(); return r?.state === 'ready' ? r : null; }, { timeout: 20_000, interval: 100, label: 'the plugin ready' });
     assert.ok(row.pid);
     assert.ok(s.daemonSpawns() >= 1, 'the explicit start requested a daemon spawn');
+  } finally { await s.close(); }
+});
+
+// Counts the usage monitor's poll cycles from here on: its interval callback
+// calls `this._tick()` on every tick, so the count is the polls that ran.
+function countPolls(instances) {
+  const counter = { n: 0 };
+  instances._usageMonitor._tick = async () => { counter.n++; };
+  return counter;
+}
+const FAST_POLL = { ORCH_USAGE_POLL_MS: '10' };
+
+// Invariant (control): a replay that can launch starts the usage monitor, so
+// with a 10ms cadence its poll runs.
+test('a replay that can launch polls usage', async () => {
+  const s = await bootWithPlugin({ uiMode: 'interact', launchless: false, env: FAST_POLL });
+  try {
+    const polls = countPolls(s.instances);
+    await waitFor(() => polls.n > 0, { timeout: 5_000, interval: 10, label: 'a usage poll' });
+  } finally { await s.close(); }
+});
+
+// Invariant: a launchless replay starts no usage monitor — no poll runs over
+// many cadences, where the control above polls within the first few.
+test('a launchless replay never polls usage', async () => {
+  const s = await bootWithPlugin({ launchless: true, uiMode: 'view', env: FAST_POLL });
+  try {
+    const polls = countPolls(s.instances);
+    await new Promise((r) => setTimeout(r, 300));
+    assert.equal(polls.n, 0);
+    assert.equal(s.instances._usageMonitor.timer, null, 'no poll timer was armed');
   } finally { await s.close(); }
 });

@@ -68,8 +68,9 @@ function scheduleReconnect(): void {
   reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 1000);
 }
 
-// In view-only mode (shared/viewOnly.ts) a frame outside VIEW_ONLY_FRAMES_ALLOW is
-// not written: a non-ack send returns, an ack send rejects with ViewOnlyError.
+// Under a non-`full` UI mode (shared/viewOnly.ts) a frame frameAllowed refuses
+// (it reads the payload's instance `id` under `interact`) is not written: a
+// non-ack send returns, an ack send rejects with ViewOnlyError.
 //
 // With {ack: true} the send resolves on the server's ok ack and rejects on
 // its error ack, on a closed socket, or after 10s; without it, it returns
@@ -77,8 +78,8 @@ function scheduleReconnect(): void {
 export function send(t: string, payload: Record<string, unknown>, opts: { ack: true }): Promise<AckFrame>;
 export function send(t: string, payload?: Record<string, unknown>, opts?: { ack?: false }): void;
 export function send(t: string, payload: Record<string, unknown> = {}, { ack = false }: { ack?: boolean } = {}): Promise<AckFrame> | void {
-  // View-only: first, ahead of the connection check, so nothing is ever written.
-  if (isViewOnly() && !frameAllowed(t)) {
+  // The UI mode: first, ahead of the connection check, so nothing is ever written.
+  if (isViewOnly() && !frameAllowed(t, payload)) {
     const e = refuse(`${t} frame`);
     if (ack) return Promise.reject(e);
     return;

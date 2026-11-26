@@ -6,7 +6,7 @@
 # → Headless runs documents every variable.
 #
 # Reads: CC_HEADLESS_PROJECTS_DIR (required), CC_HEADLESS_PROMPT or PROMPT_FILE
-# (exactly one; PROMPT_FILE=- reads stdin), MODE, CC_HEADLESS_HOME,
+# (exactly one; PROMPT_FILE=- reads stdin), MODE, UI, CC_HEADLESS_HOME,
 # CC_HEADLESS_PORT, CC_PROJECTS_DIR (the main service's), CC_BIND, CC_URL_HOST,
 # DOCKER_COMPOSE, COMPOSE_FILES. Refusals exit 2 before compose runs.
 set -uo pipefail
@@ -30,7 +30,7 @@ norm() {
   fi
   printf '%s' "$v"
 }
-for var in CC_HEADLESS_PROJECTS_DIR CC_PROJECTS_DIR CC_HEADLESS_HOME CC_HEADLESS_PORT CC_BIND CC_URL_HOST PROMPT_FILE MODE DOCKER_COMPOSE; do
+for var in CC_HEADLESS_PROJECTS_DIR CC_PROJECTS_DIR CC_HEADLESS_HOME CC_HEADLESS_PORT CC_BIND CC_URL_HOST PROMPT_FILE MODE UI DOCKER_COMPOSE; do
   printf -v "$var" '%s' "$(norm "${!var:-}")"
 done
 
@@ -76,6 +76,8 @@ else
   cc_args=(--prompt-file /run/cc-prompt)
 fi
 [ -n "${MODE:-}" ] && cc_args+=(--mode "$MODE")
+# cc validates the mode itself (a usage_error, exit 2).
+[ -n "${UI:-}" ] && cc_args+=(--ui "$UI")
 
 if [ -n "${CC_HEADLESS_PORT:-}" ]; then
   bind="${CC_BIND:-127.0.0.1}"

@@ -8,7 +8,7 @@
 // normal cc death leaves it.
 
 import os from 'node:os';
-import { readHeadlessPrompt, HEADLESS_SYNOPSIS, type HeadlessArgs } from './args.ts';
+import { readHeadlessPrompt, ENTRY_SYNOPSIS, type EntryArgs } from './args.ts';
 import { runHeadless, type RunFacts, type RunHandle } from './runner.ts';
 import { EXIT_CODES, bareResult, renderResult, signalExitCode, type HeadlessResult } from './result.ts';
 import { createHeadlessStream, type HeadlessStream } from './stream.ts';
@@ -40,7 +40,7 @@ export function headlessUiLines(host: string, port: number, nets: NodeJS.Dict<os
   return hosts.map((h) => `headless: UI at http://${h.includes(':') ? `[${h}]` : h}:${port}`);
 }
 
-export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' | 'view' }>, { start }: HeadlessEntryDeps): Promise<void> {
+export async function headlessMain(args: Exclude<EntryArgs, { kind: 'server' | 'server_usage' | 'replay' }>, { start }: HeadlessEntryDeps): Promise<void> {
   // Before anything can log: every console line goes to stderr, and the result
   // (and any streamed line) goes out through the real stdout.
   const format = args.format;
@@ -135,7 +135,7 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' | 
 
   async function main(): Promise<void> {
     const usage = (message: string): void => {
-      process.stderr.write(`${message}\n${HEADLESS_SYNOPSIS}\n`);
+      process.stderr.write(`${message}\n${ENTRY_SYNOPSIS}\n`);
       finish(bareResult('usage_error', message, EXIT_CODES.usage_error));
     };
     if (args.kind === 'usage') { usage(args.message); return; }
@@ -160,6 +160,7 @@ export async function headlessMain(args: Exclude<HeadlessArgs, { kind: 'none' | 
     if (written) return;
     console.log(`code-conductor listening on http://${boot.host}:${boot.port}`);
     for (const line of headlessUiLines(boot.host, boot.port)) console.log(line);
+    console.log(`headless: UI mode ${args.ui}`);
     if (!boot.instances) { finish(bareResult('boot_failed', 'the server booted without an instance manager', EXIT_CODES.boot_failed)); return; }
     const focus = boot.focus;
     if (!focus) { finish(bareResult('boot_failed', 'the server booted without a focus cell', EXIT_CODES.boot_failed)); return; }

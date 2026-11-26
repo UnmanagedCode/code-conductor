@@ -14,7 +14,7 @@ import { runLabel, waitingOn } from '@shared/needsYou';
 import { readablePrompt } from '@shared/promptPreview';
 import { formatAgo } from '@/lib/time';
 import { cn } from '@/lib/utils';
-import { useViewOnly } from '@/state/viewOnly';
+import { useSessionViewOnly } from '@/state/viewOnly';
 
 /** The model's live task list (TaskCreate / TaskUpdate), while any task is open. */
 export function TaskPanel({ inst }: { inst: Instance }) {
@@ -146,7 +146,7 @@ export function SubagentPanel({ inst }: { inst: Instance }) {
 
 /** "Working…" with interrupt controls while a turn runs; "Last response …" otherwise. */
 export function TurnIndicator({ inst }: { inst: Instance }) {
-  const viewOnly = useViewOnly();
+  const viewOnly = useSessionViewOnly(inst.sessionId);
   const [, tick] = React.useState(0);
   React.useEffect(() => {
     const t = setInterval(() => tick((n) => n + 1), 15_000);

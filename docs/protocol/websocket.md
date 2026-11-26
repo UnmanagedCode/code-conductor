@@ -21,7 +21,7 @@
 - **Pins:** `tests/ws-origin.test.mjs` (real server, both paths, the no-lazy-start proof, LAN-share and tunnel acceptance), `tests/upgrade-origin.test.mjs` (the rule's rows, the guard's 403, the dedupe and the rate limit).
 
 **Client → server:**
-- A view-only client (`CC_VIEW_ONLY`) sends only the frames in `VIEW_ONLY_FRAMES_ALLOW` (`shared/viewOnly.ts`); the filter is client-side in `send()` and the server is unchanged. See [features/view-only.md](../features/view-only.md).
+- Under a UI mode other than `full` the client filters its own frames in `send()` (`frameAllowed`, `shared/viewOnly.ts`); the server is unchanged. `--ui view`: only the frames in `VIEW_ONLY_FRAMES_ALLOW`. `--ui interact`: those, plus `INTERACT_FRAMES_ALLOW` (`prompt`, `interrupt`, `mode`) when the frame's `id` is the focused root session's instance. See [features/ui-modes.md](../features/ui-modes.md#the-backstop).
 - `subscribe` — `id`, optional `reqId` (triggers `snapshot` + live `event`s)
 - `unsubscribe` — `id`
 - `prompt` — `id`, `text`, optional `attachments` (`[{name, mediaType, dataBase64}]`). Refused `ok:false` "session is switching model — retry once it settles" for the whole of a restart model switch (`Instance.prompt`'s `409`); nothing is queued

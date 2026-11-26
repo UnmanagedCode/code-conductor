@@ -4,7 +4,7 @@ import { useStore } from '@/state/createStore';
 import { appStore, placeExists } from '@/state/app';
 import type { Instance } from '@/state/types';
 import { restoreSession } from '@/app/sessionActions';
-import { useViewOnly } from '@/state/viewOnly';
+import { useSessionViewOnly } from '@/state/viewOnly';
 
 /**
  * Above the composer of a session with no instance (Instance.ended): it says the
@@ -14,7 +14,7 @@ import { useViewOnly } from '@/state/viewOnly';
 export function EndedBanner({ inst }: { inst: Instance }) {
   const worktreeName = inst.ended?.worktreeName ?? null;
   const resumable = useStore(appStore, (s) => placeExists(s.projects, inst.project, worktreeName));
-  const viewOnly = useViewOnly();
+  const viewOnly = useSessionViewOnly(inst.sessionId);
   const crashed = inst.status === 'crashed';
   return (
     <div

@@ -32,7 +32,7 @@ import { Dot, Hint, OWNER_BAR, ownerStyle } from '@/features/sidebar/rows';
 import { isBackToOwnerKey, openOwner, useWorkerOwner, type WorkerOwner } from './workerOwner';
 import { cn } from '@/lib/utils';
 import { useMediaQuery, WIDE_QUERY } from '@/lib/useMediaQuery';
-import { useViewOnly } from '@/state/viewOnly';
+import { useSessionViewOnly, useViewOnly } from '@/state/viewOnly';
 import { useFocusMode } from '@/state/focus';
 
 const BETWEEN_TURNS_TITLE = 'Model can only be changed between turns';
@@ -192,6 +192,8 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   useSignal(modelsSignal);
   useSignal(mutesSignal);
   const viewOnly = useViewOnly();
+  // Only the crashed/exited Resume is this session's own control (live under `--ui interact` for the interactive session).
+  const sessionViewOnly = useSessionViewOnly(inst.sessionId);
   const focus = useFocusMode();
   const projectName = projectLabel(inst.project);
   const worktree = inst.worktree?.worktreeName ? inst.worktree : null;
@@ -200,7 +202,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
   // and decides whether a stopped worktree session has a ⋮ at all.
   const wide = useMediaQuery(WIDE_QUERY);
   // An ended session has no instance: nothing that addresses one is offered.
-  // View-only renders no ⋮ at all.
+  // A read-only UI mode renders no ⋮ at all, even on the interactive session.
   const menu = !viewOnly && (canMenu || (!!worktree && !wide && !inst.ended));
   const between = isBetweenTurns(inst);
   const muted = isSessionMuted(inst.sessionId);
@@ -318,7 +320,7 @@ export function SessionHeader({ inst, onMenu }: { inst: Instance; onMenu: () => 
           <GitPullRequestArrowIcon /> Sync
         </Button>
       )}
-      {!viewOnly && (inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && !inst.ended && (
+      {!sessionViewOnly && (inst.status === 'crashed' || inst.status === 'exited') && !inst.modelSwitch && !inst.ended && (
         <Button size="sm" onClick={() => void respawnActive()}><PlayIcon /> Resume</Button>
       )}
       {inst.mode === 'plan' && canMenu && inst.autoApprovePlan && (

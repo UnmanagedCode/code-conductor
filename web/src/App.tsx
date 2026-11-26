@@ -49,7 +49,7 @@ function MainView() {
   const route = useRoute();
   const viewOnly = useViewOnly();
   switch (route.view) {
-    // View-only has no settings page; its lazy chunk is never loaded.
+    // A read-only UI mode (`view`, `interact`) has no settings page; its lazy chunk is never loaded.
     case 'settings': return viewOnly ? <SessionView /> : <SettingsView />;
     case 'review': return <ReviewView />;
     case 'commits': return <CommitsView />;
@@ -94,7 +94,7 @@ function AppShell() {
     <TooltipProvider delayDuration={400}>
       {/* Positioned: the backstop clip for an absolutely positioned box that no positioned pane or wrapper captures, so none can lengthen the page. */}
       <div className={`relative flex ${SHELL_BOX} overflow-hidden bg-background`}>
-        {/* Focus mode (a headless run or `--view` replay): one session, no sidebar to pick another. */}
+        {/* Focus mode (a headless run or a `--replay`): one session, no sidebar to pick another. */}
         {!focus && (
           <>
             <div className="hidden shrink-0 md:flex">
