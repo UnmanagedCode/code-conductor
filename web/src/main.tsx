@@ -16,6 +16,10 @@ import { startResumeNotices } from '@/features/resume';
 import { startViewportFollow } from '@/app/viewport';
 import { startViewOnlyNotice } from '@/app/viewOnlyNotice';
 import { loadCapabilities } from '@shared/capabilities';
+import { readPageFocus } from '@/app/focus';
+
+// Before the first render, so a page marked `?focus=<sid>` never paints a sidebar.
+readPageFocus();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

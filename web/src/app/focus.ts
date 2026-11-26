@@ -1,14 +1,20 @@
 // Focus mode's opener: a headless-family server names one session on
-// GET /api/health (shared/focus.ts) and the client opens it with no gesture, so
+// GET /api/health, or the page's URL carries `?focus=<sid>` (shared/focus.ts;
+// the server's wins), and the client opens it with no gesture, so
 // a live session is selected and an inactive one opens read-only — never a
 // POST. A live run's root has not spawned when the page loads, so the read
 // repeats until the server names it.
 
 import { apiFetch, NetworkError } from '@shared/http';
 import { capabilitiesSettled } from '@shared/capabilities';
-import { focusFromHealth, focusState, setFocus } from '@shared/focus';
+import { focusFromHealth, focusFromSearch, focusState, setFocus, setPageFocus } from '@shared/focus';
 
 export const FOCUS_POLL_MS = 1000;
+
+/** Reads the page's `?focus=<sid>` marker; main.tsx calls it before the first render so no sidebar paints. */
+export function readPageFocus(): void {
+  setPageFocus(focusFromSearch(location.search));
+}
 
 export interface FocusOpenDeps {
   signal: AbortSignal;

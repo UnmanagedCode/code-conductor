@@ -23,9 +23,10 @@ const CAPS = { git: true };
 let stop: (() => void) | null = null;
 
 /** A fresh controller over a mocked socket; `health` answers each GET /api/health in turn (the last repeats). */
-async function boot({ health, instances = [] }: { health: (object | Error)[]; instances?: unknown[] | Error }) {
+async function boot({ health, instances = [], url, locate }: { health: (object | Error)[]; instances?: unknown[] | Error; url?: string; locate?: RouteAnswer }) {
   stop?.();
   vi.resetModules();
+  if (url) history.replaceState(null, '', url);
   const ws = (await import('@shared/ws')) as unknown as { bus: EventTarget; sent: [string, unknown][] };
   ws.sent.length = 0;
   let healthReads = 0;
@@ -38,12 +39,14 @@ async function boot({ health, instances = [] }: { health: (object | Error)[]; in
     'GET /api/instances': () => (instances instanceof Error ? instances : { json: instances }),
     'POST /api/instances': () => ({ json: {} }),
     'GET /api/sessions/': (_body, url) => (url.endsWith('/pristine') ? MISS
+      : locate && !url.includes('/lineage-events') ? locate
       : url.includes('/lineage-events') ? { json: { events: [], hasMore: false, segment: null, nextBefore: null, pageSegment: null, currentSegmentId: null } }
       : ON_DISK),
     'GET /api/projects': () => ({ json: [] }),
     'GET /api/workspaces': () => ({ json: [] }),
   });
   // The app's startup read (main.tsx).
+  (await import('./focus')).readPageFocus();
   void (await import('@shared/capabilities')).loadCapabilities();
   const c = await import('./controller');
   const { appStore, activeInstance } = await import('@/state/app');
@@ -57,10 +60,12 @@ async function boot({ health, instances = [] }: { health: (object | Error)[]; in
     subscribes: () => ws.sent.filter(([t]) => t === 'subscribe').map(([, p]) => (p as { id: string }).id),
   };
 }
+/** shared/anchor.ts's stash key: the PWA relaunch hand-off. */
+const STASH = 'cc:session-stash';
 const focusOn = (sessionId: string | null) => ({ focus: { sessionId } });
 
 beforeEach(() => { history.replaceState(null, '', '/'); });
-afterEach(() => { stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); consumeStashedAnchor(); });
+afterEach(() => { void import('@shared/focus').then((f) => { f.setFocus(null); f.setPageFocus(null); }); stop?.(); stop = null; vi.useRealTimers(); vi.restoreAllMocks(); consumeStashedAnchor(); });
 
 describe('opening the focused session', () => {
   it('an inactive focused session opens read-only, anchored, with no POST', async () => {
@@ -202,5 +207,86 @@ describe('Back in focus mode', () => {
     expect(b.appStore.get().activeId).toBeNull();
     expect(b.appStore.get().ended).toBeNull();
     expect(b.posts()).toBe(0);
+  });
+});
+
+describe('focus from the URL marker', () => {
+  it('an inactive marked session opens read-only, anchored, query kept, no POST', async () => {
+    // Invariant: a page marked ?focus=S on an ordinary server opens S's transcript and never starts a CLI.
+    const b = await boot({ health: [{}], url: '/?focus=S' });
+    await b.open();
+    expect(b.appStore.get().activeId).toBe('ended:S');
+    expect(location.hash).toBe('#session=S');
+    expect(location.search).toBe('?focus=S');
+    expect(b.posts()).toBe(0);
+  });
+
+  it('a live marked session is selected and subscribed', async () => {
+    // Invariant: a live marked session is selected as it stands, not opened read-only.
+    const b = await boot({ health: [{}], instances: [inst('iS', 'S')], url: '/?focus=S' });
+    await b.open();
+    expect(b.active()).toBe('iS');
+    expect(b.subscribes()).toEqual(['iS']);
+    expect(b.posts()).toBe(0);
+  });
+
+  it('an anchor that resolves wins over the marker', async () => {
+    // Invariant: a reload on a worker stays on that worker.
+    const b = await boot({ health: [{}], instances: [inst('iW', 'W'), inst('iS', 'S')], url: '/?focus=S#session=W' });
+    await b.open();
+    expect(b.active()).toBe('iW');
+  });
+
+  it('a worker switch keeps the marker, and Back returns to the exited focused session', async () => {
+    // Invariant: the marker persists across in-page navigation, and Back returns to the focused conductor.
+    const b = await boot({ health: [{}], instances: [inst('iW', 'W')], url: '/?focus=S' });
+    await b.open();
+    expect(b.appStore.get().activeId, 'fixture check: the marked session is open').toBe('ended:S');
+    b.c.selectInstance('iW', { push: true });
+    expect(b.active(), 'fixture check: the worker is selected').toBe('iW');
+    expect(location.search).toBe('?focus=S');
+    const { focusState } = await import('@shared/focus');
+    expect(focusState()).not.toBeNull();
+    history.back();
+    await settle();
+    expect(b.appStore.get().activeId).toBe('ended:S');
+    expect(location.hash).toBe('#session=S');
+    expect(location.search).toBe('?focus=S');
+  });
+
+  it('an unknown marked id opens nothing, posts nothing, and stays focused', async () => {
+    // Invariant: an unknown id leaves focus mode's empty state, not a session start.
+    const b = await boot({ health: [{}], url: '/?focus=X', locate: MISS });
+    await b.open();
+    expect(b.appStore.get().activeId).toBeNull();
+    expect(b.posts()).toBe(0);
+    const { focusState } = await import('@shared/focus');
+    expect(focusState()).toEqual({ sessionId: 'X' });
+  });
+
+  it('the server focus wins over the marker', async () => {
+    // Invariant: health focus beats the URL marker.
+    const b = await boot({ health: [focusOn('R')], instances: [inst('iR', 'R'), inst('iS', 'S')], url: '/?focus=S' });
+    await b.open();
+    expect(b.active()).toBe('iR');
+  });
+
+  it('a marked page neither follows nor consumes the relaunch stash', async () => {
+    // Invariant: a focused page names its own session and leaves another tab's relaunch stash alone.
+    localStorage.setItem(STASH, 'X');
+    const b = await boot({ health: [{}], instances: [inst('iX', 'X'), inst('iS', 'S')], url: '/?focus=S' });
+    expect(localStorage.getItem(STASH), 'fixture check: the stash is stored').toBe('X');
+    await b.open();
+    expect(b.active()).toBe('iS');
+    expect(localStorage.getItem(STASH), 'the stash is still there').toBe('X');
+  });
+
+  it('control: an unmarked page consumes the stash and opens it', async () => {
+    // Invariant: the stash skip belongs to the marker alone.
+    localStorage.setItem(STASH, 'X');
+    const b = await boot({ health: [{}], instances: [inst('iX', 'X'), inst('iS', 'S')] });
+    await b.open();
+    expect(b.active()).toBe('iX');
+    expect(localStorage.getItem(STASH)).toBeNull();
   });
 });

@@ -1,11 +1,11 @@
 // @vitest-environment-options {"settings":{"disableIframePageLoading":true}}
-// Focus mode (a headless run or a `--replay`) renders no sidebar — neither
+// Focus mode (a headless run, a `--replay`, or a `?focus=<sid>` page) renders no sidebar — neither
 // the desktop column nor the drawer — and no control that opens it.
 import '@/test/browserHash';
 import * as React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, screen } from '@testing-library/react';
-import { setFocus } from '@shared/focus';
+import { setFocus, setPageFocus } from '@shared/focus';
 import { appStore } from '@/state/app';
 import { uiStore } from '@/app/ui';
 import { syncRoute } from '@/state/route';
@@ -48,6 +48,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   setFocus(null);
+  setPageFocus(null);
   pluginFrames.leave();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
@@ -115,5 +116,43 @@ describe('every Open sidebar button is gone in focus mode', () => {
       await settle();
       expect(openSidebarButtons()).toHaveLength(0);
     });
+    it(`${name}: a page focus removes the button too`, async () => {
+      // Invariant: the URL marker alone removes every Open sidebar surface, as the server's focus does.
+      prepare();
+      const view = render(<TooltipProvider>{element()}</TooltipProvider>);
+      await settle();
+      expect(openSidebarButtons().length, 'control: the button is rendered without focus').toBeGreaterThan(0);
+      view.unmount();
+      setPageFocus({ sessionId: 's1' });
+      render(<TooltipProvider>{element()}</TooltipProvider>);
+      await settle();
+      expect(openSidebarButtons()).toHaveLength(0);
+    });
   }
+});
+
+describe('URL marker', () => {
+  it('the page focus alone hides the column, the drawer and the Open sidebar button', async () => {
+    // Invariant: the page marker alone hides every sidebar path while the session still renders.
+    setPageFocus({ sessionId: 's1' });
+    render(<App />);
+    await settle();
+    await act(async () => { uiStore.set({ sidebarOpen: true }); });
+    await settle();
+    expect(desktopSidebar()).toHaveLength(0);
+    expect(drawerSidebar()).toHaveLength(0);
+    expect(openSidebarButtons()).toHaveLength(0);
+    expect(document.querySelector('[data-session-header]'), 'control: the session still renders').not.toBeNull();
+  });
+
+  it('with no session the empty state reads the focus copy and offers no start buttons', async () => {
+    // Invariant: an unknown id shows focus mode's empty state, with no way to start a session.
+    appStore.set({ activeId: null, instances: [] });
+    setPageFocus({ sessionId: 'nope' });
+    render(<TooltipProvider><SessionView /></TooltipProvider>);
+    await settle();
+    expect(screen.getByText('Waiting for the session to start.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Start conducting/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /New project/ })).toBeNull();
+  });
 });

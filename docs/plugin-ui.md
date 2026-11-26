@@ -29,6 +29,7 @@ Load both in the page's `<head>`:
 - Standalone (not in a frame, or not under `/plugins/<id>/`) the bridge does nothing, and both URLs answer 404 from the plugin's own server.
 - **A page served to another origin than cc's** (a deliberately public second listener, see [Part 2](#part-2--security-strongly-recommended)) is never embedded. It loads neither host URL: the relative or root-relative URL would resolve to its own server, which answers them 404. It relies on its own fallback theme.
 - Wire detail: [docs/plugins/runtime.md](plugins/runtime.md) → Bridge protocol, Theme stylesheet.
+- **A plugin that serves cc's own document** (with `<base href="/">`, from a plugin route) appends `?focus=<sid>` to show one session with no sidebar; [features/conduct.md](features/conduct.md) → Focus from the URL.
 
 ## Follow the host theme
 

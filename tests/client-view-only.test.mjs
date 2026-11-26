@@ -30,7 +30,7 @@ function stubFetch(json = {}) {
   return calls;
 }
 
-afterEach(() => { vo.setUiMode('full'); focus.setFocus(null); vo.setInstanceSessionLookup(null); });
+afterEach(() => { vo.setUiMode('full'); focus.setFocus(null); focus.setPageFocus(null); vo.setInstanceSessionLookup(null); });
 
 // Invariant: under `full` the chokepoints refuse nothing.
 test('full: every method and frame passes', async () => {
@@ -302,4 +302,42 @@ test('sessionViewOnly and its subscription follow the mode and the focus', () =>
   } finally { off(); }
   focus.setFocus(null);
   assert.equal(fired, 3, 'unsubscribed from both');
+});
+
+// ── the URL focus marker ────────────────────────────────────────────────
+
+// Invariant: the marker never grants control — under `interact`, with only a page
+// focus, the marked session is not interactive: its frames and REST calls are refused.
+// With both, the server's session is interactive and the marked one is not.
+test('interact: a page focus makes no session interactive', async () => {
+  vo.setUiMode('interact');
+  vo.setInstanceSessionLookup((id) => SESSIONS[id] ?? null);
+  focus.setPageFocus({ sessionId: ROOT_SID });
+  assert.equal(vo.isInteractiveSession(ROOT_SID), false);
+  assert.equal(vo.sessionViewOnly(ROOT_SID), true);
+  const sent = [];
+  installFakeSocket(sent);
+  ws.connect();
+  await assert.rejects(() => ws.send('prompt', { id: ROOT_INST }, { ack: true }), (e) => e instanceof vo.ViewOnlyError);
+  assert.deepEqual(sent, []);
+  const calls = stubFetch();
+  await assert.rejects(() => apiFetch(`/api/sessions/${ROOT_SID}/resume`, json({})), (e) => e instanceof vo.ViewOnlyError);
+  assert.equal(calls.length, 0);
+  focus.setFocus({ sessionId: 'other-sid' });
+  assert.equal(vo.isInteractiveSession('other-sid'), true);
+  assert.equal(vo.isInteractiveSession(ROOT_SID), false);
+});
+
+// Invariant: the marker does not move the access mode — `view` stays view-only for
+// the marked session, `full` stays editable.
+test('a page focus leaves the access mode alone', async () => {
+  focus.setPageFocus({ sessionId: ROOT_SID });
+  vo.setUiMode('view');
+  assert.equal(vo.sessionViewOnly(ROOT_SID), true);
+  const calls = stubFetch();
+  await assert.rejects(() => apiFetch('/api/instances', { method: 'POST' }), (e) => e instanceof vo.ViewOnlyError);
+  assert.equal(calls.length, 0);
+  vo.setUiMode('full');
+  assert.equal(vo.isViewOnly(), false);
+  assert.equal(vo.sessionViewOnly(ROOT_SID), false);
 });

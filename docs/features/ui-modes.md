@@ -6,7 +6,7 @@ Every cc boot runs in exactly one **UI mode**, chosen with `--ui` (`parseEntryAr
 |---|---|
 | `full` | Everything: the normal UI. |
 | `view` | Nothing that changes state: a spectator UI, so a phone can watch without a stray tap changing anything. |
-| `interact` | `view` everywhere except the **focused root session** (`GET /api/health`'s `focus.sessionId`), which the human can control. |
+| `interact` | `view` everywhere except the **focused root session** (`GET /api/health`'s `focus.sessionId`; a URL `?focus=` marker never counts), which the human can control. |
 
 **A UX convenience, not access control.** cc has no auth; the only server-side enforcement is a launchless replay's `create()` refusal (`409 VIEW_REPLAY_NO_LAUNCH`, below). The REST API, `/mcp` and a plugin page's own requests stay open in every mode. Changing the mode means restarting cc with another `--ui`.
 
@@ -36,7 +36,7 @@ Every cc boot runs in exactly one **UI mode**, chosen with `--ui` (`parseEntryAr
 - `uiMode` is always present; `focus` only on a headless run or replay.
 - The client reads both through `loadCapabilities` (`shared/capabilities.ts`): `setFocus` first, then `setUiMode(uiModeFromHealth(body))`. A missing or unknown `uiMode` fails closed to `view`.
 - Until health answers the client runs as `full`; a failed read leaves the mode unchanged.
-- **The interactive session is `focus.sessionId`.** While it is `null` (a live run whose root has not spawned) nothing is interactive. The client re-reads the focus until it is set (`web/src/app/focus.ts`), and the interactive session follows it.
+- **The interactive session is the server's `focus.sessionId`, read through `serverFocus()`; a page's `?focus=<sid>` marker never makes a session interactive** ([conduct.md](conduct.md) → Focus from the URL). While it is `null` (a live run whose root has not spawned) nothing is interactive. The client re-reads the focus until it is set (`web/src/app/focus.ts`), and the interactive session follows it.
 
 ## What `view` removes
 

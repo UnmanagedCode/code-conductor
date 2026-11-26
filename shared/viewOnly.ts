@@ -5,7 +5,7 @@
 //     VIEW_ONLY_FRAMES_ALLOW.
 //   - `interact`: as `view`, plus INTERACT_FRAMES_ALLOW / INTERACT_REST_ALLOW
 //     for the interactive session only — the focused session GET /api/health
-//     names (focusState().sessionId) — and INTERACT_REST_ANY.
+//     names (serverFocus().sessionId) — and INTERACT_REST_ANY.
 // A UX convenience, not access control: the server enforces none of this.
 // The mode stays `full` until the health read answers (shared/capabilities.ts).
 // DOM-free: node-tested without a DOM.
@@ -15,7 +15,7 @@
 // the interactive one, so a new mutating call is blocked by default.
 
 import type { UiMode } from './uiMode.ts';
-import { focusState, subscribeFocus } from './focus.ts';
+import { serverFocus, subscribeFocus } from './focus.ts';
 
 export const VIEW_ONLY_MESSAGE = 'Read-only here: this cc runs with --ui view or interact. Restart it with --ui full to make changes.';
 export const VIEW_ONLY_CODE = 'VIEW_ONLY';
@@ -116,9 +116,9 @@ function lookupSession(instanceId: string): string | null {
   return sessionLookup?.(instanceId) ?? null;
 }
 
-/** True only under `interact`, for the focused session; nothing is interactive while the focus is null. */
+/** True only under `interact`, for the session the server focuses; a page's URL marker never counts, and nothing is interactive while the server focus is null. */
 export function isInteractiveSession(sessionId: string | null | undefined): boolean {
-  return mode === 'interact' && !!sessionId && sessionId === focusState()?.sessionId;
+  return mode === 'interact' && !!sessionId && sessionId === serverFocus()?.sessionId;
 }
 
 /** Whether `sessionId`'s controls are read-only: the global gate, minus the interactive session. */
