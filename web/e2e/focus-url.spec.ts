@@ -164,3 +164,36 @@ test('?focus=<worker> killed while watched: the ended pane with Resume, no sideb
   await expect(banner.getByRole('button', { name: 'Resume' })).toBeVisible();
   await expect(sidebar(page)).toHaveCount(0);
 });
+
+/** From document start, records every `[data-sidebar]` or Open sidebar button the page ever inserts, in `window.__sidebarSeen`. */
+const RECORD_SIDEBAR = () => {
+  const w = window as unknown as { __sidebarSeen: string[] };
+  w.__sidebarSeen = [];
+  const scan = (n: Node) => {
+    if (!(n instanceof Element)) return;
+    const hits = [n, ...n.querySelectorAll('[data-sidebar], button')].filter(
+      (e) => e.matches('[data-sidebar]') || (e.tagName === 'BUTTON' && /^Open sidebar$/.test(e.getAttribute('aria-label') ?? e.textContent ?? '')));
+    for (const h of hits) w.__sidebarSeen.push(h.getAttribute('data-sidebar') !== null ? 'sidebar' : 'open-sidebar-button');
+  };
+  new MutationObserver((ms) => { for (const m of ms) m.addedNodes.forEach(scan); }).observe(document, { childList: true, subtree: true });
+};
+const sidebarSeen = (page: import('@playwright/test').Page) => page.evaluate(() => (window as unknown as { __sidebarSeen: string[] }).__sidebarSeen);
+
+// Invariant: a `?focus=` page never renders the sidebar or its Open sidebar button, not even on its first commit (the marker is read before the first render), so the recorder — which sees every insertion from document start — stays empty once the page settles.
+test('?focus= page never inserts a sidebar, even transiently', async ({ page, cc, ui }) => {
+  const f = await fleet(cc, 'fv');
+  await page.addInitScript(RECORD_SIDEBAR);
+  await page.goto(`/?focus=${f.conductor.sessionId}`);
+  await expect(ui.sessionHeader(page)).toContainText(f.conductorTitle);
+  await expect(ui.workersPanel(page)).toBeVisible();
+  expect(await sidebarSeen(page)).toEqual([]);
+});
+
+// Invariant (control): the same recorder does see the sidebar on a page with no marker, so an empty record above is not a blind recorder.
+test('control: the recorder sees the sidebar on an unmarked page', async ({ page, cc, ui }) => {
+  const f = await fleet(cc, 'fw');
+  await page.addInitScript(RECORD_SIDEBAR);
+  await page.goto(`/#session=${f.conductor.sessionId}`);
+  await expect(ui.sessionHeader(page)).toContainText(f.conductorTitle);
+  expect((await sidebarSeen(page)).length).toBeGreaterThan(0);
+});

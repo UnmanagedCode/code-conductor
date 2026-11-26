@@ -572,7 +572,7 @@ export function startController() {
       if (!appStore.get().activeId && routeStore.get().route.view === 'session') {
         const anchor = readSessionAnchor() || (pageFocus() ? null : consumeStashedAnchor());
         if (anchor && (await resumeSessionByAnchor(anchor))) return;
-        // No anchor resolved: a focus-mode server names the session to open.
+        // No anchor resolved: the focus names the session to open (the server's health focus, else the page's `?focus=` marker).
         void openFocusedSession({ signal, refreshInstances, hasActive: () => appStore.get().activeId !== null, resumeSessionByAnchor });
       }
     }
