@@ -141,7 +141,7 @@ import type { Actor, CreateInstanceInput, ExitCause, InstanceLike, InstanceManag
 import type { UiEvent, UiEventOf, UserEchoAttachment, PromptAuthor } from '../shared/uiEvent.ts';
 import { authorMarkerBlock, quoteHumanPrompts, type HumanPromptQuote } from './promptAuthor.ts';
 import type { WorktreeMeta } from './worktrees.ts';
-import type { WorktreeHookResult } from '../shared/wireRows.ts';
+import type { ContextChip, WorktreeHookResult } from '../shared/wireRows.ts';
 import type { Usage } from '../shared/usage.ts';
 import type { TaskRecord } from './taskReconstruct.ts';
 import type { Response } from 'express';
@@ -151,6 +151,7 @@ import { capabilityRefusal } from './capabilities.ts';
 import { isKnownEffort } from './effortLevels.ts';
 import { PRISTINE_REAP_GRACE_MS, PristineTracker, draftTitleOf, isHiddenPristine, type PristineTimers } from './pristine.ts';
 import { isDeadStatus } from './instanceStatus.ts';
+import { ContextChipSlot } from './contextChip.ts';
 import { parseResetEpochSecs } from './rateLimitReset.ts';
 
 // `AUTO_RESUME_TEXT` now lives with the overage timer machine in
@@ -747,6 +748,9 @@ export class Instance extends EventEmitter implements InstanceLike {
   // collision misreport as "a context renewal is in progress" and would wire
   // an unrelated wake path these operations were never meant to arm.
   _relaunching: boolean;
+  // The pending context chip (see src/contextChip.ts): dropped when the session
+  // really ends — a dead status outside a relaunch window — and kept across one.
+  readonly contextChip = new ContextChipSlot(c => this.emit('chip', c));
   // The last COMPLETED rotation. Pinning the public id removes the only tell a
   // conductor had that a rotation happened at all, so these replace it. Set here;
   // surfaced on summary() / CONDUCTOR_VIEW_KEYS in stage 8.
@@ -1748,6 +1752,7 @@ export class Instance extends EventEmitter implements InstanceLike {
     // repeated dead status (exited then crashed) is the same death, and an
     // instance that never launched — a refused launch, a dead husk — has none.
     // Before this transition's `status` frame, like the launch it closes.
+    if (isDeadStatus(next) && !this._relaunching) this.contextChip.clear();
     if (isDeadStatus(next) && this._sessionOpen) {
       this._sessionOpen = false;
       const actor = this._exitActor ?? SYSTEM_ACTOR;
@@ -6073,6 +6078,7 @@ export class InstanceManager extends EventEmitter implements InstanceManagerLike
     });
     inst.on('snapshot_reset', (snap: { id: string }) => this.emit('snapshot_reset', snap));
     inst.on('turn_marks', () => this.emit('turn_marks', { id }));
+    inst.on('chip', (chip: ContextChip | null) => this.emit('chip', { id, chip }));
     // The event log's lifecycle feed (src/mcp/sessionRecorder.ts), relayed with
     // the session's public id and the facts that scope it.
     inst.on('launch', (l: { event: 'start' | 'resume'; cause?: LaunchCause; actor: Actor }) => {

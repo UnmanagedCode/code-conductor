@@ -18,6 +18,8 @@ import { DRAFT_SAVE_DEBOUNCE_MS, EMPTY_DRAFT, draftStore, joinDictation, prepend
 import { openOwner, ownerSendBlock, useWorkerOwner, type WorkerOwner } from '@/features/session/workerOwner';
 import { ownerStyle } from '@/features/sidebar/rows';
 import { promptSendable, sendPrompt } from './send';
+import { contextChipStore } from './contextChipStore';
+import { ContextChip } from './ContextChip';
 import { ackWorkerSend, isWorkerSendAcked } from './workerSendAck';
 import { useDictation, type BoxDelivery } from './useDictation';
 
@@ -87,7 +89,10 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   const overagePaused = !!(inst?.overageActive || inst?.autoResumeAt) && !overageUnarmed;
   const resumeAt = inst?.autoResumeAt ?? inst?.overageResetsAt ?? null;
   const voiceOn = voice.supported;
-  const hasContent = text.trim().length > 0 || pending.some((p) => !p.error);
+  const chip = useStore(contextChipStore, (s) => (inst ? s.chips.get(inst.id) ?? null : null));
+  // What the box holds on its own, and with the chip: a chip alone is a send, but only to this session.
+  const hasOwnContent = text.trim().length > 0 || pending.some((p) => !p.error);
+  const hasContent = hasOwnContent || !!chip;
 
   const mode: 'recording' | 'transcribing' | 'send' | 'mic' =
     dictation.state !== 'idle' ? dictation.state
@@ -206,11 +211,13 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
 
   // ── Send ────────────────────────────────────────────────────────────
   /** The prompt body the box holds: its text and the attachments that finished encoding; null when there is neither. */
-  function buildBody() {
+  function buildBody(withChip = true) {
     const t = text.trim();
     const ready = pending.filter((p) => !p.error && typeof p.dataBase64 === 'string');
-    if (!t && !ready.length) return null;
+    const chipRev = withChip && chip ? chip.rev : undefined;
+    if (!t && !ready.length && chipRev === undefined) return null;
     return {
+      ...(chipRev !== undefined ? { chip: chipRev } : {}),
       text: prependTranscribedTag(t, transcribed),
       attachments: ready.map((p) => ({ name: p.name, mediaType: p.mediaType, dataBase64: p.dataBase64 as string })),
     };
@@ -224,7 +231,8 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   }
 
   function deliver(target: Instance) {
-    const body = buildBody();
+    // The chip belongs to the session it was set on: a send to the owner never carries it.
+    const body = buildBody(target.id === inst?.id);
     if (!body) return;
     sendPrompt(target, body);
     clearAfterSend();
@@ -245,7 +253,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
   }
 
   function sendToOwner() {
-    if (owner.kind !== 'owned' || !owner.instance || ownerBlock || !canSend || !buildBody()) return;
+    if (owner.kind !== 'owned' || !owner.instance || ownerBlock || !canSend || !buildBody(false)) return;
     deliver(owner.instance);
     setChoice(false);
     openOwner(owner);
@@ -391,7 +399,7 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
         >
           <span className="min-w-0 flex-1 basis-full text-muted-foreground">{inst?.title || (inst && projectLabel(inst.project))} is a worker of {owner.label}.</span>
           <Button size="sm" onClick={sendHere} disabled={!canSend || !hasContent}>Send to worker</Button>
-          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend || !hasContent} aria-describedby={ownerBlock ? blockId : undefined}>
+          <Button size="sm" variant="outline" onClick={sendToOwner} disabled={!!ownerBlock || !canSend || !hasOwnContent} aria-describedby={ownerBlock ? blockId : undefined}>
             Send to conductor
           </Button>
           {ownerBlock && <span id={blockId} className="basis-full text-muted-foreground">{ownerBlock}</span>}
@@ -431,8 +439,9 @@ export const Composer = React.forwardRef<ComposerHandle, { inst: Instance | null
               : `Paused${resumeClock ? ` until ${resumeClock}` : ''}. New messages are queued.`}
           </div>
         )}
-        {pending.length > 0 && (
+        {(pending.length > 0 || chip) && (
           <div className="flex flex-wrap gap-2 px-3 pt-3">
+            {chip && inst?.sessionId && <ContextChip chip={chip} sessionId={inst.sessionId} />}
             {pending.map((a) => (
               <div key={a.id} className={cn('flex max-w-64 items-center gap-2 rounded-lg border bg-muted/40 py-1 pr-1 pl-1.5 text-xs', a.error && 'border-destructive/40 text-destructive')}>
                 {a.isImage && a.objectUrl ? <img src={a.objectUrl} alt={a.name} className="size-7 rounded object-cover" /> : <FileIcon className="size-4 text-muted-foreground" />}

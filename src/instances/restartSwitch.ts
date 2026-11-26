@@ -317,6 +317,9 @@ export function _endRelaunch(this: Instance): void {
   const suppressed = this._exitSuppressed;
   this._exitSuppressed = false;
   this._relaunching = false;
+  // A relaunch that ended with no process is the session's end (its dead
+  // statuses were held back by the window), so the chip goes with it.
+  if (!this.proc) this.contextChip.clear();
   if (suppressed && !this.proc && !this.persistent) this.emit('exit_archive', this._retireOnExit());
   this.emit('status', this.summary());
 }

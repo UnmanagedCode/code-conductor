@@ -27,7 +27,7 @@
 // still reads as a change; an outside subpath change is forwarded as `navigate`.
 // `openLink` (a link to cc the page's bridge caught; its `href` judged by `viewLinkHash`) goes to the link handler
 // (dock.ts `followFrameLink`).
-// `ready` and the id-carrying session calls (`openSession` / `sendPrompt`) from
+// `ready` and the id-carrying session calls (`openSession` / `sendPrompt` / `setChip` / `clearChip`) from
 // any known frame go to the BridgeHandler (pluginSession.ts); `broadcast` posts
 // to every frame, hidden resident ones included.
 import { appUrl } from '@shared/appUrl';
@@ -272,7 +272,7 @@ class PluginFrames {
     }));
   }
 
-  // Child → parent ({cc:1}; ready / route / openLink / openSession / sendPrompt), attributed by the frame that posted
+  // Child → parent ({cc:1}; ready / route / openLink / openSession / sendPrompt / setChip / clearChip), attributed by the frame that posted
   // it. A frame that is not the current plugin's (a hidden resident one, or the
   // page being replaced while the next plugin loads) has its route tracked on
   // its own record only — the user is somewhere else.
@@ -299,7 +299,7 @@ class PluginFrames {
     }
     const reply = (m: unknown) => (ev.source as Window).postMessage(m, location.origin);
     if (d.type === 'ready') this.handler?.ready(reply);
-    else if ((d.type === 'openSession' || d.type === 'sendPrompt') && typeof d.id === 'string') this.handler?.call(d, reply);
+    else if ((d.type === 'openSession' || d.type === 'sendPrompt' || d.type === 'setChip' || d.type === 'clearChip') && typeof d.id === 'string') this.handler?.call(d, reply);
   }
 }
 

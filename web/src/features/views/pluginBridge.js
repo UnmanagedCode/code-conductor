@@ -19,6 +19,8 @@
 //   parent → child  session {session}                (the active session, or null)
 //   child → parent  openSession {id, sessionId}
 //   child → parent  sendPrompt {id, sessionId, text}
+//   child → parent  setChip {id, sessionId, title, data}
+//   child → parent  clearChip {id, sessionId}
 //   parent → child  result {id, ok, code?}           (answers one call)
 //
 // Theme (not a message): the host's resolved theme — `.dark` on the parent's
@@ -168,6 +170,10 @@
     openSession: function (sessionId) { return call('openSession', { sessionId: sessionId }); },
     /** @param {string} sessionId @param {string} text */
     sendPrompt: function (sessionId, text) { return call('sendPrompt', { sessionId: sessionId, text: text }); },
+    /** @param {string} sessionId @param {{title: string, data: string}} chip */
+    setChip: function (sessionId, chip) { return call('setChip', { sessionId: sessionId, title: chip && chip.title, data: chip && chip.data }); },
+    /** @param {string} sessionId */
+    clearChip: function (sessionId) { return call('clearChip', { sessionId: sessionId }); },
   };
 
   window.addEventListener('message', function (ev) {

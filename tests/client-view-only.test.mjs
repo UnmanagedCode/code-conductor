@@ -341,3 +341,30 @@ test('a page focus leaves the access mode alone', async () => {
   assert.equal(vo.isViewOnly(), false);
   assert.equal(vo.sessionViewOnly(ROOT_SID), false);
 });
+
+// Invariant (chip PUT/DELETE admitted under interact only for the focused
+// session; refused under view): a plugin page's setChip/clearChip and the
+// composer's × reach the server only for the interactive session; a worker's
+// chip or any chip under `view` is refused before fetch, with or without `?rev=`.
+test('chip PUT/DELETE: admitted under interact for the focused session only; refused under view', async () => {
+  interact();
+  const calls = stubFetch();
+  const allowed = [
+    [`/api/sessions/${ROOT_SID}/chip`, { method: 'PUT' }],
+    [`/api/sessions/${ROOT_SID}/chip`, { method: 'DELETE' }],
+    [`/api/sessions/${ROOT_SID}/chip?rev=3`, { method: 'DELETE' }],
+  ];
+  for (const [url, opts] of allowed) await apiFetch(url, opts);
+  assert.equal(calls.length, allowed.length);
+  for (const [url, opts] of [
+    ['/api/sessions/other/chip', { method: 'PUT' }],
+    ['/api/sessions/other/chip?rev=3', { method: 'DELETE' }],
+  ]) {
+    await assert.rejects(() => apiFetch(url, opts), (e) => e instanceof vo.ViewOnlyError, `${opts.method} ${url}`);
+  }
+  vo.setUiMode('view');
+  for (const method of ['PUT', 'DELETE']) {
+    await assert.rejects(() => apiFetch(`/api/sessions/${ROOT_SID}/chip`, { method }), (e) => e instanceof vo.ViewOnlyError, `view ${method}`);
+  }
+  assert.equal(calls.length, allowed.length, 'no refused call reached fetch');
+});

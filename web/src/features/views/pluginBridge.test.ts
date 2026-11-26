@@ -254,6 +254,21 @@ describe('window.ccBridge (session awareness)', () => {
     expect(b.posted.filter(([m]) => m.type !== 'route' && m.type !== 'ready').every(([, origin]) => origin === 'http://h')).toBe(true);
   });
 
+  it('setChip and clearChip post their envelopes and resolve with the host\'s result', async () => {
+    // Invariant: the wire shape of both chip calls, and that a refusal code reaches the plugin.
+    const b = runBridge();
+    const set = b.win.ccBridge.setChip('s1', { title: 'T', data: 'D' });
+    const clear = b.win.ccBridge.clearChip('s1');
+    const [s] = calls(b, 'setChip');
+    const [c] = calls(b, 'clearChip');
+    expect(s).toEqual({ cc: 1, type: 'setChip', id: s.id, sessionId: 's1', title: 'T', data: 'D' });
+    expect(c).toEqual({ cc: 1, type: 'clearChip', id: c.id, sessionId: 's1' });
+    deliver(b, { cc: 1, type: 'result', id: s.id, ok: false, code: 'SESSION_NOT_LIVE' });
+    deliver(b, { cc: 1, type: 'result', id: c.id, ok: true });
+    expect(await set).toEqual({ ok: false, code: 'SESSION_NOT_LIVE' });
+    expect(await clear).toEqual({ ok: true });
+  });
+
   it('a result resolves the call with its id only, in any order; unknown ids and foreign origins resolve nothing', async () => {
     // Invariant: replies are matched by id, never by order, and only a host-origin reply counts.
     const b = runBridge();

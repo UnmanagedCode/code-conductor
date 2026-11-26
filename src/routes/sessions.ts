@@ -13,6 +13,7 @@ import { publicIdFor } from '../sessionLineage.ts';
 import { generateSummary, askSession, countMessages } from '../summarize.ts';
 import type { InstanceManagerLike } from '../instanceTypes.ts';
 import { httpError } from '../httpError.ts';
+import { validateChipInput } from '../contextChip.ts';
 import { intQueryParam, sidParam, assertValidSid, sendAttachment, jsonBody, type ServerCtx } from './shared.ts';
 import type { ProjectsHintFrame } from '../../shared/wsFrames.ts';
 
@@ -31,6 +32,38 @@ export function mountSessions(r: express.Router, { instances, serverCtx }: { ins
       }
     }
   }
+
+  // The session's context chip (src/contextChip.ts): one pending chip on a LIVE
+  // session. PUT replaces it; DELETE clears it, only if `?rev=` still names it
+  // when given (the composer's ×), unconditionally otherwise (a plugin).
+  function liveForChip(raw: unknown): { sid: string; inst: NonNullable<ReturnType<InstanceManagerLike['liveForSession']>> } {
+    const sid = String(raw || '');
+    assertValidSid(sid);
+    const inst = instances?.liveForSession(sid) ?? null;
+    if (!inst) throw httpError(404, `no live session '${sid}'`, { code: 'SESSION_NOT_LIVE' });
+    return { sid, inst };
+  }
+
+  r.put('/sessions/:sessionId/chip', (req, res, next) => {
+    try {
+      const { sid, inst } = liveForChip(req.params.sessionId);
+      const { title, data } = validateChipInput(req.body);
+      res.json({ ok: true, sessionId: sid, chip: inst.contextChip.set(title, data) });
+    } catch (e) { next(e); }
+  });
+
+  r.delete('/sessions/:sessionId/chip', (req, res, next) => {
+    try {
+      const { sid, inst } = liveForChip(req.params.sessionId);
+      const raw = req.query.rev;
+      let rev: number | undefined;
+      if (raw !== undefined) {
+        rev = typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : NaN;
+        if (!Number.isSafeInteger(rev)) throw httpError(400, 'rev must be a non-negative integer', { code: 'INVALID_ARGUMENT' });
+      }
+      res.json({ ok: true, sessionId: sid, cleared: inst.contextChip.clear(rev) });
+    } catch (e) { next(e); }
+  });
 
   // Locate which project / worktree owns a given sessionId. Used by the
   // frontend's `#session=` anchor restore and a notification click's resume: a refresh that lands on a

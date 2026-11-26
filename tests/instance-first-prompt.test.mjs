@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { bootServer, api, waitFor, freshProjectsRoot, rmrf } from './helpers.mjs';
 import { buildForwardFrame } from '../shared/forwardFrame.ts';
-import { firstPromptHead } from '../shared/promptPreview.ts';
+import { firstPromptHead, promptPreview } from '../shared/promptPreview.ts';
+import { composeChipMessage } from '../shared/contextChip.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-basic.json');
@@ -86,6 +87,21 @@ test('a forward frame\'s first prompt is stored as its tail', async () => {
   await waitFor(() => inst.firstPrompt !== null);
   assert.equal(inst.firstPrompt, firstPromptHead(frame));
   assert.ok(inst.firstPrompt.endsWith('Review it'), inst.firstPrompt);
+});
+
+// Invariant: a session whose first prompt led with a context chip is labelled from what the person
+// typed, or from the chip's title when nothing was typed — never from the marker or the data block.
+test('a first prompt with a context chip labels from the typed text, or the chip title when text is empty', async () => {
+  const chip = { title: 'main.ts · 3 lines', data: 'x'.repeat(5000) };
+  assert.equal(promptPreview(firstPromptHead(composeChipMessage(chip, 'explain this'))), 'explain this');
+  assert.equal(promptPreview(firstPromptHead(composeChipMessage(chip, ''))), 'main.ts · 3 lines');
+  const { baseUrl, instances } = await setupWithProject('firstprompt-chip');
+  const r = await api(baseUrl, 'POST', '/api/instances', { project: 'firstprompt-chip' });
+  const inst = instances.get(r.body.id);
+  await waitFor(() => inst.status === 'idle');
+  inst.prompt(composeChipMessage(chip, 'explain this'));
+  await waitFor(() => inst.firstPrompt !== null);
+  assert.equal(inst.firstPrompt, 'explain this');
 });
 
 // `displayLabel` is the sidebar's label for the row (sessionLabel,

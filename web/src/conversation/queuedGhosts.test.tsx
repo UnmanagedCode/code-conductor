@@ -5,6 +5,8 @@
 import { describe, expect, it } from 'vitest';
 import { act } from '@testing-library/react';
 import type { UiEvent } from '@shared/uiEvent';
+import { composeChipMessage } from '@shared/contextChip';
+import { fireEvent } from '@testing-library/react';
 import { ConversationModel } from './model';
 import { flush, renderModel } from './renderModel';
 import { text, turnEnd } from './testkit';
@@ -82,5 +84,34 @@ describe('queued ghosts', () => {
 
     await live(m, reset(1));
     expect(delivered(root), 'positive control: a later window reset delivers it').toEqual([true]);
+  });
+});
+
+describe('a queued context-chip send', () => {
+  // Invariant: a queued chip send renders like a sent one — the chip row (title, data on expand) plus
+  // the typed text — never the raw marker block, even though the queue holds the composed text.
+  it('shows the chip row and the typed text, not the raw envelope', async () => {
+    const m = new ConversationModel();
+    m.applyEvents([queued(composeChipMessage({ title: 'main.ts · 2 lines', data: 'DATA-LINE-1\nDATA-LINE-2' }, 'explain TYPED-WORDS'))]);
+    const { root } = renderModel(m);
+    await flush();
+    const g = ghosts(root)[0];
+    expect(g.querySelector('[data-user-context-chip]')!.textContent).toContain('main.ts · 2 lines');
+    expect(g.textContent).toContain('explain TYPED-WORDS');
+    expect(g.textContent).not.toContain('cc:context-chip');
+    expect(g.querySelector('[data-context-chip-data]')).toBeNull();
+    fireEvent.click(g.querySelector('[data-fold-trigger]')!);
+    await flush();
+    expect(g.querySelector('[data-context-chip-data]')!.textContent).toBe('DATA-LINE-1\nDATA-LINE-2');
+  });
+
+  it('a chip-only queued send shows the chip row and no empty text line', async () => {
+    const m = new ConversationModel();
+    m.applyEvents([queued(composeChipMessage({ title: 'only', data: 'd' }, ''))]);
+    const { root } = renderModel(m);
+    await flush();
+    const g = ghosts(root)[0];
+    expect(g.querySelector('[data-user-context-chip]')).not.toBeNull();
+    expect(g.querySelectorAll('.whitespace-pre-wrap:not([data-context-chip-data])')).toHaveLength(0);
   });
 });
