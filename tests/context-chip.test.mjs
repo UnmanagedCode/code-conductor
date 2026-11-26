@@ -17,6 +17,15 @@ test('format→parse round-trips data containing backtick fences', () => {
   }
 });
 
+// Invariant: the fence is strictly longer than any backtick run in the data, so data holding a fence
+// line followed by a blank line (ordinary selected code) cannot close the block early or leak into rest.
+test('data with a backtick fence line then a blank line round-trips whole, behind a longer fence', () => {
+  const data = 'a\n```\n\nb';
+  const msg = composeChipMessage({ title: 'T', data }, 'typed');
+  assert.ok(msg.split('\n')[1].length > 3, 'the opening fence is longer than the data\'s three-backtick run');
+  assert.deepEqual(parseLeadingChip(msg), { title: 'T', data, rest: 'typed' });
+});
+
 // Invariant: a chip-only message parses with an empty rest, and a trailing
 // newline in data is normalised to one (the formatter adds it when absent).
 test('a chip-only message has an empty rest; one trailing newline in data is normalised', () => {

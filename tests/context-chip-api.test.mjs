@@ -261,3 +261,16 @@ test('a dead status while _relaunching keeps the chip; the window ending with no
     assert.equal(inst.contextChip.get(), null, 'dropped when the window ends with no process');
   });
 });
+
+// Invariant: a relaunch that succeeds keeps the chip — ending the window with a live process is not the
+// session's end, so _endRelaunch leaves the chip held and unchanged.
+test('ending a relaunch window with a live process keeps the chip', async () => {
+  await withSession(async ({ put, inst }) => {
+    const chip = (await put('sel', 'x')).body.chip;
+    assert.ok(inst.proc, 'precondition: the process is live');
+    inst._beginRelaunch();
+    inst._endRelaunch();
+    assert.ok(inst.proc, 'the process is still live');
+    assert.deepEqual(inst.contextChip.get(), chip);
+  });
+});
