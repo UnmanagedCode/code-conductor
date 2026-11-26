@@ -253,6 +253,33 @@ test('interact: null focus admits no session call; transcribe is interact-only',
   assert.equal(calls.length, 1);
 });
 
+// Invariant: while the focus is null nothing is interactive, so an id that maps
+// to no session never matches it: a prompt / interrupt / mode frame for an
+// unknown instance (the lookup answers null), a POST /api/instances with no
+// resume or a non-JSON body, and a respawn of an unknown instance are all
+// refused before the socket or fetch.
+test('interact, null focus: an id that maps to no session is not admitted', async () => {
+  interact();
+  focus.setFocus({ sessionId: null });
+  const sent = [];
+  installFakeSocket(sent);
+  ws.connect();
+  for (const t of ['prompt', 'interrupt', 'mode']) {
+    await assert.rejects(() => ws.send(t, { id: 'nobody' }, { ack: true }), (e) => e instanceof vo.ViewOnlyError, t);
+  }
+  assert.deepEqual(sent, []);
+  const calls = stubFetch();
+  for (const [url, opts] of [
+    ['/api/instances', json({ project: '.conduct' })],
+    ['/api/instances', { method: 'POST', body: 'not json' }],
+    ['/api/instances', { method: 'POST' }],
+    ['/api/instances/nobody/respawn', { method: 'POST' }],
+  ]) {
+    await assert.rejects(() => apiFetch(url, opts), (e) => e instanceof vo.ViewOnlyError, `${opts.body ?? 'no body'} ${url}`);
+  }
+  assert.equal(calls.length, 0);
+});
+
 // Invariant: sessionViewOnly is false only for the focused session under
 // `interact`, true for every session under `view`, false for all under `full`;
 // subscribeSessionViewOnly fires on a mode change and on a focus change.

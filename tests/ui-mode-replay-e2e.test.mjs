@@ -18,6 +18,10 @@ import { HEADLESS_QUESTION_ANSWER } from '../src/headless/fragment.ts';
 import { INTERRUPT_WAIT_MS } from '../src/headless/rootPolicy.ts';
 
 const freshHome = (t) => scratchHome(t, 'ui-mode-replay-');
+// The interrupt control requests cc wrote to any CLI's stdin.
+const interruptsSent = (file) => stdinText(file).split('\n').filter(Boolean)
+  .map((l) => { try { return JSON.parse(l); } catch { return null; } })
+  .filter((m) => m?.type === 'control_request' && m.request?.subtype === 'interrupt').length;
 const json = (body) => ({ method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
 
 async function replay(t, ui) {
@@ -65,7 +69,8 @@ test('--replay (default view): launchless', async (t) => {
 // and the root goes live; the root can spawn a worker (no 409); the worker's
 // client prompt is refused; the root's client prompt passes and its tool
 // question gets HEADLESS_QUESTION_ANSWER; restart and shutdown stay refused
-// (409); and a SIGINT while the root is mid-turn exits 0 with one `stopped`
+// (409); and a SIGINT while the root is mid-turn force-interrupts it (the
+// interrupt control request reaches its CLI) and exits 0 with one `stopped`
 // object naming the session, within INTERRUPT_WAIT_MS plus slack.
 test('--replay --ui interact: resume, spawn, ask policy, refusals, signal', async (t) => {
   const { sessionId, proc, base, transcript } = await replay(t, 'interact');
@@ -92,6 +97,7 @@ test('--replay --ui interact: resume, spawn, ask policy, refusals, signal', asyn
   await liveRow(base, sessionId, 'idle');
   await client.ws.send('prompt', { id: root.id, text: 'HOLD-THE-TURN' }, { ack: true });
   await liveRow(base, sessionId, 'turn');
+  assert.equal(interruptsSent(transcript), 0, 'precondition: no interrupt before the signal');
   client.close();
   const t0 = Date.now();
   proc.child.kill('SIGINT');
@@ -102,6 +108,9 @@ test('--replay --ui interact: resume, spawn, ask policy, refusals, signal', asyn
   assert.equal(res.reason, 'stopped');
   assert.equal(res.exitCode, 0);
   assert.equal(res.sessionId, sessionId);
+  // The signal force-interrupted the mid-turn root before `stopped`: the
+  // interrupt control request reached its CLI (none had before the signal).
+  assert.ok(interruptsSent(transcript) >= 1, 'the root\'s CLI received an interrupt control request');
 });
 
 // Invariant: `--replay --ui full` controls every session: after the root's
