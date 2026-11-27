@@ -116,10 +116,12 @@ describe('dialog text helpers', () => {
     expect(deleteEffects({ ...base, system: 'local' }, 2)[1]).toMatch(/^Remove 1 worktree/);
   });
 
-  it('the summary tier falls back to medium, then to the first cached tier', () => {
-    expect(pickTier({ long: { summary: 'x' } }, 'title', 'medium')).toBe('long');
-    expect(pickTier({ medium: { summary: 'x' }, title: { summary: 't' } }, 'short', 'short')).toBe('medium');
+  it('the summary tier falls back to title, then to the first cached tier', () => {
+    expect(pickTier({ long: { summary: 'x' } }, 'title', 'title')).toBe('long');
+    expect(pickTier({ medium: { summary: 'x' }, short: { summary: 's' } }, 'long', 'long')).toBe('short');
+    expect(pickTier({ long: { summary: 'x' }, title: { summary: 't' } }, 'short', 'short')).toBe('title');
     expect(pickTier({ title: { summary: 't' } }, 'title', 'medium')).toBe('title');
+    expect(pickTier({}, 'short', 'long')).toBe('title');
   });
 
   it('splitPath splits an absolute path into its directory and the typed prefix', () => {

@@ -46,21 +46,32 @@ describe('session summary', () => {
   const tier = (t: string) => document.querySelector<HTMLButtonElement>(`[data-len="${t}"]`)!;
   const content = () => document.querySelector('[data-summary-content]')!;
 
-  it('opens on Medium with its cached summary rendered as markdown, offering all four tiers, and no cost', async () => {
-    // Invariant: the dialog offers each of the four tiers once, opens on the cached Medium tier alone pressed (not the first cached tier), renders it through the markdown pipeline, and shows no cost before a generation.
+  it('opens on Title with its cached summary, offering all four tiers, and no cost', async () => {
+    // Invariant: the dialog offers each of the four tiers once, opens on the cached Title tier alone pressed (not the first cached tier), shows its text, and shows no cost before a generation.
     const data = SUMMARY;
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
     const lens = [...document.querySelectorAll('[data-len]')].map((b) => b.getAttribute('data-len'));
     expect([...lens].sort()).toEqual(['long', 'medium', 'short', 'title']);
     const pressed = [...document.querySelectorAll('[data-len]')].filter((b) => b.getAttribute('aria-pressed') === 'true').map((b) => b.getAttribute('data-len'));
-    expect(pressed).toEqual(['medium']);
+    expect(pressed).toEqual(['title']);
+    expect(document.querySelector('[data-cost]')).toBeNull();
+  });
+
+  it('a selected tier renders its cached summary as markdown', async () => {
+    // Invariant: a tier's summary goes through the markdown pipeline (headings, emphasis, tables) once that tier is selected.
+    const data = SUMMARY;
+    routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
+    render(<DialogsHost />);
+    act(() => openSummaryDialog('s1'));
+    await screen.findByText('Demo: ship the parity port');
+    fireEvent.click(tier('medium'));
+    await screen.findByText('Recap');
     expect(content().querySelector('h2')?.textContent).toBe('Recap');
     expect(content().querySelector('strong')?.textContent).toBe('three');
     expect(content().querySelector('table')).not.toBeNull();
-    expect(document.querySelector('[data-cost]')).toBeNull();
   });
 
   it('the stale warning shows on a stale tier and goes on a fresh one', async () => {
@@ -69,7 +80,9 @@ describe('session summary', () => {
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
+    expect(document.querySelector('[data-stale]')).toBeNull();
+    fireEvent.click(tier('medium'));
     expect(document.querySelector('[data-stale]')?.textContent).toBe('The session has grown since this summary');
     fireEvent.click(tier('short'));
     expect(document.querySelector('[data-stale]')).toBeNull();
@@ -83,14 +96,14 @@ describe('session summary', () => {
     const calls = routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText(/No medium summary yet/);
+    await screen.findByText(/No title summary yet/);
     await act(async () => {});
-    expect(content().textContent).toBe("No medium summary yet. Generate one; it runs a short model pass on this session's transcript.");
+    expect(content().textContent).toBe("No title summary yet. Generate one; it runs a short model pass on this session's transcript.");
     const generate = screen.getByRole('button', { name: 'Generate summary' });
     expect(writes(calls)).toEqual([]);
     fireEvent.click(generate);
     await waitFor(() => expect(writes(calls)).toHaveLength(1));
-    expect(writes(calls)[0]).toMatchObject({ method: 'POST', url: '/api/sessions/s1/summary', body: { length: 'medium' } });
+    expect(writes(calls)[0]).toMatchObject({ method: 'POST', url: '/api/sessions/s1/summary', body: { length: 'title' } });
   });
 
   it('Regenerate posts the selected tier and shows the returned cost, which a tier switch, a reopen or a null cost clears', async () => {
@@ -103,7 +116,7 @@ describe('session summary', () => {
     });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
     fireEvent.click(tier('short'));
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
     await waitFor(() => expect(document.querySelector('[data-cost]')?.textContent).toBe('Cost: $0.0123'));
@@ -118,7 +131,7 @@ describe('session summary', () => {
     await waitFor(() => expect(document.querySelector('[data-cost]')?.textContent).toBe('Cost: $0.0123'));
     act(() => closeDialog('summary'));
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
     expect(document.querySelector('[data-cost]')).toBeNull();
 
     cost = null;
@@ -143,7 +156,7 @@ describe('session summary', () => {
     });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
     fireEvent.click(tier('short'));
     fireEvent.click(screen.getByRole('button', { name: 'Regenerate' }));
     await screen.findByText('Gist 1.');
@@ -163,7 +176,8 @@ describe('session summary', () => {
     routeFetch({ 'GET /api/sessions/s1/summary': () => ({ json: { ok: true, sessionId: 's1', data } }) });
     render(<DialogsHost />);
     act(() => openSummaryDialog('s1'));
-    await screen.findByText('Recap');
+    await screen.findByText('Demo: ship the parity port');
+    fireEvent.click(tier('medium'));
     expect(screen.queryByRole('button', { name: /Use as session title/ })).toBeNull();
     fireEvent.click(tier('title'));
     fireEvent.click(screen.getByRole('button', { name: /Use as session title/ }));
