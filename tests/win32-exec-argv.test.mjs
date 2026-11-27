@@ -104,7 +104,7 @@ test('msysQuote round-trips every argument through the MSYS build_argv/globify d
   assert.deepEqual(decodeMsys(ARGS.map(win32.msysQuote).join(' ')), ARGS);
 });
 
-test('msvcrtQuote is not lossless under MSYS: a backslash run is halved', () => {
+test('msvcrtQuote is not lossless under MSYS: each pair of backslashes collapses to one', () => {
   assert.deepEqual(decodeMsys(win32.msvcrtQuote('a\\\\b')), ['a\\b']);
   assert.deepEqual(decodeMsys(win32.msvcrtQuote('\\\\srv\\share\\x')), ['\\srv\\share\\x']);
 });

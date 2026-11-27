@@ -40,12 +40,15 @@ export function msysQuote(arg: string): string {
 }
 
 // The one table of Git for Windows' MSYS tools cc maps: it drives both the path
-// mapping and the encoder choice. Values take Git's install root.
-const MSYS_TOOLS: Record<string, (gitRoot: string) => string> = {
-  sh: (root) => w.join(root, 'bin', 'sh.exe'),
-  env: (root) => w.join(root, 'usr', 'bin', 'env.exe'),
+// mapping and the encoder choice. A resolver throws when it needs bash and bash
+// is unresolved.
+interface GitTools { bash(): string; root(): string }
+const MSYS_TOOLS: Record<string, (t: GitTools) => string> = {
+  bash: (t) => t.bash(),
+  sh: (t) => w.join(t.root(), 'bin', 'sh.exe'),
+  env: (t) => w.join(t.root(), 'usr', 'bin', 'env.exe'),
 };
-const isMsysTool = (name: string): boolean => name === 'bash' || Object.hasOwn(MSYS_TOOLS, name);
+const isMsysTool = (name: string): boolean => Object.hasOwn(MSYS_TOOLS, name);
 const BATCH_FILE = /\.(cmd|bat)[. ]*$/i;
 
 export type Win32Env = Record<string, string | undefined>;
@@ -126,10 +129,8 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
   const gitBash = (): string => (bash ??= resolveGitBash(d.env, d.exists));
   const gitRoot = (): string => gitRootOfBash(gitBash());
 
-  const mapTool = (name: string): string => {
-    if (name === 'bash') return gitBash();
-    return Object.hasOwn(MSYS_TOOLS, name) ? MSYS_TOOLS[name](gitRoot()) : name;
-  };
+  const mapTool = (name: string): string =>
+    isMsysTool(name) ? MSYS_TOOLS[name]({ bash: gitBash, root: gitRoot }) : name;
 
   // Tree kill by parent pid; needs no group leader. Throws on non-zero exit,
   // with `code: 'ESRCH'` for taskkill's "not found" (128).
@@ -168,8 +169,8 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
     // verbatim (see msysQuote / msvcrtQuote). A batch target is returned
     // unencoded with no options, so Node keeps refusing it rather than handing
     // cmd.exe a verbatim line. An argv[0] naming another MSYS program directly
-    // gets msvcrtQuote: its args are not globbed, but a run of 2+ backslashes
-    // reaches it halved; wrap it as `sh -c 'exec "$@"' sh prog …`.
+    // gets msvcrtQuote: its args are not globbed, but each
+    // pair of backslashes collapses to one; wrap it as `sh -c 'exec "$@"' sh prog …`.
     commandFor(spec) {
       let command: string;
       let args: string[];
