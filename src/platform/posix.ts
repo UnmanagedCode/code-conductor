@@ -48,8 +48,8 @@ export function createPosixPlatform(overrides: Partial<PosixDeps> = {}): Platfor
     },
     commandFor(spec) {
       return 'shell' in spec
-        ? { command: 'bash', args: ['-lc', spec.shell] }
-        : { command: spec.argv[0], args: spec.argv.slice(1) };
+        ? { command: 'bash', args: ['-lc', spec.shell], options: {} }
+        : { command: spec.argv[0], args: spec.argv.slice(1), options: {} };
     },
     spawnOptions(role) {
       return role === 'child' ? {} : { detached: true };

@@ -3,7 +3,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import path from 'node:path';
-import { createWin32Platform, resolveGitBash, taskkillArgv, gitRootOfBash, startTimeArgv } from '../src/platform/win32.ts';
+import { createWin32Platform, msysQuote, msvcrtQuote, resolveGitBash, taskkillArgv, gitRootOfBash, startTimeArgv } from '../src/platform/win32.ts';
 import { win32Platform } from '../src/platform/index.ts';
 
 const GIT = 'C:\\Program Files\\Git';
@@ -33,14 +33,35 @@ test('resolveGitBash: Path spelling, Git\\bin on PATH, and the failure lists eve
       && e.message.includes('Z:\\b.exe') && e.message.includes(`${GIT}\\bin\\bash.exe`) && e.message.includes(`${GIT}\\cmd\\bash.exe`));
 });
 
+const q = (x) => `"${x}"`;
+const V = (command) => ({ argv0: q(command), windowsVerbatimArguments: true });
+
 test('commandFor: shell is bash -lc; bash/sh/env map into Git; others pass through', () => {
   const p = plat({ env: { CLAUDE_CODE_GIT_BASH_PATH: BASH }, files: [BASH] });
-  assert.deepEqual(p.commandFor({ shell: 'a && b' }), { command: BASH, args: ['-lc', 'a && b'] });
-  assert.deepEqual(p.commandFor({ argv: ['bash', 'x.sh'] }), { command: BASH, args: ['x.sh'] });
-  assert.deepEqual(p.commandFor({ argv: ['sh', '-c', 'x'] }), { command: `${GIT}\\bin\\sh.exe`, args: ['-c', 'x'] });
-  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1'] });
-  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1', 'B=2', 'bash', 'x'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1', 'B=2', BASH, 'x'] });
-  assert.deepEqual(p.commandFor({ argv: ['git', 'status'] }), { command: 'git', args: ['status'] });
+  const SH = `${GIT}\\bin\\sh.exe`;
+  const ENV = `${GIT}\\usr\\bin\\env.exe`;
+  assert.deepEqual(p.commandFor({ shell: 'a && b' }), { command: BASH, args: [q('-lc'), q('a && b')], options: V(BASH) });
+  assert.deepEqual(p.commandFor({ argv: ['bash', 'x.sh'] }), { command: BASH, args: [q('x.sh')], options: V(BASH) });
+  assert.deepEqual(p.commandFor({ argv: ['sh', '-c', 'x'] }), { command: SH, args: [q('-c'), q('x')], options: V(SH) });
+  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1'] }), { command: ENV, args: [q('A=1')], options: V(ENV) });
+  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1', 'B=2', 'bash', 'x'] }), { command: ENV, args: [q('A=1'), q('B=2'), msysQuote(BASH), q('x')], options: V(ENV) });
+  assert.deepEqual(p.commandFor({ argv: ['git', 'status'] }), { command: 'git', args: [q('status')], options: V('git') });
+});
+
+test('commandFor: MSYS tools and the shell form get msysQuote, other programs msvcrtQuote', () => {
+  const p = plat({ env: { CLAUDE_CODE_GIT_BASH_PATH: BASH }, files: [BASH] });
+  const arg = 'a\\\\b"c';
+  assert.deepEqual(p.commandFor({ argv: ['sh', '-c', arg] }).args[1], msysQuote(arg));
+  assert.deepEqual(p.commandFor({ shell: arg }).args[1], msysQuote(arg));
+  assert.deepEqual(p.commandFor({ argv: ['env', arg] }).args[0], msysQuote(arg));
+  assert.deepEqual(p.commandFor({ argv: ['git', arg] }).args[0], msvcrtQuote(arg));
+  assert.notEqual(msysQuote(arg), msvcrtQuote(arg));
+});
+
+test('commandFor: a .cmd/.bat target passes through unencoded with no options', () => {
+  const p = plat({ env: { CLAUDE_CODE_GIT_BASH_PATH: BASH }, files: [BASH] });
+  assert.deepEqual(p.commandFor({ argv: ['foo.CMD', 'a b'] }), { command: 'foo.CMD', args: ['a b'], options: {} });
+  assert.deepEqual(p.commandFor({ argv: ['x.bat. ', 'y'] }), { command: 'x.bat. ', args: ['y'], options: {} });
 });
 
 test('gitRootOfBash: bin\\bash.exe and usr\\bin\\bash.exe both map to the Git root', () => {
@@ -52,14 +73,14 @@ test('gitRootOfBash: bin\\bash.exe and usr\\bin\\bash.exe both map to the Git ro
 test('commandFor: a usr\\bin bash override still maps sh/env into the Git root', () => {
   const usrBash = `${GIT}\\usr\\bin\\bash.exe`;
   const p = plat({ env: { CLAUDE_CODE_GIT_BASH_PATH: usrBash }, files: [usrBash] });
-  assert.deepEqual(p.commandFor({ argv: ['env', 'A=1'] }), { command: `${GIT}\\usr\\bin\\env.exe`, args: ['A=1'] });
-  assert.deepEqual(p.commandFor({ argv: ['sh', '-c', 'x'] }), { command: `${GIT}\\bin\\sh.exe`, args: ['-c', 'x'] });
+  assert.equal(p.commandFor({ argv: ['env', 'A=1'] }).command, `${GIT}\\usr\\bin\\env.exe`);
+  assert.equal(p.commandFor({ argv: ['sh', '-c', 'x'] }).command, `${GIT}\\bin\\sh.exe`);
 });
 
 test('commandFor throws only when the mapping needs bash and it is unresolved; success is memoised, failure is not', () => {
   const files = [];
   const p = createWin32Platform({ env: { ProgramFiles: 'C:\\Program Files' }, exists: (f) => files.includes(f), execFileSync() {}, realpathNative: (x) => x, realpathJs: (x) => x });
-  assert.deepEqual(p.commandFor({ argv: ['git', 'log'] }), { command: 'git', args: ['log'] });
+  assert.equal(p.commandFor({ argv: ['git', 'log'] }).command, 'git');
   assert.throws(() => p.commandFor({ shell: 'true' }), /bash\.exe not found/);
   files.push(BASH);
   assert.equal(p.commandFor({ shell: 'true' }).command, BASH, 'installing Git later takes effect');

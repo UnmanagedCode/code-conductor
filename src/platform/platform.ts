@@ -31,6 +31,9 @@ export interface PlatformCapabilities { remoteSystems: boolean; fuseUnion: boole
 // (`ps`, PowerShell); a `/proc` read is immediate.
 export const START_TIME_TIMEOUT_MS = 5000;
 
+// The spawn options a command's argv needs to reach the child unaltered.
+export interface ArgvSpawnOptions { argv0?: string; windowsVerbatimArguments?: boolean }
+
 export interface Platform {
   capabilities: PlatformCapabilities;
   // True when SIGTERM lets the target run its shutdown handler; false where it
@@ -43,7 +46,8 @@ export interface Platform {
   // resolved (it does not exist yet).
   canonicalPath(p: string): string | null;
   // `{shell}` → the login shell running the string; `{argv}` → executable + args.
-  commandFor(spec: ExecSpec): { command: string; args: string[] };
+  // `options` is spread into the spawn: it carries what the args' encoding needs.
+  commandFor(spec: ExecSpec): { command: string; args: string[]; options: ArgvSpawnOptions };
   // Base spawn options; spread FIRST so a call site's own options win.
   spawnOptions(role: SpawnRole): { detached?: boolean; windowsHide?: boolean };
   // One process, by handle where the caller has one. Throws like `process.kill`.

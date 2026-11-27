@@ -4,7 +4,7 @@ import type { Platform } from './platform.ts';
 import { posixPlatform } from './posix.ts';
 import { win32Platform } from './win32.ts';
 
-export type { Platform, PlatformCapabilities, SpawnRole, KillSignal, ChildHandle } from './platform.ts';
+export type { ArgvSpawnOptions, Platform, PlatformCapabilities, SpawnRole, KillSignal, ChildHandle } from './platform.ts';
 export { posixPlatform, win32Platform };
 
 export function selectPlatform(os: NodeJS.Platform): Platform {

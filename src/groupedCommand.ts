@@ -123,9 +123,9 @@ export function runGroupedCommand(
       () => killProcessGroup(proc.pid, { graceMs: killGraceMs, fallback: (sig) => proc.kill(sig), platform }),
     );
     try {
-      const { command: cmd, args } = platform.commandFor(runSpec);
+      const { command: cmd, args, options } = platform.commandFor(runSpec);
       proc = spawn(cmd, args, {
-        cwd, env: runEnv, ...platform.spawnOptions('group'),
+        ...options, cwd, env: runEnv, ...platform.spawnOptions('group'),
         // 'ignore' gives the command a closed stdin so an interactive one sees
         // EOF instead of blocking on a pipe nobody writes to.
         ...(closedStdin ? { stdio: ['ignore', 'pipe', 'pipe'] as const } : {}),

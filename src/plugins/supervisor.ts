@@ -122,7 +122,7 @@ export function createSupervisor({
   }
 
   async function spawnChild({ id, manifest, cwd, env, log }: SupervisorStartInput, port: number): Promise<ChildRecord> {
-    const { command, args } = platform.commandFor({ shell: manifest.backend.start });
+    const { command, args, options } = platform.commandFor({ shell: manifest.backend.start });
     // An outer cc's CONDUCTOR_MCP_URL / CONDUCTOR_URL and session identity
     // (this server running as some cc's worker) must never reach a plugin: only
     // the URLs `env` names are this server's, and a backend serves many
@@ -137,6 +137,7 @@ export function createSupervisor({
     try {
       const logOffset = (await fh.stat()).size;
       const proc = _spawn(command, args, {
+        ...options,
         ...platform.spawnOptions('daemon'),
         cwd,
         env: { ...inherited, ...env, PORT: String(port), CONDUCTOR_PLUGIN_ID: id },
