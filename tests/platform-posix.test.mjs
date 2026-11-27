@@ -13,8 +13,8 @@ const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { retu
 async function dies(pid) { for (let i = 0; i < 100 && alive(pid); i++) await sleep(20); return !alive(pid); }
 
 test('commandFor: shell runs through bash -lc, argv splits executable from args', () => {
-  assert.deepEqual(posixPlatform.commandFor({ shell: 'a && b' }), { command: 'bash', args: ['-lc', 'a && b'] });
-  assert.deepEqual(posixPlatform.commandFor({ argv: ['git', 'status', '-s'] }), { command: 'git', args: ['status', '-s'] });
+  assert.deepEqual(posixPlatform.commandFor({ shell: 'a && b' }), { command: 'bash', args: ['-lc', 'a && b'], options: {} });
+  assert.deepEqual(posixPlatform.commandFor({ argv: ['git', 'status', '-s'] }), { command: 'git', args: ['status', '-s'], options: {} });
 });
 
 test('spawnOptions: child is bare, group and daemon are detached', () => {

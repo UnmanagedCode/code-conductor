@@ -38,14 +38,20 @@ function fakePlatform(overrides = {}) {
 const names = (p) => p.calls.map(c => c[0]);
 
 test('runGroupedCommand runs the platform command and asks for group options', async () => {
-  const fake = fakePlatform({ commandFor: () => ({ command: 'echo', args: ['routed'] }) });
+  const fake = fakePlatform({ commandFor: () => ({ command: 'echo', args: ['routed'], options: {} }) });
   const r = await runGroupedCommand({ shell: 'echo original' }, { cwd: os.tmpdir() }, fake);
   assert.equal(r.stdout.trim(), 'routed');
   assert.ok(fake.calls.some(c => c[0] === 'spawnOptions' && c[1] === 'group'));
 });
 
+test("runGroupedCommand spreads commandFor's options into the spawn", async () => {
+  const fake = fakePlatform({ commandFor: () => ({ command: process.execPath, args: ['-e', 'process.stdout.write(process.argv0)'], options: { argv0: 'from-commandFor' } }) });
+  const r = await runGroupedCommand({ shell: 'ignored' }, { cwd: os.tmpdir() }, fake);
+  assert.equal(r.stdout, 'from-commandFor');
+});
+
 test('LocalSystem.exec routes through its platform', async () => {
-  const fake = fakePlatform({ commandFor: () => ({ command: 'echo', args: ['routed'] }) });
+  const fake = fakePlatform({ commandFor: () => ({ command: 'echo', args: ['routed'], options: {} }) });
   const r = await new LocalSystem(fake).exec({ shell: 'echo original' }, { cwd: os.tmpdir() });
   assert.equal(r.stdout.trim(), 'routed');
 });
@@ -63,7 +69,7 @@ const piLog = () => { const d = mkdtempSync('pi-log-'); return { current: path.j
 
 test('createSupervisor spawns the platform command with daemon options and stops via killGroup', () => {
   const fake = fakePlatform({
-    commandFor: () => ({ command: 'rewritten', args: ['x'] }),
+    commandFor: () => ({ command: 'rewritten', args: ['x'], options: { argv0: 'a0', windowsVerbatimArguments: true } }),
     spawnOptions: () => ({ detached: true, windowsHide: true }),
     killGroup: () => {},
   });
@@ -79,6 +85,8 @@ test('createSupervisor spawns the platform command with daemon options and stops
     assert.equal(seen.cmd, 'rewritten');
     assert.deepEqual(seen.args, ['x']);
     assert.equal(seen.opts.windowsHide, true);
+    assert.equal(seen.opts.argv0, 'a0');
+    assert.equal(seen.opts.windowsVerbatimArguments, true);
     assert.ok(fake.calls.some(c => c[0] === 'spawnOptions' && c[1] === 'daemon'));
     sup.stop({ id: 'p', pgid: 99999 });
     assert.ok(fake.calls.some(c => c[0] === 'killGroup' && c[1] === 99999));

@@ -55,3 +55,4 @@ Built and released by the separate `code-conductor-windows` project. Its README 
 - A logon over SSH cannot `taskkill /T` or use WMI; run those steps under an interactive-type logon (e.g. `Start-Process -Credential`).
 - The server dies with its logon session when started from a non-interactive logon; a desktop session is unaffected.
 - A server that fails to start is reported by the launcher with the tail of `logs\server.log`.
+- Argv through Git's `bash`/`sh`/`env` assumes MSYS globbing is on. With `MSYS=noglob` in cc's environment, an argument holding `\` or `"` reaches them altered.

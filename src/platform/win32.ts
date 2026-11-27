@@ -14,6 +14,43 @@ import { lockDirHash, NO_RELEASE } from './rootLockAddress.ts';
 
 const w = path.win32;
 
+// Quotes `arg` so the MSVC runtime's command-line parser (CommandLineToArgvW,
+// what a native program uses) yields exactly `arg`. Always quotes, the empty
+// string included. A backslash run doubles only before a `"` or at the end.
+export function msvcrtQuote(arg: string): string {
+  let out = '"';
+  for (let i = 0; i < arg.length;) {
+    let n = 0;
+    while (arg[i + n] === '\\') n++;
+    i += n;
+    if (i === arg.length) out += '\\'.repeat(2 * n);
+    else if (arg[i] === '"') out += '\\'.repeat(2 * n + 1) + arg[i++];
+    else out += '\\'.repeat(n) + arg[i++];
+  }
+  return out + '"';
+}
+
+// Quotes `arg` for an MSYS program whose parent is not an MSYS process and
+// whose globbing is on (the default). Inside quotes the runtime's `quoted()`
+// skips `\x` pairs and `globify` maps `\\` to `\` and `\"` to `"`, and every
+// other character is protected from glob, brace and tilde expansion. A leading
+// `"` also stops `@file` expansion.
+export function msysQuote(arg: string): string {
+  return '"' + arg.replace(/[\\"]/g, '\\$&') + '"';
+}
+
+// The one table of Git for Windows' MSYS tools cc maps: it drives both the path
+// mapping and the encoder choice. A resolver throws when it needs bash and bash
+// is unresolved.
+interface GitTools { bash(): string; root(): string }
+const MSYS_TOOLS: Record<string, (t: GitTools) => string> = {
+  bash: (t) => t.bash(),
+  sh: (t) => w.join(t.root(), 'bin', 'sh.exe'),
+  env: (t) => w.join(t.root(), 'usr', 'bin', 'env.exe'),
+};
+const isMsysTool = (name: string): boolean => Object.hasOwn(MSYS_TOOLS, name);
+const BATCH_FILE = /\.(cmd|bat)[. ]*$/i;
+
 export type Win32Env = Record<string, string | undefined>;
 
 export interface Win32Deps {
@@ -92,12 +129,8 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
   const gitBash = (): string => (bash ??= resolveGitBash(d.env, d.exists));
   const gitRoot = (): string => gitRootOfBash(gitBash());
 
-  const mapTool = (name: string): string => {
-    if (name === 'bash') return gitBash();
-    if (name === 'sh') return w.join(gitRoot(), 'bin', 'sh.exe');
-    if (name === 'env') return w.join(gitRoot(), 'usr', 'bin', 'env.exe');
-    return name;
-  };
+  const mapTool = (name: string): string =>
+    isMsysTool(name) ? MSYS_TOOLS[name]({ bash: gitBash, root: gitRoot }) : name;
 
   // Tree kill by parent pid; needs no group leader. Throws on non-zero exit,
   // with `code: 'ESRCH'` for taskkill's "not found" (128).
@@ -131,15 +164,34 @@ export function createWin32Platform(overrides: Partial<Win32Deps> = {}): Platfor
     // (verified: `bash -lc` under a PATH of node, Git\cmd, claude's dir resolves
     // node, npm and claude), so the login shell keeps the inherited PATH and no
     // env.exe wrapper is needed.
+    //
+    // The args are encoded for the target's own command-line parser and spawned
+    // verbatim (see msysQuote / msvcrtQuote). A batch target is returned
+    // unencoded with no options, so Node keeps refusing it rather than handing
+    // cmd.exe a verbatim line. An argv[0] naming another MSYS program directly
+    // gets msvcrtQuote: its args are not globbed, but each
+    // pair of backslashes collapses to one; wrap it as `sh -c 'exec "$@"' sh prog …`.
     commandFor(spec) {
-      if ('shell' in spec) return { command: gitBash(), args: ['-lc', spec.shell] };
-      const [head, ...rest] = spec.argv;
-      if (head === 'env') {
-        // `env A=1 bash script`: the program env runs is looked up on a PATH that lacks bash.
-        const i = rest.findIndex(a => !a.includes('='));
-        if (i >= 0) rest[i] = mapTool(rest[i]);
+      let command: string;
+      let args: string[];
+      let msys: boolean;
+      if ('shell' in spec) {
+        command = gitBash(); args = ['-lc', spec.shell]; msys = true;
+      } else {
+        const [head, ...rest] = spec.argv;
+        if (head === 'env') {
+          // `env A=1 bash script`: the program env runs is looked up on a PATH that lacks bash.
+          const i = rest.findIndex(a => !a.includes('='));
+          if (i >= 0) rest[i] = mapTool(rest[i]);
+        }
+        command = mapTool(head); args = rest; msys = isMsysTool(head);
       }
-      return { command: mapTool(head), args: rest };
+      if (BATCH_FILE.test(command)) return { command, args, options: {} };
+      return {
+        command,
+        args: args.map(msys ? msysQuote : msvcrtQuote),
+        options: { argv0: msvcrtQuote(command), windowsVerbatimArguments: true },
+      };
     },
 
     // Under libuv `detached` is DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP: no

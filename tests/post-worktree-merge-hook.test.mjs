@@ -13,7 +13,7 @@ import { createWorktree, mergeWorktreeIntoParent, runWorktreeHook } from '../src
 import { projectStoreDir } from '../src/projects.ts';
 import { LocalSystem } from '../src/systems/localSystem.ts';
 import { posixPlatform } from '../src/platform/posix.ts';
-import { createWin32Platform } from '../src/platform/win32.ts';
+import { createWin32Platform, msysQuote } from '../src/platform/win32.ts';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const SCENARIO = path.join(__dirname, 'fixtures', 'scenario-instance.json');
@@ -451,7 +451,10 @@ for (const event of ['create', 'merge']) {
       env: { CLAUDE_CODE_GIT_BASH_PATH: BASH }, exists: (p) => p === BASH, execFileSync: () => {},
       realpathNative: (p) => p, realpathJs: (p) => p,
     });
-    assert.deepEqual(win.commandFor(spec), { command: `${GIT}\\usr\\bin\\env.exe`, args: [...ccArgs, BASH, script] });
+    const got = win.commandFor(spec);
+    assert.equal(got.command, `${GIT}\\usr\\bin\\env.exe`);
+    assert.deepEqual(got.args, [...ccArgs, BASH, script].map(msysQuote));
+    assert.equal(got.options.windowsVerbatimArguments, true);
   });
 }
 
