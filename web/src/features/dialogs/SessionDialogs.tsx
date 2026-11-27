@@ -28,12 +28,11 @@ type Tier = (typeof SUMMARY_TIERS)[number];
 type TierData = { summary: string; isStale?: boolean };
 type SummaryData = Partial<Record<Tier, TierData>>;
 
-/** The tier to show after a load: the preferred one if cached, else medium, else the first cached. */
+/** The tier to show after a load: the preferred one if cached, else the first cached tier in SUMMARY_TIERS order (title first), else title. */
 export function pickTier(data: SummaryData, prefer: Tier | null, current: Tier): Tier {
   const target = prefer ?? current;
   if (data[target]) return target;
-  if (data.medium) return 'medium';
-  return SUMMARY_TIERS.find((l) => data[l]) ?? 'medium';
+  return SUMMARY_TIERS.find((l) => data[l]) ?? 'title';
 }
 
 type QA = { id: number; question: string; answer?: string; error?: string; costUsd?: number };
@@ -102,7 +101,7 @@ function AskSection({ sessionId }: { sessionId: string }) {
 
 function SummaryBody({ sessionId }: { sessionId: string }) {
   const [data, setData] = React.useState<SummaryData | null>(null);
-  const [tier, setTier] = React.useState<Tier>('medium');
+  const [tier, setTier] = React.useState<Tier>('title');
   const [loading, setLoading] = React.useState(true);
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState('');
